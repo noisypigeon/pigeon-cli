@@ -16,7 +16,6 @@ variable "name" {
 variable "region" {
   type        = string
   description = "Bucket region"
-  default     = "tor1"
 }
 
 variable "acl" {
@@ -34,5 +33,4 @@ variable "enable_versioning" {
 variable "project" {
   type        = string
   description = "Name of Digital Ocean project bucket is associated to"
-  default     = null
 }
