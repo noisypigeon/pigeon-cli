@@ -58,8 +58,9 @@ pub enum EmailCommands {
 
     /// Sink (download) all emails and attachments for an authenticated identity
     Sink {
-        /// Alias of the identity to sink, as registered via `authenticate`
-        alias: String,
+        /// Alias of the identity to sink, as registered via `authenticate`.
+        /// Interactively selected from the authenticated identities when omitted.
+        alias: Option<String>,
 
         /// Destination directory for sunk emails and attachments
         #[arg(long)]

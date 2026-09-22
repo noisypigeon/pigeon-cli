@@ -10,6 +10,7 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0002-pigeon-cli-scaffold.md` — CLI scaffold and tooling: package/binary naming, clap argument structure, command dispatch, stub/exit-code conventions, testing approach.
 - `docs/adr/0003-imap-connectivity-and-authentication.md` — IMAP crate choice, per-provider authentication (app/bridge passwords, not OAuth2), credential lifetime, local credential storage, and multi-provider selection.
 - `docs/adr/0004-mise-run-task-for-cli.md` — the `mise run pigeon` task for running the built binary.
+- `docs/adr/0005-email-sink.md` — `pigeon email sink`: identity selection, connecting, read-only enforcement (`EXAMINE`/`BODY.PEEK[]`), `.eml`-per-message output layout, resume mechanics, progress reporting.
 
 ## Commands
 

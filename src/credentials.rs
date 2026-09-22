@@ -12,6 +12,15 @@ pub fn set_secret(alias: &str, secret: &str) -> Result<(), String> {
         .map_err(|err| format!("failed to store secret for '{alias}': {err}"))
 }
 
+/// Reads back the secret stored for `alias` via `set_secret`.
+pub fn get_secret(alias: &str) -> Result<String, String> {
+    let entry = keyring::Entry::new(SERVICE_NAME, alias)
+        .map_err(|err| format!("failed to open keychain entry for '{alias}': {err}"))?;
+    entry
+        .get_password()
+        .map_err(|err| format!("failed to read secret for '{alias}': {err}"))
+}
+
 /// Removes the stored secret for `alias`, if any. Used to roll back a
 /// partially completed `authenticate` if a later step fails.
 pub fn delete_secret(alias: &str) -> Result<(), String> {

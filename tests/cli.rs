@@ -110,13 +110,52 @@ fn authenticate_failure_does_not_persist_an_identity() {
 }
 
 #[test]
-fn sink_is_not_yet_implemented() {
+fn sink_help_shows_optional_alias_and_directory() {
     pigeon()
-        .args(["email", "sink", "first-last", "--directory", "/tmp/first"])
+        .args(["email", "sink", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[ALIAS]"))
+        .stdout(predicate::str::contains("--directory"));
+}
+
+#[test]
+fn sink_without_alias_on_empty_store_says_to_authenticate() {
+    let config_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sink",
+            "--directory",
+            output_dir.path().to_str().unwrap(),
+        ])
         .assert()
         .failure()
         .code(1)
-        .stdout(predicate::str::contains("Not Yet Implemented"));
+        .stderr(predicate::str::contains("authenticate"));
+}
+
+#[test]
+fn sink_with_unknown_alias_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sink",
+            "no-such-alias",
+            "--directory",
+            output_dir.path().to_str().unwrap(),
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no identity with alias 'no-such-alias'",
+        ));
 }
 
 #[test]

@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 
+use dialoguer::{Select, theme::ColorfulTheme};
 use serde::{Deserialize, Serialize};
 
 use crate::provider::Provider;
@@ -95,30 +96,67 @@ impl Store {
     pub fn is_empty(&self) -> bool {
         self.identities.is_empty()
     }
+
+    /// Interactively resolves which identity to act on: zero identities is
+    /// an error pointing at `authenticate`; exactly one is returned without
+    /// prompting; otherwise `dialoguer::Select` lists them, same pattern as
+    /// `Provider::prompt_select()`.
+    pub fn prompt_select(&self) -> Result<&Identity, String> {
+        match self.identities.as_slice() {
+            [] => {
+                Err("no identities configured; run 'pigeon email authenticate' first".to_string())
+            }
+            [only] => Ok(only),
+            identities => {
+                let labels: Vec<String> = identities
+                    .iter()
+                    .map(|identity| {
+                        format!(
+                            "{} ({}, {})",
+                            identity.alias, identity.email, identity.provider
+                        )
+                    })
+                    .collect();
+                let selection = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Select an identity")
+                    .items(&labels)
+                    .default(0)
+                    .interact()
+                    .map_err(|err| format!("failed to read identity selection: {err}"))?;
+                Ok(&identities[selection])
+            }
+        }
+    }
+}
+
+/// Sanitizes a single path/name segment: lowercase, non-alphanumeric runs
+/// collapsed to a single hyphen, leading/trailing hyphens trimmed. Shared by
+/// `sanitize_alias` and `sink`'s per-mailbox directory naming.
+pub fn sanitize_segment(input: &str) -> String {
+    let mut segment = String::with_capacity(input.len());
+    let mut last_was_hyphen = false;
+    for ch in input.chars() {
+        if ch.is_ascii_alphanumeric() {
+            segment.push(ch.to_ascii_lowercase());
+            last_was_hyphen = false;
+        } else if !last_was_hyphen && !segment.is_empty() {
+            segment.push('-');
+            last_was_hyphen = true;
+        }
+    }
+    if segment.ends_with('-') {
+        segment.pop();
+    }
+    segment
 }
 
 /// Derives a default alias from an email address's local part, following
-/// ADR-0001's file-naming scheme: lowercase, non-alphanumeric runs collapsed
-/// to a single hyphen, leading/trailing hyphens trimmed.
+/// ADR-0001's file-naming scheme.
 ///
 /// e.g. `first.last@example.com` -> `first-last`
 pub fn sanitize_alias(email: &str) -> String {
     let local_part = email.split('@').next().unwrap_or(email);
-    let mut alias = String::with_capacity(local_part.len());
-    let mut last_was_hyphen = false;
-    for ch in local_part.chars() {
-        if ch.is_ascii_alphanumeric() {
-            alias.push(ch.to_ascii_lowercase());
-            last_was_hyphen = false;
-        } else if !last_was_hyphen && !alias.is_empty() {
-            alias.push('-');
-            last_was_hyphen = true;
-        }
-    }
-    if alias.ends_with('-') {
-        alias.pop();
-    }
-    alias
+    sanitize_segment(local_part)
 }
 
 #[cfg(test)]

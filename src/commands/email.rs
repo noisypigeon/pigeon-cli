@@ -162,9 +162,49 @@ fn list_identities() -> i32 {
     0
 }
 
-fn sink(_alias: String, _directory: PathBuf) -> i32 {
-    println!("Not Yet Implemented");
-    NOT_YET_IMPLEMENTED_EXIT_CODE
+fn sink(alias: Option<String>, directory: PathBuf) -> i32 {
+    let path = match Store::default_path() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let store = match Store::load(&path) {
+        Ok(store) => store,
+        Err(err) => return fail(err),
+    };
+
+    let identity = match &alias {
+        Some(alias) => match store.iter().find(|identity| &identity.alias == alias) {
+            Some(identity) => identity,
+            None => return fail(format!("no identity with alias '{alias}'")),
+        },
+        None => match store.prompt_select() {
+            Ok(identity) => identity,
+            Err(err) => return fail(err),
+        },
+    };
+
+    let secret = match credentials::get_secret(&identity.alias) {
+        Ok(secret) => secret,
+        Err(err) => return fail(err),
+    };
+
+    match crate::sink::run(
+        &identity.email,
+        &identity.host,
+        identity.port,
+        &secret,
+        identity.provider.accepts_invalid_certs(),
+        &directory,
+    ) {
+        Ok(summary) => {
+            println!(
+                "Sunk {} identity across {} mailbox(es): {} message(s) downloaded, {} already present.",
+                identity.alias, summary.mailboxes, summary.downloaded, summary.already_present
+            );
+            0
+        }
+        Err(err) => fail(err),
+    }
 }
 
 fn transform(_input: PathBuf, _output: PathBuf, _normalize: bool, _mbox_to_markdown: bool) -> i32 {
