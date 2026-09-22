@@ -30,3 +30,9 @@ variable "enable_versioning" {
   description = "Object versioning enabled (true/false)"
   default     = false
 }
+
+variable "project" {
+  type        = string
+  description = "Name of Digital Ocean project bucket is associated to"
+  default     = null
+}
