@@ -1,8 +1,8 @@
 # ADR-0001: Data sink and transform for inactive email identities
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
-- **Date**: WIP.
-- **Status**: Draft.
+- **Date**: 2026-09-21.
+- **Status**: Accepted.
 
 ## Context
 
@@ -51,4 +51,4 @@ jane-doe-gmail-com/attachments/2024-01-26-hello-world-bingo-sheet.pdf
 
 ### Frontmatter and Taxonomy 
 
-To-do.
+This will be designed in a future ADR.
