@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use dialoguer::{Select, theme::ColorfulTheme};
 use serde::{Deserialize, Serialize};
 
-use crate::provider::Provider;
+use crate::email::provider::Provider;
 
 /// An environment variable that, when set, overrides the identity metadata
 /// file's directory. Used to isolate black-box CLI tests from the real

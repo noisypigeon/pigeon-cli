@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use mail_parser::{Addr, DateTime, MessageParser, MimeHeaders};
 
-use crate::identity::{self, Identity};
+use crate::email::identity::{self, Identity};
 
 /// Summary of a completed `transform` run.
 #[derive(Debug, Default)]

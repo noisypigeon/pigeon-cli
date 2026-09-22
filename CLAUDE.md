@@ -13,6 +13,7 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0005-email-sink.md` — `pigeon email sink`: identity selection, connecting, read-only enforcement (`EXAMINE`/`BODY.PEEK[]`), `.eml`-per-message output layout, resume mechanics, progress reporting.
 - `docs/adr/0006-email-transform.md` — `pigeon email transform`: EML parsing/HTML-to-Markdown crates, ADR-0001 naming-scheme reuse, flat folder structure, taxonomy cross-cuts via namespaced frontmatter tags, attachment organization.
 - `docs/adr/0007-email-sync.md` — merges `sink`+`transform` into `pigeon email sync`: per-UID fetch/transform/verify/delete pipeline, `.processed` resume marker, `source:`→`uid:` frontmatter amendment, `--debug sink`/`--debug transform` for phase-level (non-destructive) access. Reverses ADR-0001's permanent-raw-archive default.
+- `docs/adr/0008-src-module-layout.md` — groups all email-specific code under `src/email/` (cli/commands/logic together), keeping top-level `src/cli.rs`/`src/commands/mod.rs` as thin roll-ups, so future command groups get their own sibling folder.
 
 ## Commands
 

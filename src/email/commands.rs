@@ -3,11 +3,11 @@ use std::path::PathBuf;
 
 use dialoguer::Password;
 
-use super::FAILURE_EXIT_CODE;
-use crate::cli::{DebugPhase, EmailCommands};
-use crate::identity::{self, Identity, Store};
-use crate::provider::Provider;
-use crate::{credentials, imap_client};
+use crate::commands::FAILURE_EXIT_CODE;
+use crate::email::cli::{DebugPhase, EmailCommands};
+use crate::email::identity::{self, Identity, Store};
+use crate::email::provider::Provider;
+use crate::email::{credentials, imap_client};
 
 pub fn dispatch(command: EmailCommands) -> i32 {
     match command {
@@ -193,7 +193,7 @@ fn sync(
                 Ok(secret) => secret,
                 Err(err) => return fail(err),
             };
-            match crate::sink::run(
+            match crate::email::sink::run(
                 &identity.email,
                 &identity.host,
                 identity.port,
@@ -215,7 +215,7 @@ fn sync(
             }
         }
         Some(DebugPhase::Transform) => {
-            match crate::transform::run(identity, &staging_dir, &output_dir) {
+            match crate::email::transform::run(identity, &staging_dir, &output_dir) {
                 Ok(summary) => {
                     println!(
                         "Transformed {} identity: {} message(s), {} attachment(s), {} skipped.",
@@ -231,7 +231,7 @@ fn sync(
                 Ok(secret) => secret,
                 Err(err) => return fail(err),
             };
-            match crate::sync::run(identity, &secret, &staging_dir, &output_dir) {
+            match crate::email::sync::run(identity, &secret, &staging_dir, &output_dir) {
                 Ok(summary) => {
                     println!(
                         "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed.",

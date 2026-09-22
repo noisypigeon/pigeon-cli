@@ -6,9 +6,9 @@ use std::path::Path;
 use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
 
-use crate::identity::Identity;
-use crate::imap_client;
-use crate::{sink, transform};
+use crate::email::identity::Identity;
+use crate::email::imap_client;
+use crate::email::{sink, transform};
 
 const PROCESSED_FILE_NAME: &str = ".processed";
 

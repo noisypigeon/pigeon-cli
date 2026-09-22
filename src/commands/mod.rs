@@ -1,5 +1,3 @@
-pub mod email;
-
 use crate::cli::Commands;
 
 /// Exit code returned by a command that ran but didn't succeed (e.g. a
@@ -10,6 +8,6 @@ pub const FAILURE_EXIT_CODE: i32 = 1;
 
 pub fn dispatch(command: Commands) -> i32 {
     match command {
-        Commands::Email(args) => email::dispatch(args.command),
+        Commands::Email(args) => crate::email::commands::dispatch(args.command),
     }
 }
