@@ -1,0 +1,26 @@
+# pigeon-tf
+
+Versioned, reusable Terraform modules, consumed by [`pigeon-do`](https://github.com/noisypigeon/pigeon-do) and any future infra repos. See `pigeon-do`'s [ADR-0002](https://github.com/noisypigeon/pigeon-do/blob/main/docs/adr/0002-pigeon-tf-scaffold.md) for the design decisions behind this repo.
+
+This repo holds only module source — it has no root provider/backend configuration and is never `terraform`/`terragrunt` run standalone.
+
+## Modules
+
+| Path | Description |
+| --- | --- |
+| `digitalocean/access-key` | A DigitalOcean Spaces access key (`digitalocean_spaces_key`), optionally scoped to one or more buckets. |
+| `digitalocean/object-bucket` | A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) with a randomized name suffix. |
+| `digitalocean/project` | A thin wrapper around `digitalocean_project`. |
+
+## Versioning
+
+Releases are tagged on `main` with semantic versions (`vX.Y.Z`). Consuming repos pin to a tag by checking out that tag in their local clone of this repo — there's no registry or CI-driven release process (yet).
+
+## Consuming locally
+
+Since consumers run Terragrunt/Terraform locally (no remote module source), clone this repo as a sibling directory to the consuming repo and check out the tag you want:
+
+```
+git clone git@github.com:noisypigeon/pigeon-tf.git ../pigeon-tf
+cd ../pigeon-tf && git checkout v0.1.0
+```
