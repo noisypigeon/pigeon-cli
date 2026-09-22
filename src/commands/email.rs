@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use dialoguer::Password;
 
-use super::{FAILURE_EXIT_CODE, NOT_YET_IMPLEMENTED_EXIT_CODE};
+use super::FAILURE_EXIT_CODE;
 use crate::cli::EmailCommands;
 use crate::identity::{self, Identity, Store};
 use crate::provider::Provider;
@@ -21,11 +21,10 @@ pub fn dispatch(command: EmailCommands) -> i32 {
         EmailCommands::ListIdentities => list_identities(),
         EmailCommands::Sink { alias, directory } => sink(alias, directory),
         EmailCommands::Transform {
+            alias,
             input,
             output,
-            normalize,
-            mbox_to_markdown,
-        } => transform(input, output, normalize, mbox_to_markdown),
+        } => transform(alias, input, output),
     }
 }
 
@@ -207,9 +206,37 @@ fn sink(alias: Option<String>, directory: PathBuf) -> i32 {
     }
 }
 
-fn transform(_input: PathBuf, _output: PathBuf, _normalize: bool, _mbox_to_markdown: bool) -> i32 {
-    println!("Not Yet Implemented");
-    NOT_YET_IMPLEMENTED_EXIT_CODE
+fn transform(alias: Option<String>, input: PathBuf, output: PathBuf) -> i32 {
+    let path = match Store::default_path() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let store = match Store::load(&path) {
+        Ok(store) => store,
+        Err(err) => return fail(err),
+    };
+
+    let identity = match &alias {
+        Some(alias) => match store.iter().find(|identity| &identity.alias == alias) {
+            Some(identity) => identity,
+            None => return fail(format!("no identity with alias '{alias}'")),
+        },
+        None => match store.prompt_select() {
+            Ok(identity) => identity,
+            Err(err) => return fail(err),
+        },
+    };
+
+    match crate::transform::run(identity, &input, &output) {
+        Ok(summary) => {
+            println!(
+                "Transformed {} identity: {} message(s), {} attachment(s), {} skipped.",
+                identity.alias, summary.messages, summary.attachments, summary.skipped
+            );
+            0
+        }
+        Err(err) => fail(err),
+    }
 }
 
 fn fail(message: impl std::fmt::Display) -> i32 {

@@ -67,22 +67,18 @@ pub enum EmailCommands {
         directory: PathBuf,
     },
 
-    /// Transform sunk MBOX/EML files into normalized Markdown
+    /// Transform sunk EML files into normalized Markdown with frontmatter
     Transform {
-        /// Source directory containing sunk email data
+        /// Alias of the identity to transform, as registered via `authenticate`.
+        /// Interactively selected from the authenticated identities when omitted.
+        alias: Option<String>,
+
+        /// Source directory containing sunk email data (from `sink`)
         #[arg(long)]
         input: PathBuf,
 
-        /// Destination directory for transformed output
+        /// Destination directory for transformed Markdown output
         #[arg(long)]
         output: PathBuf,
-
-        /// Normalize file names and folder structure to the taxonomy scheme
-        #[arg(long)]
-        normalize: bool,
-
-        /// Convert MBOX/EML files to Markdown
-        #[arg(long)]
-        mbox_to_markdown: bool,
     },
 }
