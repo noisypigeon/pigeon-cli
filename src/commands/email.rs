@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use dialoguer::Password;
 
 use super::FAILURE_EXIT_CODE;
-use crate::cli::EmailCommands;
+use crate::cli::{DebugPhase, EmailCommands};
 use crate::identity::{self, Identity, Store};
 use crate::provider::Provider;
 use crate::{credentials, imap_client};
@@ -19,12 +19,12 @@ pub fn dispatch(command: EmailCommands) -> i32 {
             port,
         } => authenticate(email, alias, provider, host, port),
         EmailCommands::ListIdentities => list_identities(),
-        EmailCommands::Sink { alias, directory } => sink(alias, directory),
-        EmailCommands::Transform {
+        EmailCommands::Sync {
             alias,
-            input,
-            output,
-        } => transform(alias, input, output),
+            staging_dir,
+            output_dir,
+            debug,
+        } => sync(alias, staging_dir, output_dir, debug),
     }
 }
 
@@ -161,7 +161,12 @@ fn list_identities() -> i32 {
     0
 }
 
-fn sink(alias: Option<String>, directory: PathBuf) -> i32 {
+fn sync(
+    alias: Option<String>,
+    staging_dir: PathBuf,
+    output_dir: PathBuf,
+    debug: Option<DebugPhase>,
+) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -182,60 +187,65 @@ fn sink(alias: Option<String>, directory: PathBuf) -> i32 {
         },
     };
 
-    let secret = match credentials::get_secret(&identity.alias) {
-        Ok(secret) => secret,
-        Err(err) => return fail(err),
-    };
-
-    match crate::sink::run(
-        &identity.email,
-        &identity.host,
-        identity.port,
-        &secret,
-        identity.provider.accepts_invalid_certs(),
-        &directory,
-    ) {
-        Ok(summary) => {
-            println!(
-                "Sunk {} identity across {} mailbox(es): {} message(s) downloaded, {} already present.",
-                identity.alias, summary.mailboxes, summary.downloaded, summary.already_present
-            );
-            0
+    match debug {
+        Some(DebugPhase::Sink) => {
+            let secret = match credentials::get_secret(&identity.alias) {
+                Ok(secret) => secret,
+                Err(err) => return fail(err),
+            };
+            match crate::sink::run(
+                &identity.email,
+                &identity.host,
+                identity.port,
+                &secret,
+                identity.provider.accepts_invalid_certs(),
+                &staging_dir,
+            ) {
+                Ok(summary) => {
+                    println!(
+                        "Sunk {} identity across {} mailbox(es): {} message(s) downloaded, {} already present.",
+                        identity.alias,
+                        summary.mailboxes,
+                        summary.downloaded,
+                        summary.already_present
+                    );
+                    0
+                }
+                Err(err) => fail(err),
+            }
         }
-        Err(err) => fail(err),
-    }
-}
-
-fn transform(alias: Option<String>, input: PathBuf, output: PathBuf) -> i32 {
-    let path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let store = match Store::load(&path) {
-        Ok(store) => store,
-        Err(err) => return fail(err),
-    };
-
-    let identity = match &alias {
-        Some(alias) => match store.iter().find(|identity| &identity.alias == alias) {
-            Some(identity) => identity,
-            None => return fail(format!("no identity with alias '{alias}'")),
-        },
-        None => match store.prompt_select() {
-            Ok(identity) => identity,
-            Err(err) => return fail(err),
-        },
-    };
-
-    match crate::transform::run(identity, &input, &output) {
-        Ok(summary) => {
-            println!(
-                "Transformed {} identity: {} message(s), {} attachment(s), {} skipped.",
-                identity.alias, summary.messages, summary.attachments, summary.skipped
-            );
-            0
+        Some(DebugPhase::Transform) => {
+            match crate::transform::run(identity, &staging_dir, &output_dir) {
+                Ok(summary) => {
+                    println!(
+                        "Transformed {} identity: {} message(s), {} attachment(s), {} skipped.",
+                        identity.alias, summary.messages, summary.attachments, summary.skipped
+                    );
+                    0
+                }
+                Err(err) => fail(err),
+            }
         }
-        Err(err) => fail(err),
+        None => {
+            let secret = match credentials::get_secret(&identity.alias) {
+                Ok(secret) => secret,
+                Err(err) => return fail(err),
+            };
+            match crate::sync::run(identity, &secret, &staging_dir, &output_dir) {
+                Ok(summary) => {
+                    println!(
+                        "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed.",
+                        identity.alias,
+                        summary.mailboxes,
+                        summary.synced,
+                        summary.already_processed,
+                        summary.failed
+                    );
+                    0
+                }
+                Err(err) => fail(err),
+            }
+        }
     }
 }
 

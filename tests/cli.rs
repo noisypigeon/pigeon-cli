@@ -26,15 +26,14 @@ fn top_level_help_lists_email_command() {
 }
 
 #[test]
-fn email_help_lists_all_four_subcommands() {
+fn email_help_lists_all_subcommands() {
     pigeon()
         .args(["email", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("authenticate"))
         .stdout(predicate::str::contains("list-identities"))
-        .stdout(predicate::str::contains("sink"))
-        .stdout(predicate::str::contains("transform"));
+        .stdout(predicate::str::contains("sync"));
 }
 
 #[test]
@@ -111,26 +110,40 @@ fn authenticate_failure_does_not_persist_an_identity() {
         .stdout(predicate::str::contains("No identities configured."));
 }
 
-#[test]
-fn sink_help_shows_optional_alias_and_directory() {
-    pigeon()
-        .args(["email", "sink", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("[ALIAS]"))
-        .stdout(predicate::str::contains("--directory"));
+/// Writes a fake `identities.toml` directly (no `authenticate`/keychain
+/// needed -- `sync --debug transform` never reads the secret).
+fn write_identity(config_dir: &TempDir, alias: &str, email: &str) {
+    let toml = format!(
+        "[[identities]]\nalias = \"{alias}\"\nemail = \"{email}\"\nprovider = \"gmail\"\nhost = \"imap.gmail.com\"\nport = 993\n"
+    );
+    fs::write(config_dir.path().join("identities.toml"), toml).unwrap();
 }
 
 #[test]
-fn sink_without_alias_on_empty_store_says_to_authenticate() {
+fn sync_help_shows_staging_output_and_debug_flags() {
+    pigeon()
+        .args(["email", "sync", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[ALIAS]"))
+        .stdout(predicate::str::contains("--staging-dir"))
+        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--debug"));
+}
+
+#[test]
+fn sync_without_alias_on_empty_store_says_to_authenticate() {
     let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
     let output_dir = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
-            "sink",
-            "--directory",
+            "sync",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
             output_dir.path().to_str().unwrap(),
         ])
         .assert()
@@ -140,16 +153,19 @@ fn sink_without_alias_on_empty_store_says_to_authenticate() {
 }
 
 #[test]
-fn sink_with_unknown_alias_fails_fast() {
+fn sync_with_unknown_alias_fails_fast() {
     let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
     let output_dir = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
-            "sink",
+            "sync",
             "no-such-alias",
-            "--directory",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
             output_dir.path().to_str().unwrap(),
         ])
         .assert()
@@ -160,42 +176,22 @@ fn sink_with_unknown_alias_fails_fast() {
         ));
 }
 
-/// Writes a fake `identities.toml` directly (no `authenticate`/keychain
-/// needed -- `transform` never reads the secret), registering one identity.
-fn write_identity(config_dir: &TempDir, alias: &str, email: &str) {
-    let toml = format!(
-        "[[identities]]\nalias = \"{alias}\"\nemail = \"{email}\"\nprovider = \"gmail\"\nhost = \"imap.gmail.com\"\nport = 993\n"
-    );
-    fs::write(config_dir.path().join("identities.toml"), toml).unwrap();
-}
-
 #[test]
-fn transform_help_shows_new_shape() {
-    pigeon()
-        .args(["email", "transform", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("[ALIAS]"))
-        .stdout(predicate::str::contains("--input"))
-        .stdout(predicate::str::contains("--output"))
-        .stdout(predicate::str::contains("--normalize").not())
-        .stdout(predicate::str::contains("--mbox-to-markdown").not());
-}
-
-#[test]
-fn transform_without_alias_on_empty_store_says_to_authenticate() {
+fn sync_debug_sink_without_alias_on_empty_store_says_to_authenticate() {
     let config_dir = TempDir::new().unwrap();
-    let input_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
     let output_dir = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
-            "transform",
-            "--input",
-            input_dir.path().to_str().unwrap(),
-            "--output",
+            "sync",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
             output_dir.path().to_str().unwrap(),
+            "--debug",
+            "sink",
         ])
         .assert()
         .failure()
@@ -204,14 +200,63 @@ fn transform_without_alias_on_empty_store_says_to_authenticate() {
 }
 
 #[test]
-fn transform_converts_a_plain_text_message() {
+fn sync_debug_sink_with_unknown_alias_fails_fast() {
     let config_dir = TempDir::new().unwrap();
-    let input_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "no-such-alias",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--debug",
+            "sink",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no identity with alias 'no-such-alias'",
+        ));
+}
+
+#[test]
+fn sync_debug_transform_without_alias_on_empty_store_says_to_authenticate() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--debug",
+            "transform",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("authenticate"));
+}
+
+#[test]
+fn sync_debug_transform_converts_a_plain_text_message() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
     let output_dir = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
-    let inbox_dir = input_dir.path().join("inbox");
+    let inbox_dir = staging_dir.path().join("inbox");
     fs::create_dir_all(&inbox_dir).unwrap();
     fs::write(
         inbox_dir.join("1.eml"),
@@ -229,12 +274,14 @@ fn transform_converts_a_plain_text_message() {
     pigeon_in(&config_dir)
         .args([
             "email",
-            "transform",
+            "sync",
             "first-last",
-            "--input",
-            input_dir.path().to_str().unwrap(),
-            "--output",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
             output_dir.path().to_str().unwrap(),
+            "--debug",
+            "transform",
         ])
         .assert()
         .success()
@@ -250,18 +297,22 @@ fn transform_converts_a_plain_text_message() {
     assert!(contents.contains("mailbox/inbox"));
     assert!(contents.contains("identity/first-last"));
     assert!(contents.contains("sender/example-com"));
+    assert!(contents.contains("uid: 1"));
     assert!(contents.contains("Hello there!"));
+
+    // --debug transform never deletes the source .eml.
+    assert!(inbox_dir.join("1.eml").exists());
 }
 
 #[test]
-fn transform_converts_an_html_only_message() {
+fn sync_debug_transform_converts_an_html_only_message() {
     let config_dir = TempDir::new().unwrap();
-    let input_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
     let output_dir = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
-    let inbox_dir = input_dir.path().join("inbox");
+    let inbox_dir = staging_dir.path().join("inbox");
     fs::create_dir_all(&inbox_dir).unwrap();
     fs::write(
         inbox_dir.join("2.eml"),
@@ -278,12 +329,14 @@ fn transform_converts_an_html_only_message() {
     pigeon_in(&config_dir)
         .args([
             "email",
-            "transform",
+            "sync",
             "first-last",
-            "--input",
-            input_dir.path().to_str().unwrap(),
-            "--output",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
             output_dir.path().to_str().unwrap(),
+            "--debug",
+            "transform",
         ])
         .assert()
         .success();
@@ -295,4 +348,5 @@ fn transform_converts_an_html_only_message() {
     let contents = fs::read_to_string(&md_path).unwrap();
     assert!(contents.contains("# Weekly Update"));
     assert!(contents.contains("world"));
+    assert!(contents.contains("uid: 2"));
 }

@@ -7,7 +7,7 @@ use futures::TryStreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
 
 use crate::identity::sanitize_segment;
-use crate::imap_client;
+use crate::imap_client::{self, ImapSession};
 
 const UIDVALIDITY_FILE_NAME: &str = ".uidvalidity";
 
@@ -23,6 +23,9 @@ pub struct SinkSummary {
 /// `directory`, one `.eml` file per message, without mutating anything
 /// server-side (`EXAMINE` + `BODY.PEEK[]`, per ADR-0005). Safe to re-run:
 /// already-downloaded messages are skipped.
+///
+/// This is `pigeon email sync --debug sink`'s implementation (ADR-0007) --
+/// fetch-only, never transforms, never deletes.
 pub fn run(
     email: &str,
     host: &str,
@@ -95,42 +98,8 @@ async fn run_async(
         let local_uids = on_disk_uids(&mailbox_dir)?;
         let missing = missing_uids(&server_uids, &local_uids);
 
-        let bar = ProgressBar::new(mailbox.exists as u64);
-        if let Ok(style) = ProgressStyle::with_template("{prefix} {bar:40} {pos}/{len}") {
-            bar.set_style(style);
-        }
-        bar.set_prefix(mailbox_name.to_string());
-        bar.set_position((mailbox.exists as usize).saturating_sub(missing.len()) as u64);
-
-        if !missing.is_empty() {
-            let uid_set = missing
-                .iter()
-                .map(|uid| uid.to_string())
-                .collect::<Vec<_>>()
-                .join(",");
-
-            let mut fetches = session
-                .uid_fetch(&uid_set, "(UID BODY.PEEK[])")
-                .await
-                .map_err(|err| format!("failed to fetch messages in '{mailbox_name}': {err}"))?;
-
-            while let Some(fetch) = fetches
-                .try_next()
-                .await
-                .map_err(|err| format!("failed to fetch messages in '{mailbox_name}': {err}"))?
-            {
-                let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) else {
-                    continue;
-                };
-                let path = mailbox_dir.join(format!("{uid}.eml"));
-                fs::write(&path, body)
-                    .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-                summary.downloaded += 1;
-                bar.inc(1);
-            }
-        }
-
-        bar.finish();
+        summary.downloaded +=
+            fetch_uids(&mut session, mailbox_name, &mailbox_dir, &missing).await?;
         summary.already_present += local_uids.len();
         summary.mailboxes += 1;
     }
@@ -143,10 +112,63 @@ async fn run_async(
     Ok(summary)
 }
 
+/// Fetches every UID in `missing` from `mailbox_name` (already `EXAMINE`d on
+/// `session`) via `BODY.PEEK[]` and writes each as `<mailbox_dir>/<uid>.eml`.
+/// Returns the count written. Shared by `sink::run` and `sync::run`
+/// (ADR-0007) -- the only piece of sink's behavior `sync` reuses directly;
+/// each caller computes its own `missing` set according to its own resume
+/// semantics.
+pub(crate) async fn fetch_uids(
+    session: &mut ImapSession,
+    mailbox_name: &str,
+    mailbox_dir: &Path,
+    missing: &[u32],
+) -> Result<usize, String> {
+    if missing.is_empty() {
+        return Ok(0);
+    }
+
+    let bar = ProgressBar::new(missing.len() as u64);
+    if let Ok(style) = ProgressStyle::with_template("{prefix} {bar:40} {pos}/{len}") {
+        bar.set_style(style);
+    }
+    bar.set_prefix(mailbox_name.to_string());
+
+    let uid_set = missing
+        .iter()
+        .map(|uid| uid.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let mut fetches = session
+        .uid_fetch(&uid_set, "(UID BODY.PEEK[])")
+        .await
+        .map_err(|err| format!("failed to fetch messages in '{mailbox_name}': {err}"))?;
+
+    let mut written = 0;
+    while let Some(fetch) = fetches
+        .try_next()
+        .await
+        .map_err(|err| format!("failed to fetch messages in '{mailbox_name}': {err}"))?
+    {
+        let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) else {
+            continue;
+        };
+        let path = mailbox_dir.join(format!("{uid}.eml"));
+        fs::write(&path, body)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        written += 1;
+        bar.inc(1);
+    }
+    bar.finish();
+
+    Ok(written)
+}
+
 /// Splits `name` on `delimiter` (treating the whole name as one segment when
 /// there is none) and sanitizes each segment into a filesystem-safe path,
 /// e.g. `Archive/2020` with delimiter `/` -> `archive/2020`.
-fn sanitize_mailbox_path(name: &str, delimiter: Option<&str>) -> PathBuf {
+pub(crate) fn sanitize_mailbox_path(name: &str, delimiter: Option<&str>) -> PathBuf {
     let segments: Vec<&str> = match delimiter {
         Some(delimiter) if !delimiter.is_empty() => name.split(delimiter).collect(),
         _ => vec![name],
@@ -160,7 +182,7 @@ fn sanitize_mailbox_path(name: &str, delimiter: Option<&str>) -> PathBuf {
 
 /// Scans `mailbox_dir` for `<uid>.eml` files, parsing filenames as UIDs.
 /// Anything that doesn't parse is silently skipped, not an error.
-fn on_disk_uids(mailbox_dir: &Path) -> Result<HashSet<u32>, String> {
+pub(crate) fn on_disk_uids(mailbox_dir: &Path) -> Result<HashSet<u32>, String> {
     let mut uids = HashSet::new();
     let entries = match fs::read_dir(mailbox_dir) {
         Ok(entries) => entries,
@@ -185,8 +207,10 @@ fn on_disk_uids(mailbox_dir: &Path) -> Result<HashSet<u32>, String> {
     Ok(uids)
 }
 
-/// The sorted set of UIDs present on the server but not yet on disk.
-fn missing_uids(server: &HashSet<u32>, local: &HashSet<u32>) -> Vec<u32> {
+/// The sorted set of UIDs present in `server` but not in `local`. Generic
+/// set-difference with no sink-specific semantics -- reused by `sync`
+/// (ADR-0007) to compute pending (server minus already-processed) UIDs too.
+pub(crate) fn missing_uids(server: &HashSet<u32>, local: &HashSet<u32>) -> Vec<u32> {
     let mut missing: Vec<u32> = server.difference(local).copied().collect();
     missing.sort_unstable();
     missing
@@ -195,11 +219,11 @@ fn missing_uids(server: &HashSet<u32>, local: &HashSet<u32>) -> Vec<u32> {
 /// A mailbox is stale when it has a recorded `UIDVALIDITY` that no longer
 /// matches the server's current one. A missing marker (first run) is never
 /// stale -- there's nothing to compare against yet.
-fn is_stale(on_disk_validity: Option<u32>, current_validity: u32) -> bool {
+pub(crate) fn is_stale(on_disk_validity: Option<u32>, current_validity: u32) -> bool {
     on_disk_validity.is_some_and(|value| value != current_validity)
 }
 
-fn read_uidvalidity(mailbox_dir: &Path) -> Option<u32> {
+pub(crate) fn read_uidvalidity(mailbox_dir: &Path) -> Option<u32> {
     fs::read_to_string(mailbox_dir.join(UIDVALIDITY_FILE_NAME))
         .ok()?
         .trim()
@@ -207,7 +231,7 @@ fn read_uidvalidity(mailbox_dir: &Path) -> Option<u32> {
         .ok()
 }
 
-fn write_uidvalidity(mailbox_dir: &Path, value: u32) -> Result<(), String> {
+pub(crate) fn write_uidvalidity(mailbox_dir: &Path, value: u32) -> Result<(), String> {
     let path = mailbox_dir.join(UIDVALIDITY_FILE_NAME);
     fs::write(&path, value.to_string())
         .map_err(|err| format!("failed to write {}: {err}", path.display()))
@@ -216,7 +240,7 @@ fn write_uidvalidity(mailbox_dir: &Path, value: u32) -> Result<(), String> {
 /// Removes every `<uid>.eml` file in `mailbox_dir` -- used when its
 /// `UIDVALIDITY` no longer matches the server's, so no stale UID/message
 /// pairing survives.
-fn clear_eml_files(mailbox_dir: &Path) -> Result<(), String> {
+pub(crate) fn clear_eml_files(mailbox_dir: &Path) -> Result<(), String> {
     let entries = match fs::read_dir(mailbox_dir) {
         Ok(entries) => entries,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),

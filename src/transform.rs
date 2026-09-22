@@ -13,114 +13,171 @@ pub struct TransformSummary {
     pub skipped: usize,
 }
 
+/// The artifacts a successful `transform_one` call wrote, needed by
+/// `verify_transformed` (and, per ADR-0007, by `sync`'s verify-then-delete
+/// step).
+pub(crate) struct TransformedMessage {
+    pub md_path: PathBuf,
+    pub attachment_paths: Vec<PathBuf>,
+}
+
 /// Parses every `.eml` file under `input` (as produced by `sink`, per
 /// ADR-0005) into a flat, per-identity Markdown tree with YAML frontmatter
 /// under `output`, per ADR-0006. Read-only over `input` -- nothing sunk is
 /// ever modified or deleted.
+///
+/// This is `pigeon email sync --debug transform`'s implementation
+/// (ADR-0007) -- transform-only, never fetches, never deletes the source
+/// `.eml`.
 pub fn run(identity: &Identity, input: &Path, output: &Path) -> Result<TransformSummary, String> {
     let eml_files = find_eml_files(input)?;
+
+    let mut summary = TransformSummary::default();
+
+    for eml_path in &eml_files {
+        match transform_one(identity, eml_path, input, output)? {
+            Some(transformed) => {
+                summary.messages += 1;
+                summary.attachments += transformed.attachment_paths.len();
+            }
+            None => summary.skipped += 1,
+        }
+    }
+
+    Ok(summary)
+}
+
+/// Parses a single `.eml` file and writes its Markdown (and any attachments)
+/// under `output`. `input_root` is used to derive the `mailbox/...` tag from
+/// `eml_path`'s location relative to it.
+///
+/// Returns `Ok(None)` on a lenient skip (unparseable message, missing `Date`
+/// header, or a filename that doesn't parse as a `u32` UID -- needed for the
+/// `uid:` frontmatter field) with a warning already printed; `Err` only for
+/// a hard I/O failure.
+pub(crate) fn transform_one(
+    identity: &Identity,
+    eml_path: &Path,
+    input_root: &Path,
+    output: &Path,
+) -> Result<Option<TransformedMessage>, String> {
+    let Some(uid) = eml_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.parse::<u32>().ok())
+    else {
+        eprintln!(
+            "Warning: {} is not named <uid>.eml, skipping",
+            eml_path.display()
+        );
+        return Ok(None);
+    };
+
+    let bytes = match fs::read(eml_path) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            eprintln!("Warning: failed to read {}: {err}", eml_path.display());
+            return Ok(None);
+        }
+    };
+
+    let Some(message) = MessageParser::default().parse(&bytes) else {
+        eprintln!("Warning: failed to parse {}, skipping", eml_path.display());
+        return Ok(None);
+    };
+
+    let Some(date) = message.date() else {
+        eprintln!(
+            "Warning: {} has no Date header, skipping",
+            eml_path.display()
+        );
+        return Ok(None);
+    };
 
     let identity_dir = output.join(identity::sanitize_segment(&identity.email));
     let attachments_dir = identity_dir.join("attachments");
     fs::create_dir_all(&attachments_dir)
         .map_err(|err| format!("failed to create {}: {err}", attachments_dir.display()))?;
 
-    let mut summary = TransformSummary::default();
+    let subject = message.subject().unwrap_or("(no subject)");
+    let from_addr = message.from().and_then(|address| address.first());
+    let to_addr = message.to().and_then(|address| address.first());
 
-    for eml_path in &eml_files {
-        let bytes = match fs::read(eml_path) {
-            Ok(bytes) => bytes,
-            Err(err) => {
-                eprintln!("Warning: failed to read {}: {err}", eml_path.display());
-                summary.skipped += 1;
-                continue;
-            }
-        };
+    let body = if message.html_body_count() > 0 {
+        let html = message.body_html(0).unwrap_or_default();
+        htmd::convert(&html)
+            .unwrap_or_else(|_| message.body_text(0).unwrap_or_default().to_string())
+    } else if message.text_body_count() > 0 {
+        message.body_text(0).unwrap_or_default().to_string()
+    } else {
+        String::new()
+    };
 
-        let Some(message) = MessageParser::default().parse(&bytes) else {
-            eprintln!("Warning: failed to parse {}, skipping", eml_path.display());
-            summary.skipped += 1;
-            continue;
-        };
+    let stem = format!(
+        "{}-{}",
+        format_date_prefix(date),
+        identity::sanitize_segment(subject)
+    );
 
-        let Some(date) = message.date() else {
-            eprintln!(
-                "Warning: {} has no Date header, skipping",
-                eml_path.display()
-            );
-            summary.skipped += 1;
-            continue;
-        };
-
-        let subject = message.subject().unwrap_or("(no subject)");
-        let from_addr = message.from().and_then(|address| address.first());
-        let to_addr = message.to().and_then(|address| address.first());
-
-        let body = if message.html_body_count() > 0 {
-            let html = message.body_html(0).unwrap_or_default();
-            htmd::convert(&html)
-                .unwrap_or_else(|_| message.body_text(0).unwrap_or_default().to_string())
-        } else if message.text_body_count() > 0 {
-            message.body_text(0).unwrap_or_default().to_string()
-        } else {
-            String::new()
-        };
-
-        let stem = format!(
-            "{}-{}",
-            format_date_prefix(date),
-            identity::sanitize_segment(subject)
-        );
-
-        let mut attachment_relpaths = Vec::new();
-        for part in message.attachments() {
-            let original_name = part.attachment_name().unwrap_or("attachment");
-            let attachment_path =
-                unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
-            fs::write(&attachment_path, part.contents())
-                .map_err(|err| format!("failed to write {}: {err}", attachment_path.display()))?;
-            attachment_relpaths.push(format!(
-                "attachments/{}",
-                attachment_path.file_name().unwrap().to_string_lossy()
-            ));
-            summary.attachments += 1;
-        }
-
-        let mut tags = vec![
-            mailbox_tag(eml_path, input),
-            format!("identity/{}", identity.alias),
-            format!("year/{}", date.year),
-        ];
-        if let Some(domain_tag) =
-            sender_domain_tag(from_addr.and_then(|addr| addr.address.as_deref()))
-        {
-            tags.push(domain_tag);
-        }
-
-        let source = relative_path(
-            &fs::canonicalize(&identity_dir)
-                .map_err(|err| format!("failed to resolve {}: {err}", identity_dir.display()))?,
-            &fs::canonicalize(eml_path)
-                .map_err(|err| format!("failed to resolve {}: {err}", eml_path.display()))?,
-        );
-
-        let frontmatter = render_frontmatter(
-            &format_address(from_addr),
-            &format_address(to_addr),
-            subject,
-            &date.to_rfc3339(),
-            &tags,
-            &attachment_relpaths,
-            &source.to_string_lossy(),
-        );
-
-        let md_path = unique_path(&identity_dir.join(format!("{stem}.md")));
-        fs::write(&md_path, format!("{frontmatter}\n{body}"))
-            .map_err(|err| format!("failed to write {}: {err}", md_path.display()))?;
-        summary.messages += 1;
+    let mut attachment_paths = Vec::new();
+    let mut attachment_relpaths = Vec::new();
+    for part in message.attachments() {
+        let original_name = part.attachment_name().unwrap_or("attachment");
+        let attachment_path = unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
+        fs::write(&attachment_path, part.contents())
+            .map_err(|err| format!("failed to write {}: {err}", attachment_path.display()))?;
+        attachment_relpaths.push(format!(
+            "attachments/{}",
+            attachment_path.file_name().unwrap().to_string_lossy()
+        ));
+        attachment_paths.push(attachment_path);
     }
 
-    Ok(summary)
+    let mut tags = vec![
+        mailbox_tag(eml_path, input_root),
+        format!("identity/{}", identity.alias),
+        format!("year/{}", date.year),
+    ];
+    if let Some(domain_tag) = sender_domain_tag(from_addr.and_then(|addr| addr.address.as_deref()))
+    {
+        tags.push(domain_tag);
+    }
+
+    let frontmatter = render_frontmatter(
+        &format_address(from_addr),
+        &format_address(to_addr),
+        subject,
+        &date.to_rfc3339(),
+        &tags,
+        &attachment_relpaths,
+        uid,
+    );
+
+    let md_path = unique_path(&identity_dir.join(format!("{stem}.md")));
+    fs::write(&md_path, format!("{frontmatter}\n{body}"))
+        .map_err(|err| format!("failed to write {}: {err}", md_path.display()))?;
+
+    Ok(Some(TransformedMessage {
+        md_path,
+        attachment_paths,
+    }))
+}
+
+/// Structural check that `transform_one`'s output is complete: the `.md`
+/// file exists, is non-empty, and starts with the frontmatter delimiter;
+/// every attachment path it wrote exists with nonzero size. Used by `sync`
+/// (ADR-0007) to decide whether it's safe to delete the source `.eml`.
+pub(crate) fn verify_transformed(transformed: &TransformedMessage) -> bool {
+    let Ok(contents) = fs::read(&transformed.md_path) else {
+        return false;
+    };
+    if contents.is_empty() || !contents.starts_with(b"---") {
+        return false;
+    }
+    transformed
+        .attachment_paths
+        .iter()
+        .all(|path| fs::metadata(path).is_ok_and(|meta| meta.len() > 0))
 }
 
 fn format_address(addr: Option<&Addr>) -> String {
@@ -200,7 +257,7 @@ fn render_frontmatter(
     date_rfc3339: &str,
     tags: &[String],
     attachments: &[String],
-    source: &str,
+    uid: u32,
 ) -> String {
     let mut out = String::from("---\n");
     out.push_str(&format!("from: {}\n", yaml_quote(from)));
@@ -217,7 +274,7 @@ fn render_frontmatter(
             out.push_str(&format!("  - {attachment}\n"));
         }
     }
-    out.push_str(&format!("source: {}\n", yaml_quote(source)));
+    out.push_str(&format!("uid: {uid}\n"));
     out.push_str("---\n");
     out
 }
@@ -247,30 +304,6 @@ fn unique_path(desired: &Path) -> PathBuf {
         }
         n += 1;
     }
-}
-
-/// A relative path from `from_dir` to `to_path`, both assumed absolute
-/// (e.g. from `fs::canonicalize`). Used for the frontmatter `source` field
-/// so it stays correct regardless of `--input`/`--output` being relative,
-/// absolute, or on unrelated trees.
-fn relative_path(from_dir: &Path, to_path: &Path) -> PathBuf {
-    let from_components: Vec<_> = from_dir.components().collect();
-    let to_components: Vec<_> = to_path.components().collect();
-
-    let common_len = from_components
-        .iter()
-        .zip(to_components.iter())
-        .take_while(|(a, b)| a == b)
-        .count();
-
-    let mut result = PathBuf::new();
-    for _ in common_len..from_components.len() {
-        result.push("..");
-    }
-    for component in &to_components[common_len..] {
-        result.push(component.as_os_str());
-    }
-    result
 }
 
 #[cfg(test)]
@@ -339,17 +372,6 @@ mod tests {
     }
 
     #[test]
-    fn relative_path_computes_common_ancestor_diff() {
-        assert_eq!(
-            relative_path(
-                Path::new("/tmp/output/jane-doe"),
-                Path::new("/tmp/sunk/inbox/1.eml")
-            ),
-            PathBuf::from("../../sunk/inbox/1.eml")
-        );
-    }
-
-    #[test]
     fn render_frontmatter_matches_expected_shape() {
         let out = render_frontmatter(
             "Jane Doe <jane.doe@example.com>",
@@ -361,7 +383,7 @@ mod tests {
                 "identity/first-last".to_string(),
             ],
             &["attachments/2024-01-26-hello-world-bingo.pdf".to_string()],
-            "../sunk/inbox/482.eml",
+            482,
         );
         assert_eq!(
             out,
@@ -375,8 +397,46 @@ mod tests {
              \x20\x20- identity/first-last\n\
              attachments:\n\
              \x20\x20- attachments/2024-01-26-hello-world-bingo.pdf\n\
-             source: \"../sunk/inbox/482.eml\"\n\
+             uid: 482\n\
              ---\n"
         );
+    }
+
+    #[test]
+    fn verify_transformed_true_for_valid_output() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("2024-01-26-hello.md");
+        fs::write(&md_path, "---\nfrom: \"a\"\n---\nbody").unwrap();
+        let attachment_path = dir.path().join("attachments").join("a.pdf");
+        fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
+        fs::write(&attachment_path, b"content").unwrap();
+
+        assert!(verify_transformed(&TransformedMessage {
+            md_path,
+            attachment_paths: vec![attachment_path],
+        }));
+    }
+
+    #[test]
+    fn verify_transformed_false_when_md_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("does-not-exist.md");
+
+        assert!(!verify_transformed(&TransformedMessage {
+            md_path,
+            attachment_paths: vec![],
+        }));
+    }
+
+    #[test]
+    fn verify_transformed_false_when_attachment_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let md_path = dir.path().join("2024-01-26-hello.md");
+        fs::write(&md_path, "---\nfrom: \"a\"\n---\nbody").unwrap();
+
+        assert!(!verify_transformed(&TransformedMessage {
+            md_path,
+            attachment_paths: vec![dir.path().join("attachments").join("missing.pdf")],
+        }));
     }
 }

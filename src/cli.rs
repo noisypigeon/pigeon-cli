@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 
 use crate::provider::Provider;
 
@@ -56,29 +56,37 @@ pub enum EmailCommands {
     /// List all locally authenticated email identities
     ListIdentities,
 
-    /// Sink (download) all emails and attachments for an authenticated identity
-    Sink {
-        /// Alias of the identity to sink, as registered via `authenticate`.
+    /// Download and transform all mail for an authenticated identity in one step
+    Sync {
+        /// Alias of the identity to sync, as registered via `authenticate`.
         /// Interactively selected from the authenticated identities when omitted.
         alias: Option<String>,
 
-        /// Destination directory for sunk emails and attachments
+        /// Staging directory for raw .eml files. Transient by default: each
+        /// message is deleted once its transform is verified. Only persists
+        /// when --debug sink is used and the default flow is never run
+        /// against it afterward.
         #[arg(long)]
-        directory: PathBuf,
-    },
-
-    /// Transform sunk EML files into normalized Markdown with frontmatter
-    Transform {
-        /// Alias of the identity to transform, as registered via `authenticate`.
-        /// Interactively selected from the authenticated identities when omitted.
-        alias: Option<String>,
-
-        /// Source directory containing sunk email data (from `sink`)
-        #[arg(long)]
-        input: PathBuf,
+        staging_dir: PathBuf,
 
         /// Destination directory for transformed Markdown output
         #[arg(long)]
-        output: PathBuf,
+        output_dir: PathBuf,
+
+        /// Run only one phase, exactly as it behaved standalone before this
+        /// command existed: "sink" fetches without transforming; "transform"
+        /// transforms without fetching. Both are non-destructive (never
+        /// delete the source .eml).
+        #[arg(long)]
+        debug: Option<DebugPhase>,
     },
+}
+
+/// A single phase of `sync`, run in isolation via `--debug`.
+#[derive(Copy, Clone, Debug, ValueEnum)]
+pub enum DebugPhase {
+    /// Fetch-only: write raw .eml files, never transform or delete them.
+    Sink,
+    /// Transform-only: read existing .eml files, never fetch or delete them.
+    Transform,
 }
