@@ -4,6 +4,9 @@ rust = "1.92.0"
 [tasks.build]
 run = "cargo build"
 
+[tasks.pigeon]
+run = "cargo run --"
+
 [tasks.test]
 run = "cargo test"
 

@@ -6,8 +6,17 @@ rust-version = "1.92"
 description = "Pigeon: authenticate, sink, and transform personal data from external services."
 
 [dependencies]
+async-imap = { version = "0.11.3", default-features = false, features = ["runtime-tokio"] }
+async-native-tls = { version = "0.6.0", default-features = false, features = ["runtime-tokio"] }
 clap = { version = "4", features = ["derive", "cargo"] }
+dialoguer = "0.12.0"
+directories = "6.0.0"
+keyring = "4.2.0"
+serde = { version = "1.0.229", features = ["derive"] }
+tokio = { version = "1.53.1", features = ["rt", "net", "macros"] }
+toml = "1.1.6"
 
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
+tempfile = "3.27.0"

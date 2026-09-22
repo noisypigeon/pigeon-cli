@@ -1,8 +1,17 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
+use tempfile::TempDir;
 
 fn pigeon() -> Command {
     Command::cargo_bin("pigeon").unwrap()
+}
+
+/// A `pigeon` invocation isolated to a throwaway `PIGEON_CONFIG_DIR`, so
+/// tests never read or write the developer's real identity metadata file.
+fn pigeon_in(config_dir: &TempDir) -> Command {
+    let mut cmd = pigeon();
+    cmd.env("PIGEON_CONFIG_DIR", config_dir.path());
+    cmd
 }
 
 #[test]
@@ -27,29 +36,77 @@ fn email_help_lists_all_four_subcommands() {
 }
 
 #[test]
-fn authenticate_is_not_yet_implemented() {
+fn authenticate_help_lists_provider_and_custom_host_flags() {
     pigeon()
+        .args(["email", "authenticate", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--provider"))
+        .stdout(predicate::str::contains("--host"))
+        .stdout(predicate::str::contains("--port"));
+}
+
+#[test]
+fn list_identities_on_empty_store_says_so() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["email", "list-identities"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No identities configured."));
+}
+
+#[test]
+fn authenticate_custom_provider_without_host_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "authenticate",
+            "first.last@example.com",
+            "--provider",
+            "custom",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("--host is required"));
+}
+
+#[test]
+fn authenticate_failure_does_not_persist_an_identity() {
+    let config_dir = TempDir::new().unwrap();
+
+    // Nothing listens on 127.0.0.1:1 (a privileged, unassigned port), so
+    // this deterministically fails at the connection step without ever
+    // reaching a real IMAP server or the OS keychain.
+    pigeon_in(&config_dir)
         .args([
             "email",
             "authenticate",
             "first.last@example.com",
             "--alias",
             "first-last",
+            "--provider",
+            "custom",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "1",
         ])
+        .write_stdin("fake-secret\n")
         .assert()
         .failure()
         .code(1)
-        .stdout(predicate::str::contains("Not Yet Implemented"));
-}
+        .stderr(predicate::str::contains("failed to connect"));
 
-#[test]
-fn list_identities_is_not_yet_implemented() {
-    pigeon()
+    pigeon_in(&config_dir)
         .args(["email", "list-identities"])
         .assert()
-        .failure()
-        .code(1)
-        .stdout(predicate::str::contains("Not Yet Implemented"));
+        .success()
+        .stdout(predicate::str::contains("No identities configured."));
 }
 
 #[test]
