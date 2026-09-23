@@ -248,8 +248,13 @@ fn sync(
             match crate::email::transform::run(identity, &staging_dir, &output_dir) {
                 Ok(summary) => {
                     println!(
-                        "Transformed {} identity: {} message(s), {} attachment(s), {} skipped.",
-                        identity.alias, summary.messages, summary.attachments, summary.skipped
+                        "Transformed {} identity: {} message(s), {} attachment(s), {} skipped, {} message(s) merged, {} attachment(s) deduped.",
+                        identity.alias,
+                        summary.messages,
+                        summary.attachments,
+                        summary.skipped,
+                        summary.merged_messages,
+                        summary.deduped_attachments
                     );
                     0
                 }
@@ -273,7 +278,7 @@ fn sync(
             ) {
                 Ok(summary) => {
                     println!(
-                        "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed, {} uploaded, {} unchanged, {} upload failed.",
+                        "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed, {} uploaded, {} unchanged, {} upload failed, {} message(s) merged, {} attachment(s) deduped.",
                         identity.alias,
                         summary.mailboxes,
                         summary.synced,
@@ -281,7 +286,9 @@ fn sync(
                         summary.failed,
                         summary.uploaded,
                         summary.unchanged,
-                        summary.upload_failed
+                        summary.upload_failed,
+                        summary.merged_messages,
+                        summary.deduped_attachments
                     );
                     0
                 }

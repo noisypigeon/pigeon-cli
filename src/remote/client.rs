@@ -24,13 +24,6 @@ pub(crate) enum UploadOutcome {
     Unchanged,
 }
 
-fn runtime() -> Result<tokio::runtime::Runtime, String> {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|err| format!("failed to start async runtime: {err}"))
-}
-
 fn build_client(remote: &Remote, secret_key: &str) -> Result<MinioClient, String> {
     let base_url: BaseUrl = remote
         .endpoint
@@ -60,109 +53,104 @@ fn format_error(err: &S3Error) -> String {
 
 /// Lists every bucket reachable with `remote`'s credentials (ADR-0009's
 /// `list-buckets`).
-pub(crate) fn list_buckets(remote: &Remote, secret_key: &str) -> Result<Vec<String>, String> {
-    runtime()?.block_on(async {
-        let client = build_client(remote, secret_key)?;
-        let resp = client
-            .list_buckets()
-            .build()
-            .send()
-            .await
-            .map_err(|err| format!("failed to list buckets: {}", format_error(&err)))?;
-        let buckets = resp
-            .buckets()
-            .map_err(|err| format!("failed to parse bucket list: {err}"))?;
-        Ok(buckets
-            .into_iter()
-            .map(|bucket| bucket.name.to_string())
-            .collect())
-    })
+pub(crate) async fn list_buckets(remote: &Remote, secret_key: &str) -> Result<Vec<String>, String> {
+    let client = build_client(remote, secret_key)?;
+    let resp = client
+        .list_buckets()
+        .build()
+        .send()
+        .await
+        .map_err(|err| format!("failed to list buckets: {}", format_error(&err)))?;
+    let buckets = resp
+        .buckets()
+        .map_err(|err| format!("failed to parse bucket list: {err}"))?;
+    Ok(buckets
+        .into_iter()
+        .map(|bucket| bucket.name.to_string())
+        .collect())
 }
 
 /// Checks whether `remote.bucket` exists and is reachable with `remote`'s
 /// credentials. Used by `configure`/`edit` to verify before persisting
 /// (ADR-0010) -- a bucket-scoped key that can't call account-level
 /// `ListBuckets` should still be able to answer this.
-pub(crate) fn bucket_exists(remote: &Remote, secret_key: &str) -> Result<bool, String> {
-    runtime()?.block_on(async {
-        let client = build_client(remote, secret_key)?;
-        let resp = client
-            .bucket_exists(remote.bucket.as_str())
-            .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
-            .build()
-            .send()
-            .await
-            .map_err(|err| format!("failed to check bucket: {}", format_error(&err)))?;
-        Ok(resp.exists())
-    })
+pub(crate) async fn bucket_exists(remote: &Remote, secret_key: &str) -> Result<bool, String> {
+    let client = build_client(remote, secret_key)?;
+    let resp = client
+        .bucket_exists(remote.bucket.as_str())
+        .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
+        .build()
+        .send()
+        .await
+        .map_err(|err| format!("failed to check bucket: {}", format_error(&err)))?;
+    Ok(resp.exists())
 }
 
 /// Lists objects under `prefix` in `remote`'s bucket. `recursive` mirrors
 /// `ls` (flat, every object); non-recursive mirrors `lsd` (one level of
 /// `/`-delimited pseudo-directories, `ObjectEntry::is_prefix` marking them).
-pub(crate) fn list_objects(
+pub(crate) async fn list_objects(
     remote: &Remote,
     secret_key: &str,
     prefix: &str,
     recursive: bool,
 ) -> Result<Vec<ObjectEntry>, String> {
-    runtime()?.block_on(async {
-        let client = build_client(remote, secret_key)?;
-        let prefix = Some(prefix.to_string());
-        let list = if recursive {
-            client
-                .list_objects(remote.bucket.as_str())
-                .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
-                .prefix(prefix)
-                .recursive(true)
-                .build()
-        } else {
-            client
-                .list_objects(remote.bucket.as_str())
-                .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
-                .prefix(prefix)
-                .delimiter(Some("/".to_string()))
-                .build()
-        };
+    let client = build_client(remote, secret_key)?;
+    let prefix = Some(prefix.to_string());
+    let list = if recursive {
+        client
+            .list_objects(remote.bucket.as_str())
+            .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
+            .prefix(prefix)
+            .recursive(true)
+            .build()
+    } else {
+        client
+            .list_objects(remote.bucket.as_str())
+            .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
+            .prefix(prefix)
+            .delimiter(Some("/".to_string()))
+            .build()
+    };
 
-        let mut stream = list.to_stream().await;
-        let mut entries = Vec::new();
-        while let Some(page) = stream.next().await {
-            let page =
-                page.map_err(|err| format!("failed to list objects: {}", format_error(&err)))?;
-            for item in page.contents {
-                entries.push(ObjectEntry {
-                    key: item.name,
-                    size: item.size.unwrap_or(0),
-                    is_prefix: item.is_prefix,
-                });
-            }
+    let mut stream = list.to_stream().await;
+    let mut entries = Vec::new();
+    while let Some(page) = stream.next().await {
+        let page = page.map_err(|err| format!("failed to list objects: {}", format_error(&err)))?;
+        for item in page.contents {
+            entries.push(ObjectEntry {
+                key: item.name,
+                size: item.size.unwrap_or(0),
+                is_prefix: item.is_prefix,
+            });
         }
-        Ok(entries)
-    })
+    }
+    Ok(entries)
 }
 
 /// Downloads `key` from `remote`'s bucket into memory. Whole-object,
 /// non-streaming -- fine for the email-archive-sized files this project
 /// deals with; chunked/multipart transfer is future work if that changes.
-pub(crate) fn get_object(remote: &Remote, secret_key: &str, key: &str) -> Result<Vec<u8>, String> {
-    runtime()?.block_on(async {
-        let client = build_client(remote, secret_key)?;
-        let resp = client
-            .get_object(remote.bucket.as_str(), key)
-            .map_err(|err| format!("invalid object key '{key}': {err}"))?
-            .build()
-            .send()
-            .await
-            .map_err(|err| format!("failed to download '{key}': {}", format_error(&err)))?;
-        let content = resp
-            .content()
-            .map_err(|err| format!("failed to read '{key}': {err}"))?
-            .to_segmented_bytes()
-            .await
-            .map_err(|err| format!("failed to read '{key}': {err}"))?;
-        Ok(content.to_bytes().to_vec())
-    })
+pub(crate) async fn get_object(
+    remote: &Remote,
+    secret_key: &str,
+    key: &str,
+) -> Result<Vec<u8>, String> {
+    let client = build_client(remote, secret_key)?;
+    let resp = client
+        .get_object(remote.bucket.as_str(), key)
+        .map_err(|err| format!("invalid object key '{key}': {err}"))?
+        .build()
+        .send()
+        .await
+        .map_err(|err| format!("failed to download '{key}': {}", format_error(&err)))?;
+    let content = resp
+        .content()
+        .map_err(|err| format!("failed to read '{key}': {err}"))?
+        .to_segmented_bytes()
+        .await
+        .map_err(|err| format!("failed to read '{key}': {err}"))?;
+    Ok(content.to_bytes().to_vec())
 }
 
 /// Uploads `data` to `key` in `remote`'s bucket, but only if it differs from
@@ -175,54 +163,52 @@ pub(crate) fn get_object(remote: &Remote, secret_key: &str, key: &str) -> Result
 /// - existing object, different hash: note that the key changed (the bucket's
 ///   versioning means nothing is destroyed, but pigeon says so rather than
 ///   silently overwriting a stable-looking key), then upload, `Uploaded`.
-pub(crate) fn upload_if_changed(
+pub(crate) async fn upload_if_changed(
     remote: &Remote,
     secret_key: &str,
     key: &str,
     data: Vec<u8>,
 ) -> Result<UploadOutcome, String> {
-    runtime()?.block_on(async {
-        let client = build_client(remote, secret_key)?;
+    let client = build_client(remote, secret_key)?;
 
-        let existing_etag = match client
-            .stat_object(remote.bucket.as_str(), key)
-            .map_err(|err| format!("invalid object key '{key}': {err}"))?
-            .build()
-            .send()
-            .await
+    let existing_etag = match client
+        .stat_object(remote.bucket.as_str(), key)
+        .map_err(|err| format!("invalid object key '{key}': {err}"))?
+        .build()
+        .send()
+        .await
+    {
+        Ok(resp) => Some(
+            resp.etag()
+                .map_err(|err| format!("failed to read ETag for '{key}': {err}"))?
+                .to_string(),
+        ),
+        Err(S3Error::S3Server(S3ServerError::S3Error(ref response)))
+            if response.code() == MinioErrorCode::NoSuchKey =>
         {
-            Ok(resp) => Some(
-                resp.etag()
-                    .map_err(|err| format!("failed to read ETag for '{key}': {err}"))?
-                    .to_string(),
-            ),
-            Err(S3Error::S3Server(S3ServerError::S3Error(ref response)))
-                if response.code() == MinioErrorCode::NoSuchKey =>
-            {
-                None
-            }
-            Err(err) => {
-                return Err(format!("failed to check '{key}': {}", format_error(&err)));
-            }
-        };
-
-        let local_hash = format!("{:x}", md5::compute(&data));
-
-        if let Some(existing) = existing_etag {
-            if existing == local_hash {
-                return Ok(UploadOutcome::Unchanged);
-            }
-            println!("note: '{key}' changed since last upload, new version created");
+            None
         }
+        Err(err) => {
+            return Err(format!("failed to check '{key}': {}", format_error(&err)));
+        }
+    };
 
-        let bytes = SegmentedBytes::from(Bytes::from(data));
-        client
-            .put_object(remote.bucket.as_str(), key, bytes)
-            .map_err(|err| format!("invalid object key '{key}': {err}"))?
-            .build()
-            .send()
-            .await
-            .map_err(|err| format!("failed to upload '{key}': {}", format_error(&err)))?;
-        Ok(UploadOutcome::Uploaded)
-    })
+    let local_hash = format!("{:x}", md5::compute(&data));
+
+    if let Some(existing) = existing_etag {
+        if existing == local_hash {
+            return Ok(UploadOutcome::Unchanged);
+        }
+        println!("note: '{key}' changed since last upload, new version created");
+    }
+
+    let bytes = SegmentedBytes::from(Bytes::from(data));
+    client
+        .put_object(remote.bucket.as_str(), key, bytes)
+        .map_err(|err| format!("invalid object key '{key}': {err}"))?
+        .build()
+        .send()
+        .await
+        .map_err(|err| format!("failed to upload '{key}': {}", format_error(&err)))?;
+    Ok(UploadOutcome::Uploaded)
 }

@@ -11,19 +11,30 @@ use crate::remote::store::{Remote, Store};
 use crate::remote::{client, credentials};
 
 pub fn dispatch(command: RemoteCommands) -> i32 {
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => return fail(format!("failed to start async runtime: {err}")),
+    };
+    runtime.block_on(dispatch_async(command))
+}
+
+async fn dispatch_async(command: RemoteCommands) -> i32 {
     match command {
-        RemoteCommands::Configure { alias } => configure(alias),
+        RemoteCommands::Configure { alias } => configure(alias).await,
         RemoteCommands::List => list_remotes(),
-        RemoteCommands::Edit { alias } => edit(alias),
+        RemoteCommands::Edit { alias } => edit(alias).await,
         RemoteCommands::Remove { alias } => remove(alias),
-        RemoteCommands::ListBuckets { alias } => list_buckets(alias),
-        RemoteCommands::Ls { location } => list(location, true),
-        RemoteCommands::Lsd { location } => list(location, false),
-        RemoteCommands::Copy { source, dest } => copy(source, dest),
+        RemoteCommands::ListBuckets { alias } => list_buckets(alias).await,
+        RemoteCommands::Ls { location } => list(location, true).await,
+        RemoteCommands::Lsd { location } => list(location, false).await,
+        RemoteCommands::Copy { source, dest } => copy(source, dest).await,
     }
 }
 
-fn configure(alias: Option<String>) -> i32 {
+async fn configure(alias: Option<String>) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -80,7 +91,7 @@ fn configure(alias: Option<String>) -> i32 {
         access_key_id,
     };
 
-    match client::bucket_exists(&candidate, &secret_key) {
+    match client::bucket_exists(&candidate, &secret_key).await {
         Ok(true) => {}
         Ok(false) => return fail(format!("bucket '{}' does not exist", candidate.bucket)),
         Err(err) => return fail(format!("failed to verify bucket: {err}")),
@@ -170,7 +181,7 @@ fn list_remotes() -> i32 {
     0
 }
 
-fn edit(alias: Option<String>) -> i32 {
+async fn edit(alias: Option<String>) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -234,7 +245,7 @@ fn edit(alias: Option<String>) -> i32 {
         access_key_id,
     };
 
-    match client::bucket_exists(&candidate, &secret_key) {
+    match client::bucket_exists(&candidate, &secret_key).await {
         Ok(true) => {}
         Ok(false) => return fail(format!("bucket '{}' does not exist", candidate.bucket)),
         Err(err) => return fail(format!("failed to verify bucket: {err}")),
@@ -302,7 +313,7 @@ fn resolve_existing_alias(store: &Store, alias: Option<String>) -> Result<String
     }
 }
 
-fn list_buckets(alias: Option<String>) -> i32 {
+async fn list_buckets(alias: Option<String>) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -328,7 +339,7 @@ fn list_buckets(alias: Option<String>) -> i32 {
         Err(err) => return fail(err),
     };
 
-    match client::list_buckets(remote, &secret) {
+    match client::list_buckets(remote, &secret).await {
         Ok(buckets) if buckets.is_empty() => {
             println!("No buckets found.");
             0
@@ -343,7 +354,7 @@ fn list_buckets(alias: Option<String>) -> i32 {
     }
 }
 
-fn list(location_arg: String, recursive: bool) -> i32 {
+async fn list(location_arg: String, recursive: bool) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -368,7 +379,7 @@ fn list(location_arg: String, recursive: bool) -> i32 {
         Err(err) => return fail(err),
     };
 
-    match client::list_objects(remote, &secret, &prefix, recursive) {
+    match client::list_objects(remote, &secret, &prefix, recursive).await {
         Ok(entries) => {
             for entry in entries {
                 if entry.is_prefix {
@@ -383,7 +394,7 @@ fn list(location_arg: String, recursive: bool) -> i32 {
     }
 }
 
-fn copy(source: String, dest: String) -> i32 {
+async fn copy(source: String, dest: String) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -403,14 +414,14 @@ fn copy(source: String, dest: String) -> i32 {
                 alias,
                 path: remote_path,
             },
-        ) => upload(&store, &local, &alias, &remote_path),
+        ) => upload(&store, &local, &alias, &remote_path).await,
         (
             Location::Remote {
                 alias,
                 path: remote_path,
             },
             Location::Local(local),
-        ) => download(&store, &alias, &remote_path, &local),
+        ) => download(&store, &alias, &remote_path, &local).await,
         (Location::Remote { .. }, Location::Remote { .. }) => {
             fail("remote-to-remote copy is not supported")
         }
@@ -420,7 +431,7 @@ fn copy(source: String, dest: String) -> i32 {
     }
 }
 
-fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) -> i32 {
+async fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) -> i32 {
     let remote = match store.find(remote_alias) {
         Some(remote) => remote,
         None => return fail(format!("no remote named '{remote_alias}'")),
@@ -450,7 +461,7 @@ fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) ->
             Ok(data) => data,
             Err(err) => return fail(format!("failed to read {}: {err}", file.display())),
         };
-        match client::upload_if_changed(remote, &secret, &key, data) {
+        match client::upload_if_changed(remote, &secret, &key, data).await {
             Ok(client::UploadOutcome::Uploaded) => uploaded += 1,
             Ok(client::UploadOutcome::Unchanged) => unchanged += 1,
             Err(err) => return fail(err),
@@ -462,7 +473,7 @@ fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) ->
     0
 }
 
-fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &Path) -> i32 {
+async fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &Path) -> i32 {
     let remote = match store.find(remote_alias) {
         Some(remote) => remote,
         None => return fail(format!("no remote named '{remote_alias}'")),
@@ -472,7 +483,7 @@ fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &Path) 
         Err(err) => return fail(err),
     };
 
-    let entries = match client::list_objects(remote, &secret, remote_path, true) {
+    let entries = match client::list_objects(remote, &secret, remote_path, true).await {
         Ok(entries) => entries,
         Err(err) => return fail(err),
     };
@@ -485,7 +496,7 @@ fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &Path) 
 
     let mut count = 0;
     for entry in &entries {
-        let data = match client::get_object(remote, &secret, &entry.key) {
+        let data = match client::get_object(remote, &secret, &entry.key).await {
             Ok(data) => data,
             Err(err) => return fail(err),
         };

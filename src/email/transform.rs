@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use mail_parser::{Addr, DateTime, MessageParser, MimeHeaders};
 
+use crate::email::dedup::{self, ContentIndex};
 use crate::email::identity::{self, Identity};
 
 /// Summary of a completed `transform` run.
@@ -11,14 +12,41 @@ pub struct TransformSummary {
     pub messages: usize,
     pub attachments: usize,
     pub skipped: usize,
+    pub merged_messages: usize,
+    pub deduped_attachments: usize,
 }
 
 /// The artifacts a successful `transform_one` call wrote, needed by
 /// `verify_transformed` (and, per ADR-0007, by `sync`'s verify-then-delete
-/// step).
+/// step), plus ADR-0012's dedup bookkeeping.
 pub(crate) struct TransformedMessage {
     pub md_path: PathBuf,
+    /// Every attachment this message references -- both freshly written
+    /// ones and ones deduped against an existing canonical file. Kept
+    /// together (not split by new/reused) so `verify_transformed` and
+    /// `sync`'s upload logic (ADR-0011) need no changes: a reused path
+    /// already exists on disk, and its upload naturally reports unchanged.
     pub attachment_paths: Vec<PathBuf>,
+    /// True if this call merged a duplicate whole message into an existing
+    /// canonical file rather than writing anything new (ADR-0012).
+    pub merged: bool,
+    /// True only when `merged` and the canonical file's frontmatter was
+    /// actually rewritten (a new mailbox/uid combination). False for a
+    /// fresh (non-merged) message, and false for an idempotent replay of an
+    /// already-recorded duplicate.
+    pub canonical_frontmatter_changed: bool,
+    /// Count of this message's attachments that hit the attachment-hash
+    /// index instead of being freshly written.
+    pub attachments_deduped: usize,
+    /// `(hash, identity-dir-relative path)` for this message's own raw
+    /// bytes, for the caller to commit to the message-hash index if this
+    /// result is accepted (e.g. after verification passes). `None` for a
+    /// merge -- there's nothing new to record.
+    pub pending_message_hash: Option<(String, String)>,
+    /// `(hash, identity-dir-relative path)` pairs for newly written (not
+    /// deduped) attachments, for the caller to commit to the
+    /// attachment-hash index if this result is accepted.
+    pub pending_attachment_hashes: Vec<(String, String)>,
 }
 
 /// Parses every `.eml` file under `input` (as produced by `sink`, per
@@ -32,13 +60,38 @@ pub(crate) struct TransformedMessage {
 pub fn run(identity: &Identity, input: &Path, output: &Path) -> Result<TransformSummary, String> {
     let eml_files = find_eml_files(input)?;
 
+    let mut message_index = ContentIndex::load(input, ContentIndex::MESSAGE_HASHES)?;
+    let mut attachment_index = ContentIndex::load(input, ContentIndex::ATTACHMENT_HASHES)?;
+
     let mut summary = TransformSummary::default();
 
     for eml_path in &eml_files {
-        match transform_one(identity, eml_path, input, output)? {
+        match transform_one(
+            identity,
+            eml_path,
+            input,
+            output,
+            &message_index,
+            &attachment_index,
+        )? {
             Some(transformed) => {
-                summary.messages += 1;
-                summary.attachments += transformed.attachment_paths.len();
+                // No verify gate in this mode (ADR-0007), so a successful
+                // write's dedup entries are committed immediately.
+                if let Some((hash, relpath)) = &transformed.pending_message_hash {
+                    message_index.commit(input, hash, relpath)?;
+                }
+                for (hash, relpath) in &transformed.pending_attachment_hashes {
+                    attachment_index.commit(input, hash, relpath)?;
+                }
+
+                if transformed.merged {
+                    summary.merged_messages += 1;
+                } else {
+                    summary.messages += 1;
+                }
+                summary.attachments +=
+                    transformed.attachment_paths.len() - transformed.attachments_deduped;
+                summary.deduped_attachments += transformed.attachments_deduped;
             }
             None => summary.skipped += 1,
         }
@@ -60,6 +113,8 @@ pub(crate) fn transform_one(
     eml_path: &Path,
     input_root: &Path,
     output: &Path,
+    message_index: &ContentIndex,
+    attachment_index: &ContentIndex,
 ) -> Result<Option<TransformedMessage>, String> {
     let Some(uid) = eml_path
         .file_stem()
@@ -81,6 +136,8 @@ pub(crate) fn transform_one(
         }
     };
 
+    let message_hash = format!("{:x}", md5::compute(&bytes));
+
     let Some(message) = MessageParser::default().parse(&bytes) else {
         eprintln!("Warning: failed to parse {}, skipping", eml_path.display());
         return Ok(None);
@@ -94,7 +151,35 @@ pub(crate) fn transform_one(
         return Ok(None);
     };
 
+    let mailbox = mailbox_tag(eml_path, input_root);
     let identity_dir = output.join(identity::sanitize_segment(&identity.email));
+
+    // ADR-0012: the exact same physical message exposed at a second
+    // (mailbox, uid) pair (e.g. a provider exposing one message through
+    // more than one mailbox) gets merged into the already-canonical `.md`
+    // instead of writing a duplicate file.
+    if let Some(canonical_relpath) = message_index.check(&message_hash) {
+        let canonical_md_path = identity_dir.join(canonical_relpath);
+        return match dedup::amend_frontmatter_for_duplicate(&canonical_md_path, &mailbox, uid) {
+            Ok(changed) => Ok(Some(TransformedMessage {
+                md_path: canonical_md_path,
+                attachment_paths: Vec::new(),
+                merged: true,
+                canonical_frontmatter_changed: changed,
+                attachments_deduped: 0,
+                pending_message_hash: None,
+                pending_attachment_hashes: Vec::new(),
+            })),
+            Err(err) => {
+                eprintln!(
+                    "Warning: canonical file for duplicate {} is missing or malformed: {err}, skipping",
+                    eml_path.display()
+                );
+                Ok(None)
+            }
+        };
+    }
+
     let attachments_dir = identity_dir.join("attachments");
     fs::create_dir_all(&attachments_dir)
         .map_err(|err| format!("failed to create {}: {err}", attachments_dir.display()))?;
@@ -121,20 +206,52 @@ pub(crate) fn transform_one(
 
     let mut attachment_paths = Vec::new();
     let mut attachment_relpaths = Vec::new();
+    let mut pending_attachment_hashes: Vec<(String, String)> = Vec::new();
+    let mut attachments_deduped = 0usize;
     for part in message.attachments() {
-        let original_name = part.attachment_name().unwrap_or("attachment");
-        let attachment_path = unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
-        fs::write(&attachment_path, part.contents())
-            .map_err(|err| format!("failed to write {}: {err}", attachment_path.display()))?;
-        attachment_relpaths.push(format!(
-            "attachments/{}",
-            attachment_path.file_name().unwrap().to_string_lossy()
-        ));
-        attachment_paths.push(attachment_path);
+        let contents = part.contents();
+        let hash = format!("{:x}", md5::compute(contents));
+
+        // ADR-0012: check both the durable index and this message's own
+        // not-yet-committed attachments, so two identical attachments
+        // within the same message dedupe against each other too.
+        let existing = attachment_index
+            .check(&hash)
+            .map(str::to_string)
+            .or_else(|| {
+                pending_attachment_hashes
+                    .iter()
+                    .find(|(existing_hash, _)| existing_hash == &hash)
+                    .map(|(_, relpath)| relpath.clone())
+            });
+
+        let relpath = match existing {
+            Some(relpath) => {
+                attachments_deduped += 1;
+                attachment_paths.push(identity_dir.join(&relpath));
+                relpath
+            }
+            None => {
+                let original_name = part.attachment_name().unwrap_or("attachment");
+                let attachment_path =
+                    unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
+                fs::write(&attachment_path, contents).map_err(|err| {
+                    format!("failed to write {}: {err}", attachment_path.display())
+                })?;
+                let relpath = format!(
+                    "attachments/{}",
+                    attachment_path.file_name().unwrap().to_string_lossy()
+                );
+                attachment_paths.push(attachment_path);
+                pending_attachment_hashes.push((hash, relpath.clone()));
+                relpath
+            }
+        };
+        attachment_relpaths.push(relpath);
     }
 
     let mut tags = vec![
-        mailbox_tag(eml_path, input_root),
+        mailbox,
         format!("identity/{}", identity.alias),
         format!("year/{}", date.year),
     ];
@@ -157,9 +274,19 @@ pub(crate) fn transform_one(
     fs::write(&md_path, format!("{frontmatter}\n{body}"))
         .map_err(|err| format!("failed to write {}: {err}", md_path.display()))?;
 
+    let pending_message_hash = Some((
+        message_hash,
+        md_path.file_name().unwrap().to_string_lossy().into_owned(),
+    ));
+
     Ok(Some(TransformedMessage {
         md_path,
         attachment_paths,
+        merged: false,
+        canonical_frontmatter_changed: false,
+        attachments_deduped,
+        pending_message_hash,
+        pending_attachment_hashes,
     }))
 }
 
@@ -402,6 +529,21 @@ mod tests {
         );
     }
 
+    /// Builds a `TransformedMessage` for `verify_transformed` tests, which
+    /// only care about `md_path`/`attachment_paths` -- the ADR-0012 dedup
+    /// bookkeeping fields are irrelevant there.
+    fn dummy_transformed(md_path: PathBuf, attachment_paths: Vec<PathBuf>) -> TransformedMessage {
+        TransformedMessage {
+            md_path,
+            attachment_paths,
+            merged: false,
+            canonical_frontmatter_changed: false,
+            attachments_deduped: 0,
+            pending_message_hash: None,
+            pending_attachment_hashes: Vec::new(),
+        }
+    }
+
     #[test]
     fn verify_transformed_true_for_valid_output() {
         let dir = tempfile::tempdir().unwrap();
@@ -411,10 +553,10 @@ mod tests {
         fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
         fs::write(&attachment_path, b"content").unwrap();
 
-        assert!(verify_transformed(&TransformedMessage {
+        assert!(verify_transformed(&dummy_transformed(
             md_path,
-            attachment_paths: vec![attachment_path],
-        }));
+            vec![attachment_path]
+        )));
     }
 
     #[test]
@@ -422,10 +564,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let md_path = dir.path().join("does-not-exist.md");
 
-        assert!(!verify_transformed(&TransformedMessage {
-            md_path,
-            attachment_paths: vec![],
-        }));
+        assert!(!verify_transformed(&dummy_transformed(md_path, vec![])));
     }
 
     #[test]
@@ -434,9 +573,202 @@ mod tests {
         let md_path = dir.path().join("2024-01-26-hello.md");
         fs::write(&md_path, "---\nfrom: \"a\"\n---\nbody").unwrap();
 
-        assert!(!verify_transformed(&TransformedMessage {
+        assert!(!verify_transformed(&dummy_transformed(
             md_path,
-            attachment_paths: vec![dir.path().join("attachments").join("missing.pdf")],
-        }));
+            vec![dir.path().join("attachments").join("missing.pdf")]
+        )));
+    }
+
+    #[test]
+    fn verify_transformed_true_for_merged_message_with_no_own_attachments() {
+        let dir = tempfile::tempdir().unwrap();
+        let canonical_path = dir.path().join("2024-01-26-hello.md");
+        fs::write(&canonical_path, "---\nfrom: \"a\"\n---\nbody").unwrap();
+
+        let mut transformed = dummy_transformed(canonical_path, vec![]);
+        transformed.merged = true;
+        transformed.canonical_frontmatter_changed = true;
+
+        assert!(verify_transformed(&transformed));
+    }
+
+    #[test]
+    fn transform_one_dedupes_repeated_attachment_within_a_run() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let inbox = staging.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+
+        let identity = test_identity();
+        let attachment_body = "JVBERi0xLjQK"; // arbitrary base64 payload, byte-identical across both messages
+
+        fs::write(
+            inbox.join("1.eml"),
+            eml_with_attachment("First", attachment_body),
+        )
+        .unwrap();
+        fs::write(
+            inbox.join("2.eml"),
+            eml_with_attachment("Second", attachment_body),
+        )
+        .unwrap();
+
+        let mut message_index =
+            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let mut attachment_index =
+            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+
+        let first = transform_one(
+            &identity,
+            &inbox.join("1.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+        for (hash, relpath) in &first.pending_attachment_hashes {
+            attachment_index
+                .commit(staging.path(), hash, relpath)
+                .unwrap();
+        }
+        if let Some((hash, relpath)) = &first.pending_message_hash {
+            message_index.commit(staging.path(), hash, relpath).unwrap();
+        }
+
+        let second = transform_one(
+            &identity,
+            &inbox.join("2.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(second.attachments_deduped, 1);
+        assert_eq!(second.attachment_paths, first.attachment_paths);
+
+        let attachments_dir = output
+            .path()
+            .join(identity::sanitize_segment(&identity.email))
+            .join("attachments");
+        assert_eq!(fs::read_dir(&attachments_dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn transform_one_merges_byte_identical_message_across_mailboxes() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let inbox = staging.path().join("inbox");
+        let archive = staging.path().join("archive");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::create_dir_all(&archive).unwrap();
+
+        let identity = test_identity();
+        let raw = plain_text_eml("Hello");
+        fs::write(inbox.join("1.eml"), &raw).unwrap();
+        fs::write(archive.join("2.eml"), &raw).unwrap();
+
+        let mut message_index =
+            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let attachment_index =
+            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+
+        let first = transform_one(
+            &identity,
+            &inbox.join("1.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(!first.merged);
+        if let Some((hash, relpath)) = &first.pending_message_hash {
+            message_index.commit(staging.path(), hash, relpath).unwrap();
+        }
+
+        let second = transform_one(
+            &identity,
+            &archive.join("2.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(second.merged);
+        assert!(second.canonical_frontmatter_changed);
+        assert!(second.attachment_paths.is_empty());
+        assert_eq!(second.md_path, first.md_path);
+
+        let contents = fs::read_to_string(&first.md_path).unwrap();
+        assert!(contents.contains("mailbox/archive"));
+        assert!(contents.contains("also-in:\n  - mailbox/archive#2"));
+
+        // Replaying the exact same duplicate again is idempotent.
+        let third = transform_one(
+            &identity,
+            &archive.join("2.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+        assert!(third.merged);
+        assert!(!third.canonical_frontmatter_changed);
+    }
+
+    fn test_identity() -> Identity {
+        Identity {
+            alias: "first-last".to_string(),
+            email: "first.last@example.com".to_string(),
+            provider: crate::email::provider::Provider::Gmail,
+            host: "imap.gmail.com".to_string(),
+            port: 993,
+        }
+    }
+
+    fn plain_text_eml(subject: &str) -> String {
+        format!(
+            "From: Jane Doe <jane.doe@example.com>\r\n\
+             To: first.last@example.com\r\n\
+             Subject: {subject}\r\n\
+             Date: Fri, 26 Jan 2024 09:15:00 +0000\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             \r\n\
+             Hello there!\r\n"
+        )
+    }
+
+    fn eml_with_attachment(subject: &str, attachment_base64: &str) -> String {
+        format!(
+            "From: Jane Doe <jane.doe@example.com>\r\n\
+             To: first.last@example.com\r\n\
+             Subject: {subject}\r\n\
+             Date: Fri, 26 Jan 2024 09:15:00 +0000\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+             \r\n\
+             --BOUNDARY\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             \r\n\
+             Hello there!\r\n\
+             --BOUNDARY\r\n\
+             Content-Type: application/pdf\r\n\
+             Content-Disposition: attachment; filename=\"a.pdf\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n\
+             {attachment_base64}\r\n\
+             --BOUNDARY--\r\n"
+        )
     }
 }

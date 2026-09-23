@@ -446,6 +446,121 @@ fn sync_debug_transform_converts_an_html_only_message() {
     assert!(contents.contains("uid: 2"));
 }
 
+#[test]
+fn sync_debug_transform_dedupes_identical_attachment_across_two_messages() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    let inbox_dir = staging_dir.path().join("inbox");
+    fs::create_dir_all(&inbox_dir).unwrap();
+
+    let eml = |subject: &str| {
+        format!(
+            "From: Jane Doe <jane.doe@example.com>\r\n\
+             To: first.last@example.com\r\n\
+             Subject: {subject}\r\n\
+             Date: Fri, 26 Jan 2024 09:15:00 +0000\r\n\
+             MIME-Version: 1.0\r\n\
+             Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+             \r\n\
+             --BOUNDARY\r\n\
+             Content-Type: text/plain; charset=utf-8\r\n\
+             \r\n\
+             Hello there!\r\n\
+             --BOUNDARY\r\n\
+             Content-Type: application/pdf\r\n\
+             Content-Disposition: attachment; filename=\"a.pdf\"\r\n\
+             Content-Transfer-Encoding: base64\r\n\
+             \r\n\
+             JVBERi0xLjQK\r\n\
+             --BOUNDARY--\r\n"
+        )
+    };
+    fs::write(inbox_dir.join("1.eml"), eml("First")).unwrap();
+    fs::write(inbox_dir.join("2.eml"), eml("Second")).unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--debug",
+            "transform",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 attachment(s) deduped"));
+
+    let attachments_dir = output_dir
+        .path()
+        .join("first-last-example-com")
+        .join("attachments");
+    assert_eq!(fs::read_dir(&attachments_dir).unwrap().count(), 1);
+}
+
+#[test]
+fn sync_debug_transform_merges_duplicate_whole_message() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    let inbox_dir = staging_dir.path().join("inbox");
+    let archive_dir = staging_dir.path().join("archive");
+    fs::create_dir_all(&inbox_dir).unwrap();
+    fs::create_dir_all(&archive_dir).unwrap();
+
+    let raw = "From: Jane Doe <jane.doe@example.com>\r\n\
+        To: first.last@example.com\r\n\
+        Subject: Hello, World!\r\n\
+        Date: Fri, 26 Jan 2024 09:15:00 +0000\r\n\
+        Content-Type: text/plain; charset=utf-8\r\n\
+        \r\n\
+        Hello there!\r\n";
+    fs::write(inbox_dir.join("1.eml"), raw).unwrap();
+    fs::write(archive_dir.join("2.eml"), raw).unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--debug",
+            "transform",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("1 message(s) merged"));
+
+    let identity_dir = output_dir.path().join("first-last-example-com");
+    let md_files: Vec<_> = fs::read_dir(&identity_dir)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.path().extension().and_then(|ext| ext.to_str()) == Some("md"))
+        .collect();
+    assert_eq!(md_files.len(), 1);
+
+    // `transform::run` visits `.eml` files in sorted-path order, so
+    // "archive/2.eml" (a < i) is processed first and becomes canonical;
+    // "inbox/1.eml" is the duplicate merged into it.
+    let contents = fs::read_to_string(md_files[0].path()).unwrap();
+    assert!(contents.contains("mailbox/inbox"));
+    assert!(contents.contains("also-in:"));
+    assert!(contents.contains("mailbox/inbox#1"));
+}
+
 /// Writes a fake `remotes.toml` directly (no `configure`/keychain needed --
 /// none of these tests reach a real S3 endpoint or the keychain).
 fn write_remote(config_dir: &TempDir, alias: &str) {

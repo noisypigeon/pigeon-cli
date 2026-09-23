@@ -6,6 +6,7 @@ use std::path::Path;
 use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
 
+use crate::email::dedup::ContentIndex;
 use crate::email::identity::Identity;
 use crate::email::imap_client;
 use crate::email::transform::TransformedMessage;
@@ -25,6 +26,8 @@ pub struct SyncSummary {
     pub uploaded: usize,
     pub unchanged: usize,
     pub upload_failed: usize,
+    pub merged_messages: usize,
+    pub deduped_attachments: usize,
 }
 
 /// For every mailbox, for every message not yet in `.processed`: fetch it
@@ -40,7 +43,7 @@ pub fn run(
     output_remote: Option<(&Remote, &str)>,
 ) -> Result<SyncSummary, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+        .enable_all()
         .build()
         .map_err(|err| format!("failed to start async runtime: {err}"))?;
 
@@ -78,6 +81,11 @@ async fn run_async(
         .map_err(|err| format!("failed to list mailboxes: {err}"))?;
 
     let mut summary = SyncSummary::default();
+
+    // ADR-0012: dedup spans every mailbox for this identity, so both
+    // indexes are loaded once up front, not per-mailbox.
+    let mut message_index = ContentIndex::load(staging_dir, ContentIndex::MESSAGE_HASHES)?;
+    let mut attachment_index = ContentIndex::load(staging_dir, ContentIndex::ATTACHMENT_HASHES)?;
 
     for name in &names {
         if name.attributes().contains(&NameAttribute::NoSelect) {
@@ -122,10 +130,31 @@ async fn run_async(
 
         for uid in &pending {
             let eml_path = mailbox_dir.join(format!("{uid}.eml"));
-            match transform::transform_one(identity, &eml_path, staging_dir, output_dir)? {
+            match transform::transform_one(
+                identity,
+                &eml_path,
+                staging_dir,
+                output_dir,
+                &message_index,
+                &attachment_index,
+            )? {
                 Some(transformed) if transform::verify_transformed(&transformed) => {
-                    if let Some((remote, remote_secret)) = output_remote {
-                        match upload_transformed(remote, remote_secret, output_dir, &transformed) {
+                    // ADR-0012: an unverified message's content never
+                    // becomes a dedup target for anything else, so these
+                    // are committed only now that verification has passed.
+                    if let Some((hash, relpath)) = &transformed.pending_message_hash {
+                        message_index.commit(staging_dir, hash, relpath)?;
+                    }
+                    for (hash, relpath) in &transformed.pending_attachment_hashes {
+                        attachment_index.commit(staging_dir, hash, relpath)?;
+                    }
+
+                    if let Some((remote, remote_secret)) = output_remote
+                        && should_reupload_after_merge(&transformed)
+                    {
+                        match upload_transformed(remote, remote_secret, output_dir, &transformed)
+                            .await
+                        {
                             Ok(outcomes) => {
                                 for outcome in outcomes {
                                     match outcome {
@@ -146,7 +175,12 @@ async fn run_async(
                     }
                     let _ = fs::remove_file(&eml_path);
                     append_processed(&mailbox_dir, *uid)?;
-                    summary.synced += 1;
+                    if transformed.merged {
+                        summary.merged_messages += 1;
+                    } else {
+                        summary.synced += 1;
+                    }
+                    summary.deduped_attachments += transformed.attachments_deduped;
                 }
                 Some(_) => {
                     eprintln!(
@@ -220,7 +254,7 @@ fn upload_key(output_dir: &Path, path: &Path) -> Result<String, String> {
 /// `remote`, mirroring `output_dir`'s relative tree at the bucket root. Bails
 /// out (via `?`) on the first failing file, so a message's upload is treated
 /// as atomic -- a partially-uploaded message never gets `.processed`/deleted.
-fn upload_transformed(
+async fn upload_transformed(
     remote: &Remote,
     secret: &str,
     output_dir: &Path,
@@ -231,9 +265,20 @@ fn upload_transformed(
         let key = upload_key(output_dir, path)?;
         let data =
             fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-        outcomes.push(client::upload_if_changed(remote, secret, &key, data)?);
+        outcomes.push(client::upload_if_changed(remote, secret, &key, data).await?);
     }
     Ok(outcomes)
+}
+
+/// Whether a follow-up upload of the canonical `.md` is warranted after this
+/// `transform_one` result (ADR-0012 x ADR-0011): always for a fresh
+/// message, and for a merge only when the canonical file's frontmatter was
+/// actually rewritten -- an idempotent replay of an already-recorded
+/// duplicate leaves the file untouched, so re-uploading it would be a
+/// pointless (if harmless, since `upload_if_changed` would report
+/// `Unchanged`) round trip.
+fn should_reupload_after_merge(transformed: &TransformedMessage) -> bool {
+    !transformed.merged || transformed.canonical_frontmatter_changed
 }
 
 /// Removes the `.processed` marker -- used alongside `sink::clear_eml_files`
@@ -251,6 +296,34 @@ fn clear_processed(mailbox_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    fn transformed(merged: bool, canonical_frontmatter_changed: bool) -> TransformedMessage {
+        TransformedMessage {
+            md_path: PathBuf::from("identity/hello.md"),
+            attachment_paths: Vec::new(),
+            merged,
+            canonical_frontmatter_changed,
+            attachments_deduped: 0,
+            pending_message_hash: None,
+            pending_attachment_hashes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn should_reupload_after_merge_always_true_for_fresh_message() {
+        assert!(should_reupload_after_merge(&transformed(false, false)));
+    }
+
+    #[test]
+    fn should_reupload_after_merge_true_when_merge_changed_canonical() {
+        assert!(should_reupload_after_merge(&transformed(true, true)));
+    }
+
+    #[test]
+    fn should_reupload_after_merge_false_for_idempotent_merge_replay() {
+        assert!(!should_reupload_after_merge(&transformed(true, false)));
+    }
 
     #[test]
     fn read_processed_missing_file_is_empty() {
