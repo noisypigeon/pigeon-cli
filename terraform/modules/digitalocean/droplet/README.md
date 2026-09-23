@@ -15,7 +15,7 @@ A DigitalOcean droplet (`digitalocean_droplet`) with cloud-init provisioning (rc
 | <a name="input_name"></a> [name](#input\_name) | Droplet name suffix | `string` | n/a | yes |
 | <a name="input_namespace"></a> [namespace](#input\_namespace) | Droplet name prefix | `string` | n/a | yes |
 | <a name="input_public_networking"></a> [public\_networking](#input\_public\_networking) | Public networking enabled (true/false) | `bool` | `true` | no |
-| <a name="input_region"></a> [region](#input\_region) | Droplet region | `string` | `"tor1"` | no |
+| <a name="input_region"></a> [region](#input\_region) | Droplet region | `string` | n/a | yes |
 | <a name="input_size"></a> [size](#input\_size) | Droplet size slug | `string` | n/a | yes |
 | <a name="input_ssh_key_name"></a> [ssh\_key\_name](#input\_ssh\_key\_name) | SSH key name to grant droplet access | `string` | n/a | yes |
 | <a name="input_user_name"></a> [user\_name](#input\_user\_name) | Sudo-enabled user created on the droplet | `string` | `"pigeon"` | no |
