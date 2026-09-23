@@ -2,10 +2,21 @@
 rust = "1.92.0"
 
 [tasks.build]
-run = "cargo build"
+run = """
+cargo build
+if [ "$(uname)" = "Darwin" ]; then
+  codesign --force -s - --identifier "dev.pigeon.cli" target/debug/pigeon
+fi
+"""
 
 [tasks.pigeon]
-run = "cargo run --"
+run = """
+cargo build
+if [ "$(uname)" = "Darwin" ]; then
+  codesign --force -s - --identifier "dev.pigeon.cli" target/debug/pigeon
+fi
+exec target/debug/pigeon "$@"
+"""
 
 [tasks.test]
 run = "cargo test"

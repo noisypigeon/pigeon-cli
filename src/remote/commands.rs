@@ -175,9 +175,17 @@ fn list_remotes() -> i32 {
         return 0;
     }
 
-    for remote in store.iter() {
-        println!("{}\t{}\t{}", remote.alias, remote.endpoint, remote.bucket);
-    }
+    let rows: Vec<Vec<String>> = store
+        .iter()
+        .map(|remote| {
+            vec![
+                remote.alias.clone(),
+                remote.endpoint.clone(),
+                remote.bucket.clone(),
+            ]
+        })
+        .collect();
+    crate::commands::print_table(&["ALIAS", "ENDPOINT", "BUCKET"], &rows);
     0
 }
 

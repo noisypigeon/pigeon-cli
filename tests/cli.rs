@@ -41,7 +41,7 @@ fn email_help_lists_all_subcommands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("authenticate"))
-        .stdout(predicate::str::contains("list-identities"))
+        .stdout(predicate::str::contains("list"))
         .stdout(predicate::str::contains("sync"));
 }
 
@@ -61,7 +61,7 @@ fn list_identities_on_empty_store_says_so() {
     let config_dir = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
-        .args(["email", "list-identities"])
+        .args(["email", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No identities configured."));
@@ -113,7 +113,7 @@ fn authenticate_failure_does_not_persist_an_identity() {
         .stderr(predicate::str::contains("failed to connect"));
 
     pigeon_in(&config_dir)
-        .args(["email", "list-identities"])
+        .args(["email", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No identities configured."));
@@ -129,31 +129,28 @@ fn write_identity(config_dir: &TempDir, alias: &str, email: &str) {
 }
 
 #[test]
-fn sync_help_shows_staging_output_and_debug_flags() {
+fn sync_help_shows_local_output_and_debug_flags() {
     pigeon()
         .args(["email", "sync", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("[ALIAS]"))
-        .stdout(predicate::str::contains("--staging-dir"))
-        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--remote-output"))
         .stdout(predicate::str::contains("--debug"));
 }
 
 #[test]
 fn sync_without_alias_on_empty_store_says_to_authenticate() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
             "sync",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -164,18 +161,15 @@ fn sync_without_alias_on_empty_store_says_to_authenticate() {
 #[test]
 fn sync_with_unknown_alias_fails_fast() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
             "sync",
             "no-such-alias",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
         ])
         .assert()
         .failure()
@@ -188,17 +182,14 @@ fn sync_with_unknown_alias_fails_fast() {
 #[test]
 fn sync_debug_sink_without_alias_on_empty_store_says_to_authenticate() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
             "sync",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "sink",
         ])
@@ -211,18 +202,15 @@ fn sync_debug_sink_without_alias_on_empty_store_says_to_authenticate() {
 #[test]
 fn sync_debug_sink_with_unknown_alias_fails_fast() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
             "sync",
             "no-such-alias",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "sink",
         ])
@@ -235,10 +223,9 @@ fn sync_debug_sink_with_unknown_alias_fails_fast() {
 }
 
 #[test]
-fn sync_debug_sink_with_output_remote_is_rejected() {
+fn sync_debug_sink_with_remote_output_is_rejected() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
@@ -247,11 +234,9 @@ fn sync_debug_sink_with_output_remote_is_rejected() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
-            "--output-remote",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--remote-output",
             "backup",
             "--debug",
             "sink",
@@ -260,15 +245,14 @@ fn sync_debug_sink_with_output_remote_is_rejected() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--output-remote cannot be combined with --debug",
+            "--remote-output cannot be combined with --debug",
         ));
 }
 
 #[test]
-fn sync_debug_transform_with_output_remote_is_rejected() {
+fn sync_debug_transform_with_remote_output_is_rejected() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
@@ -277,11 +261,9 @@ fn sync_debug_transform_with_output_remote_is_rejected() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
-            "--output-remote",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--remote-output",
             "backup",
             "--debug",
             "transform",
@@ -290,15 +272,14 @@ fn sync_debug_transform_with_output_remote_is_rejected() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--output-remote cannot be combined with --debug",
+            "--remote-output cannot be combined with --debug",
         ));
 }
 
 #[test]
 fn sync_debug_sink_with_concurrency_is_rejected() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
@@ -307,10 +288,8 @@ fn sync_debug_sink_with_concurrency_is_rejected() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--concurrency",
             "8",
             "--debug",
@@ -325,10 +304,9 @@ fn sync_debug_sink_with_concurrency_is_rejected() {
 }
 
 #[test]
-fn sync_default_flow_with_unknown_output_remote_fails_fast() {
+fn sync_default_flow_with_unknown_remote_output_fails_fast() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
@@ -337,11 +315,9 @@ fn sync_default_flow_with_unknown_output_remote_fails_fast() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
-            "--output-remote",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--remote-output",
             "no-such-remote",
         ])
         .assert()
@@ -353,17 +329,14 @@ fn sync_default_flow_with_unknown_output_remote_fails_fast() {
 #[test]
 fn sync_debug_transform_without_alias_on_empty_store_says_to_authenticate() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     pigeon_in(&config_dir)
         .args([
             "email",
             "sync",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "transform",
         ])
@@ -376,12 +349,11 @@ fn sync_debug_transform_without_alias_on_empty_store_says_to_authenticate() {
 #[test]
 fn sync_debug_transform_converts_a_plain_text_message() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
-    let inbox_dir = staging_dir.path().join("inbox");
+    let inbox_dir = local_output.path().join("staging").join("inbox");
     fs::create_dir_all(&inbox_dir).unwrap();
     fs::write(
         inbox_dir.join("1.eml"),
@@ -401,10 +373,8 @@ fn sync_debug_transform_converts_a_plain_text_message() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "transform",
         ])
@@ -412,8 +382,9 @@ fn sync_debug_transform_converts_a_plain_text_message() {
         .success()
         .stdout(predicate::str::contains("1 message"));
 
-    let md_path = output_dir
+    let md_path = local_output
         .path()
+        .join("result")
         .join("first-last-example-com")
         .join("2024-01-26-hello-world.md");
     let contents = fs::read_to_string(&md_path).unwrap();
@@ -432,12 +403,11 @@ fn sync_debug_transform_converts_a_plain_text_message() {
 #[test]
 fn sync_debug_transform_converts_an_html_only_message() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
-    let inbox_dir = staging_dir.path().join("inbox");
+    let inbox_dir = local_output.path().join("staging").join("inbox");
     fs::create_dir_all(&inbox_dir).unwrap();
     fs::write(
         inbox_dir.join("2.eml"),
@@ -456,18 +426,17 @@ fn sync_debug_transform_converts_an_html_only_message() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "transform",
         ])
         .assert()
         .success();
 
-    let md_path = output_dir
+    let md_path = local_output
         .path()
+        .join("result")
         .join("first-last-example-com")
         .join("2024-02-05-weekly-update.md");
     let contents = fs::read_to_string(&md_path).unwrap();
@@ -479,12 +448,11 @@ fn sync_debug_transform_converts_an_html_only_message() {
 #[test]
 fn sync_debug_transform_dedupes_identical_attachment_across_two_messages() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
-    let inbox_dir = staging_dir.path().join("inbox");
+    let inbox_dir = local_output.path().join("staging").join("inbox");
     fs::create_dir_all(&inbox_dir).unwrap();
 
     let eml = |subject: &str| {
@@ -517,10 +485,8 @@ fn sync_debug_transform_dedupes_identical_attachment_across_two_messages() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "transform",
         ])
@@ -528,8 +494,9 @@ fn sync_debug_transform_dedupes_identical_attachment_across_two_messages() {
         .success()
         .stdout(predicate::str::contains("1 attachment(s) deduped"));
 
-    let attachments_dir = output_dir
+    let attachments_dir = local_output
         .path()
+        .join("result")
         .join("first-last-example-com")
         .join("attachments");
     assert_eq!(fs::read_dir(&attachments_dir).unwrap().count(), 1);
@@ -538,13 +505,12 @@ fn sync_debug_transform_dedupes_identical_attachment_across_two_messages() {
 #[test]
 fn sync_debug_transform_merges_duplicate_whole_message() {
     let config_dir = TempDir::new().unwrap();
-    let staging_dir = TempDir::new().unwrap();
-    let output_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
 
     write_identity(&config_dir, "first-last", "first.last@example.com");
 
-    let inbox_dir = staging_dir.path().join("inbox");
-    let archive_dir = staging_dir.path().join("archive");
+    let inbox_dir = local_output.path().join("staging").join("inbox");
+    let archive_dir = local_output.path().join("staging").join("archive");
     fs::create_dir_all(&inbox_dir).unwrap();
     fs::create_dir_all(&archive_dir).unwrap();
 
@@ -563,10 +529,8 @@ fn sync_debug_transform_merges_duplicate_whole_message() {
             "email",
             "sync",
             "first-last",
-            "--staging-dir",
-            staging_dir.path().to_str().unwrap(),
-            "--output-dir",
-            output_dir.path().to_str().unwrap(),
+            "--local-output",
+            local_output.path().to_str().unwrap(),
             "--debug",
             "transform",
         ])
@@ -574,7 +538,10 @@ fn sync_debug_transform_merges_duplicate_whole_message() {
         .success()
         .stdout(predicate::str::contains("1 message(s) merged"));
 
-    let identity_dir = output_dir.path().join("first-last-example-com");
+    let identity_dir = local_output
+        .path()
+        .join("result")
+        .join("first-last-example-com");
     let md_files: Vec<_> = fs::read_dir(&identity_dir)
         .unwrap()
         .filter_map(|entry| entry.ok())

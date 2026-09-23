@@ -40,7 +40,7 @@ pub enum EmailCommands {
     },
 
     /// List all locally authenticated email identities
-    ListIdentities,
+    List,
 
     /// Download and transform all mail for an authenticated identity in one step
     Sync {
@@ -48,23 +48,21 @@ pub enum EmailCommands {
         /// Interactively selected from the authenticated identities when omitted.
         alias: Option<String>,
 
-        /// Staging directory for raw .eml files. Transient by default: each
-        /// message is deleted once its transform is verified. Only persists
-        /// when --debug sink is used and the default flow is never run
-        /// against it afterward.
+        /// Local directory to stage raw .eml files under `staging/` and
+        /// write transformed Markdown output under `result/`. The staging
+        /// side is transient by default: each message is deleted once its
+        /// transform is verified. Only persists when --debug sink is used
+        /// and the default flow is never run against it afterward. Defaults
+        /// to a per-alias directory under the OS temp directory when omitted.
         #[arg(long)]
-        staging_dir: PathBuf,
-
-        /// Destination directory for transformed Markdown output
-        #[arg(long)]
-        output_dir: PathBuf,
+        local_output: Option<PathBuf>,
 
         /// Alias of a configured `pigeon remote` (see `remote configure`) to
         /// upload each synced message's Markdown and attachments to, in
-        /// addition to --output-dir. Rejected as a usage error when combined
-        /// with --debug (sink/transform stay local-only).
+        /// addition to --local-output. Rejected as a usage error when
+        /// combined with --debug (sink/transform stay local-only).
         #[arg(long)]
-        output_remote: Option<String>,
+        remote_output: Option<String>,
 
         /// Run only one phase, exactly as it behaved standalone before this
         /// command existed: "sink" fetches without transforming; "transform"

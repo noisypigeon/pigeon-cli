@@ -20,22 +20,14 @@ pub fn dispatch(command: EmailCommands) -> i32 {
             host,
             port,
         } => authenticate(email, alias, provider, host, port),
-        EmailCommands::ListIdentities => list_identities(),
+        EmailCommands::List => list_identities(),
         EmailCommands::Sync {
             alias,
-            staging_dir,
-            output_dir,
-            output_remote,
+            local_output,
+            remote_output,
             debug,
             concurrency,
-        } => sync(
-            alias,
-            staging_dir,
-            output_dir,
-            output_remote,
-            debug,
-            concurrency,
-        ),
+        } => sync(alias, local_output, remote_output, debug, concurrency),
     }
 }
 
@@ -163,20 +155,24 @@ fn list_identities() -> i32 {
         return 0;
     }
 
-    for identity in store.iter() {
-        println!(
-            "{}\t{}\t{}",
-            identity.alias, identity.email, identity.provider
-        );
-    }
+    let rows: Vec<Vec<String>> = store
+        .iter()
+        .map(|identity| {
+            vec![
+                identity.alias.clone(),
+                identity.email.clone(),
+                identity.provider.to_string(),
+            ]
+        })
+        .collect();
+    crate::commands::print_table(&["ALIAS", "EMAIL", "PROVIDER"], &rows);
     0
 }
 
 fn sync(
     alias: Option<String>,
-    staging_dir: PathBuf,
-    output_dir: PathBuf,
-    output_remote: Option<String>,
+    local_output: Option<PathBuf>,
+    remote_output: Option<String>,
     debug: Option<DebugPhase>,
     concurrency: usize,
 ) -> i32 {
@@ -204,10 +200,14 @@ fn sync(
         },
     };
 
-    let resolved_remote: Option<(Remote, String)> = match &output_remote {
+    let local_output = local_output.unwrap_or_else(|| std::env::temp_dir().join(&identity.alias));
+    let staging_dir = local_output.join("staging");
+    let output_dir = local_output.join("result");
+
+    let resolved_remote: Option<(Remote, String)> = match &remote_output {
         Some(remote_alias) => {
             if debug.is_some() {
-                return fail("--output-remote cannot be combined with --debug");
+                return fail("--remote-output cannot be combined with --debug");
             }
             let remote_path = match RemoteStore::default_path() {
                 Ok(path) => path,
