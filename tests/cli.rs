@@ -26,6 +26,15 @@ fn top_level_help_lists_email_command() {
 }
 
 #[test]
+fn top_level_help_lists_remote_command() {
+    pigeon()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("remote"));
+}
+
+#[test]
 fn email_help_lists_all_subcommands() {
     pigeon()
         .args(["email", "--help"])
@@ -349,4 +358,273 @@ fn sync_debug_transform_converts_an_html_only_message() {
     assert!(contents.contains("# Weekly Update"));
     assert!(contents.contains("world"));
     assert!(contents.contains("uid: 2"));
+}
+
+/// Writes a fake `remotes.toml` directly (no `configure`/keychain needed --
+/// none of these tests reach a real S3 endpoint or the keychain).
+fn write_remote(config_dir: &TempDir, alias: &str) {
+    let toml = format!(
+        "[[remotes]]\nalias = \"{alias}\"\nendpoint = \"https://nyc3.digitaloceanspaces.com\"\nbucket = \"my-bucket\"\naccess_key_id = \"AKID\"\n"
+    );
+    fs::write(config_dir.path().join("remotes.toml"), toml).unwrap();
+}
+
+#[test]
+fn remote_help_lists_all_subcommands() {
+    pigeon()
+        .args(["remote", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("configure"))
+        .stdout(predicate::str::contains("list-buckets"))
+        .stdout(predicate::str::contains("list"))
+        .stdout(predicate::str::contains("edit"))
+        .stdout(predicate::str::contains("remove"))
+        .stdout(predicate::str::contains("ls"))
+        .stdout(predicate::str::contains("lsd"))
+        .stdout(predicate::str::contains("copy"));
+}
+
+#[test]
+fn remote_configure_help_shows_optional_alias() {
+    pigeon()
+        .args(["remote", "configure", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[ALIAS]"));
+}
+
+#[test]
+fn remote_copy_help_shows_source_and_dest() {
+    pigeon()
+        .args(["remote", "copy", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("SOURCE"))
+        .stdout(predicate::str::contains("DEST"));
+}
+
+#[test]
+fn remote_configure_with_existing_alias_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    write_remote(&config_dir, "email");
+
+    pigeon_in(&config_dir)
+        .args(["remote", "configure", "email"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "a remote named 'email' already exists",
+        ));
+}
+
+#[test]
+fn remote_list_buckets_with_unknown_alias_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "list-buckets", "no-such-remote"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no remote named 'no-such-remote'"));
+}
+
+#[test]
+fn remote_list_buckets_without_alias_on_empty_store_says_to_configure() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "list-buckets"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("configure"));
+}
+
+#[test]
+fn remote_ls_with_non_remote_location_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "ls", "./local/path"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "only operate on a configured remote",
+        ));
+}
+
+#[test]
+fn remote_lsd_with_unconfigured_remote_alias_falls_back_to_local_error() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "lsd", "no-such-remote:path"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "only operate on a configured remote",
+        ));
+}
+
+#[test]
+fn remote_copy_between_two_local_paths_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "copy", "./a", "./b"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "at least one of SOURCE/DEST must be a remote",
+        ));
+}
+
+#[test]
+fn remote_copy_between_two_configured_remotes_is_unsupported() {
+    let config_dir = TempDir::new().unwrap();
+    // write_remote() overwrites remotes.toml, so both entries are written
+    // together here rather than via two calls.
+    fs::write(
+        config_dir.path().join("remotes.toml"),
+        "[[remotes]]\n\
+         alias = \"one\"\n\
+         endpoint = \"https://nyc3.digitaloceanspaces.com\"\n\
+         bucket = \"bucket-one\"\n\
+         access_key_id = \"AKID\"\n\
+         \n\
+         [[remotes]]\n\
+         alias = \"two\"\n\
+         endpoint = \"https://nyc3.digitaloceanspaces.com\"\n\
+         bucket = \"bucket-two\"\n\
+         access_key_id = \"AKID\"\n",
+    )
+    .unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "copy", "one:a", "two:b"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "remote-to-remote copy is not supported",
+        ));
+}
+
+#[test]
+fn remote_list_on_empty_store_says_so() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No remotes configured."));
+}
+
+#[test]
+fn remote_list_shows_configured_remotes() {
+    let config_dir = TempDir::new().unwrap();
+    write_remote(&config_dir, "email");
+
+    pigeon_in(&config_dir)
+        .args(["remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"))
+        .stdout(predicate::str::contains("my-bucket"));
+}
+
+#[test]
+fn remote_edit_with_unknown_alias_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "edit", "no-such-remote"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no remote named 'no-such-remote'"));
+}
+
+#[test]
+fn remote_edit_without_alias_on_empty_store_says_to_configure() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "edit"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("configure"));
+}
+
+#[test]
+fn remote_remove_with_unknown_alias_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "remove", "no-such-remote"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no remote named 'no-such-remote'"));
+}
+
+#[test]
+fn remote_remove_without_alias_on_empty_store_says_to_configure() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args(["remote", "remove"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("configure"));
+}
+
+#[test]
+fn remote_remove_declined_keeps_the_remote() {
+    let config_dir = TempDir::new().unwrap();
+    write_remote(&config_dir, "email");
+
+    pigeon_in(&config_dir)
+        .args(["remote", "remove", "email"])
+        .write_stdin("n\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Cancelled."));
+
+    pigeon_in(&config_dir)
+        .args(["remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"));
+}
+
+/// Confirming removes the remote even though no keychain secret was ever
+/// created for it (write_remote() bypasses `configure`) -- exercises
+/// `credentials::delete_secret`'s `NoEntry`-tolerant handling end to end.
+#[test]
+fn remote_remove_confirmed_deletes_the_remote() {
+    let config_dir = TempDir::new().unwrap();
+    write_remote(&config_dir, "email");
+
+    pigeon_in(&config_dir)
+        .args(["remote", "remove", "email"])
+        .write_stdin("y\n")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed remote 'email'."));
+
+    pigeon_in(&config_dir)
+        .args(["remote", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No remotes configured."));
 }
