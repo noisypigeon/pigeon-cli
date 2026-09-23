@@ -9,13 +9,13 @@ use serde::{Deserialize, Serialize};
 /// independent siblings per ADR-0008, at the cost of one duplicated line.
 pub const CONFIG_DIR_ENV_VAR: &str = "PIGEON_CONFIG_DIR";
 
-const REMOTES_FILE_NAME: &str = "remotes.toml";
+const BUCKET_CONFIGS_FILE_NAME: &str = "bucket-configs.toml";
 
-/// A single configured S3-compatible remote's non-secret metadata. The
-/// secret access key lives in the OS keychain, keyed by `alias` -- see
-/// `crate::remote::credentials`.
+/// A single configured S3-compatible bucket-config's non-secret metadata.
+/// The secret access key lives in the OS keychain, keyed by `alias` -- see
+/// `crate::dataops::credentials`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Remote {
+pub struct BucketConfig {
     pub alias: String,
     pub endpoint: String,
     pub bucket: String,
@@ -25,25 +25,25 @@ pub struct Remote {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StoreFile {
     #[serde(default)]
-    remotes: Vec<Remote>,
+    bucket_configs: Vec<BucketConfig>,
 }
 
-/// The on-disk collection of configured remotes' metadata.
+/// The on-disk collection of configured bucket-configs' metadata.
 #[derive(Debug, Default)]
 pub struct Store {
-    remotes: Vec<Remote>,
+    bucket_configs: Vec<BucketConfig>,
 }
 
 impl Store {
-    /// The remote metadata file's path: `$PIGEON_CONFIG_DIR/remotes.toml`
+    /// The bucket-config metadata file's path: `$PIGEON_CONFIG_DIR/bucket-configs.toml`
     /// if set, otherwise the OS-conventional config directory for `pigeon`.
     pub fn default_path() -> Result<PathBuf, String> {
         if let Ok(dir) = std::env::var(CONFIG_DIR_ENV_VAR) {
-            return Ok(PathBuf::from(dir).join(REMOTES_FILE_NAME));
+            return Ok(PathBuf::from(dir).join(BUCKET_CONFIGS_FILE_NAME));
         }
         let project_dirs = directories::ProjectDirs::from("", "", "pigeon")
             .ok_or("could not determine the config directory for this platform")?;
-        Ok(project_dirs.config_dir().join(REMOTES_FILE_NAME))
+        Ok(project_dirs.config_dir().join(BUCKET_CONFIGS_FILE_NAME))
     }
 
     /// Loads the store from `path`. A missing file is treated as an empty store.
@@ -58,7 +58,7 @@ impl Store {
         let file: StoreFile = toml::from_str(&contents)
             .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
         Ok(Store {
-            remotes: file.remotes,
+            bucket_configs: file.bucket_configs,
         })
     }
 
@@ -69,68 +69,81 @@ impl Store {
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
         let file = StoreFile {
-            remotes: self.remotes.clone(),
+            bucket_configs: self.bucket_configs.clone(),
         };
         let contents = toml::to_string_pretty(&file)
-            .map_err(|err| format!("failed to serialize remotes: {err}"))?;
+            .map_err(|err| format!("failed to serialize bucket-configs: {err}"))?;
         std::fs::write(path, contents)
             .map_err(|err| format!("failed to write {}: {err}", path.display()))
     }
 
     pub fn contains_alias(&self, alias: &str) -> bool {
-        self.remotes.iter().any(|remote| remote.alias == alias)
+        self.bucket_configs
+            .iter()
+            .any(|bucket_config| bucket_config.alias == alias)
     }
 
-    pub fn push(&mut self, remote: Remote) {
-        self.remotes.push(remote);
+    pub fn push(&mut self, bucket_config: BucketConfig) {
+        self.bucket_configs.push(bucket_config);
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &Remote> {
-        self.remotes.iter()
+    pub fn iter(&self) -> impl Iterator<Item = &BucketConfig> {
+        self.bucket_configs.iter()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.remotes.is_empty()
+        self.bucket_configs.is_empty()
     }
 
-    pub fn find(&self, alias: &str) -> Option<&Remote> {
-        self.remotes.iter().find(|remote| remote.alias == alias)
+    pub fn find(&self, alias: &str) -> Option<&BucketConfig> {
+        self.bucket_configs
+            .iter()
+            .find(|bucket_config| bucket_config.alias == alias)
     }
 
-    pub fn find_mut(&mut self, alias: &str) -> Option<&mut Remote> {
-        self.remotes.iter_mut().find(|remote| remote.alias == alias)
+    pub fn find_mut(&mut self, alias: &str) -> Option<&mut BucketConfig> {
+        self.bucket_configs
+            .iter_mut()
+            .find(|bucket_config| bucket_config.alias == alias)
     }
 
-    /// Removes the remote named `alias`, if any. Returns whether an entry
-    /// was actually removed.
+    /// Removes the bucket-config named `alias`, if any. Returns whether an
+    /// entry was actually removed.
     pub fn remove(&mut self, alias: &str) -> bool {
-        let before = self.remotes.len();
-        self.remotes.retain(|remote| remote.alias != alias);
-        self.remotes.len() != before
+        let before = self.bucket_configs.len();
+        self.bucket_configs
+            .retain(|bucket_config| bucket_config.alias != alias);
+        self.bucket_configs.len() != before
     }
 
-    /// Interactively resolves which remote to act on: zero remotes is an
-    /// error pointing at `configure`; exactly one is returned without
-    /// prompting; otherwise `dialoguer::Select` lists them, same pattern as
-    /// `email::identity::Store::prompt_select()`.
-    pub fn prompt_select(&self) -> Result<&Remote, String> {
-        match self.remotes.as_slice() {
-            [] => Err("no remotes configured; run 'pigeon remote configure' first".to_string()),
+    /// Interactively resolves which bucket-config to act on: zero is an
+    /// error pointing at `bucket-config new`; exactly one is returned
+    /// without prompting; otherwise `dialoguer::Select` lists them, same
+    /// pattern as `email::identity::Store::prompt_select()`.
+    pub fn prompt_select(&self) -> Result<&BucketConfig, String> {
+        match self.bucket_configs.as_slice() {
+            [] => Err(
+                "no bucket-configs configured; run 'pigeon dataops bucket-config new' first"
+                    .to_string(),
+            ),
             [only] => Ok(only),
-            remotes => {
-                let labels: Vec<String> = remotes
+            bucket_configs => {
+                let labels: Vec<String> = bucket_configs
                     .iter()
-                    .map(|remote| {
-                        format!("{} ({}, {})", remote.alias, remote.endpoint, remote.bucket)
+                    .map(|bucket_config| {
+                        format!(
+                            "{} ({}, {})",
+                            bucket_config.alias, bucket_config.endpoint, bucket_config.bucket
+                        )
                     })
                     .collect();
                 let selection = Select::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Select a remote")
+                    .with_prompt("Select a bucket configuration")
                     .items(&labels)
                     .default(0)
                     .interact()
-                    .map_err(|err| format!("failed to read remote selection: {err}"))?;
-                Ok(&remotes[selection])
+                    .map_err(|err| format!("failed to read bucket-config selection: {err}"))?;
+                Ok(&bucket_configs[selection])
             }
         }
     }
@@ -140,8 +153,8 @@ impl Store {
 mod tests {
     use super::*;
 
-    fn sample_remote(alias: &str) -> Remote {
-        Remote {
+    fn sample_bucket_config(alias: &str) -> BucketConfig {
+        BucketConfig {
             alias: alias.to_string(),
             endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
             bucket: "my-bucket".to_string(),
@@ -152,10 +165,10 @@ mod tests {
     #[test]
     fn round_trips_through_toml() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("remotes.toml");
+        let path = dir.path().join("bucket-configs.toml");
 
         let mut store = Store::default();
-        store.push(sample_remote("email"));
+        store.push(sample_bucket_config("email"));
         store.save(&path).unwrap();
 
         let loaded = Store::load(&path).unwrap();
@@ -182,7 +195,7 @@ mod tests {
     #[test]
     fn find_mut_allows_in_place_update() {
         let mut store = Store::default();
-        store.push(sample_remote("email"));
+        store.push(sample_bucket_config("email"));
 
         store.find_mut("email").unwrap().bucket = "new-bucket".to_string();
 
@@ -192,7 +205,7 @@ mod tests {
     #[test]
     fn remove_deletes_matching_entry() {
         let mut store = Store::default();
-        store.push(sample_remote("email"));
+        store.push(sample_bucket_config("email"));
 
         assert!(store.remove("email"));
         assert!(store.is_empty());

@@ -407,17 +407,53 @@ fn render_frontmatter(
     out
 }
 
+/// Caps an attachment name's length so it can never blow past a
+/// filesystem's per-component name limit (255 bytes on APFS/most Unix
+/// filesystems) once stacked onto the message stem it's appended to.
+const MAX_ATTACHMENT_NAME_LENGTH: usize = 100;
+
 /// Reduces a sender-controlled MIME attachment name to a safe filename:
 /// keeps only the final path component (so an embedded `/` can't make
 /// `Path::join` create an implicit, never-created subdirectory, per
-/// ADR-0013) and falls back to `"attachment"` if nothing usable remains.
-/// Extension is preserved, unlike `identity::sanitize_segment`, which would
-/// corrupt it.
+/// ADR-0013), caps its length (a sender-controlled name can be arbitrarily
+/// long), and falls back to `"attachment"` if nothing usable remains.
+/// Extension is preserved where reasonable, unlike `identity::sanitize_segment`,
+/// which would corrupt it.
 fn sanitize_attachment_name(name: &str) -> String {
-    match Path::new(name).file_name().and_then(|f| f.to_str()) {
-        Some(base) if !base.is_empty() => base.to_string(),
-        _ => "attachment".to_string(),
+    let base = match Path::new(name).file_name().and_then(|f| f.to_str()) {
+        Some(base) if !base.is_empty() => base,
+        _ => return "attachment".to_string(),
+    };
+    truncate_preserving_extension(base, MAX_ATTACHMENT_NAME_LENGTH)
+}
+
+/// Truncates `name` to at most `max_len` bytes. If it has a short-enough
+/// extension (text after the last `.`), the stem is truncated and the
+/// extension kept intact rather than risking cutting it off mid-string.
+/// Always cuts on a UTF-8 char boundary (attachment names, unlike
+/// `sanitize_segment`'s output, aren't restricted to ASCII).
+fn truncate_preserving_extension(name: &str, max_len: usize) -> String {
+    if name.len() <= max_len {
+        return name.to_string();
     }
+    if let Some((stem, ext)) = name.rsplit_once('.')
+        && !ext.is_empty()
+        && ext.len() + 1 < max_len
+    {
+        return format!(
+            "{}.{ext}",
+            truncate_at_char_boundary(stem, max_len - ext.len() - 1)
+        );
+    }
+    truncate_at_char_boundary(name, max_len)
+}
+
+fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> String {
+    let mut end = max_bytes.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
 }
 
 /// If `desired` doesn't exist yet, returns it as-is; otherwise appends
@@ -805,6 +841,66 @@ mod tests {
     #[test]
     fn sanitize_attachment_name_falls_back_for_bare_slash() {
         assert_eq!(sanitize_attachment_name("/"), "attachment");
+    }
+
+    #[test]
+    fn sanitize_attachment_name_truncates_long_name_preserving_extension() {
+        let long_name = format!("{}.pdf", "a".repeat(300));
+        let sanitized = sanitize_attachment_name(&long_name);
+        assert!(sanitized.len() <= MAX_ATTACHMENT_NAME_LENGTH);
+        assert!(sanitized.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn sanitize_attachment_name_truncates_long_name_with_no_extension() {
+        let long_name = "a".repeat(300);
+        let sanitized = sanitize_attachment_name(&long_name);
+        assert!(sanitized.len() <= MAX_ATTACHMENT_NAME_LENGTH);
+    }
+
+    #[test]
+    fn sanitize_attachment_name_truncates_multibyte_name_at_char_boundary() {
+        // Each "é" is 2 bytes in UTF-8; a naive byte-count truncation could
+        // split one in half and panic.
+        let long_name = format!("{}.png", "é".repeat(200));
+        let sanitized = sanitize_attachment_name(&long_name);
+        assert!(sanitized.len() <= MAX_ATTACHMENT_NAME_LENGTH);
+        assert!(sanitized.ends_with(".png"));
+        assert!(sanitized.is_char_boundary(sanitized.len()));
+    }
+
+    #[test]
+    fn transform_one_truncates_a_very_long_subject() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let inbox = staging.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+
+        let identity = test_identity();
+        // Long enough that the unpatched code would build a >255-byte
+        // filename and fail to write with ENAMETOOLONG.
+        let long_subject = "word ".repeat(60);
+        fs::write(inbox.join("1.eml"), plain_text_eml(&long_subject)).unwrap();
+
+        let message_index =
+            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let attachment_index =
+            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+
+        let result = transform_one(
+            &identity,
+            &inbox.join("1.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+
+        let file_name = result.md_path.file_name().unwrap().to_string_lossy();
+        assert!(file_name.len() <= 255);
+        assert!(fs::metadata(&result.md_path).is_ok());
     }
 
     fn test_identity() -> Identity {

@@ -35,7 +35,7 @@ pub fn run(
     directory: &Path,
 ) -> Result<SinkSummary, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+        .enable_all()
         .build()
         .map_err(|err| format!("failed to start async runtime: {err}"))?;
 

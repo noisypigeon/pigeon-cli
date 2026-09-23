@@ -1,24 +1,24 @@
 use std::path::PathBuf;
 
-use crate::remote::store::Store;
+use crate::dataops::store::Store;
 
 /// Either side of a `copy` (or the argument to `ls`/`lsd`): a local
-/// filesystem path, or a path within a configured remote's bucket.
+/// filesystem path, or a path within a configured bucket-config's bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Location {
     Local(PathBuf),
-    Remote { alias: String, path: String },
+    Bucket { alias: String, path: String },
 }
 
-/// Parses a `SOURCE`/`DEST`/location argument. `alias:path` is a remote
-/// reference only when `alias` matches a configured remote; everything else
-/// (a bare path with no colon, or `word:...` where `word` isn't a known
-/// remote) is treated as a local filesystem path.
+/// Parses a `SOURCE`/`DEST`/location argument. `alias:path` is a bucket
+/// reference only when `alias` matches a configured bucket-config;
+/// everything else (a bare path with no colon, or `word:...` where `word`
+/// isn't a known bucket-config) is treated as a local filesystem path.
 pub(crate) fn parse(arg: &str, store: &Store) -> Location {
     if let Some((alias, path)) = arg.split_once(':')
         && store.contains_alias(alias)
     {
-        return Location::Remote {
+        return Location::Bucket {
             alias: alias.to_string(),
             path: path.to_string(),
         };
@@ -29,11 +29,11 @@ pub(crate) fn parse(arg: &str, store: &Store) -> Location {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::store::Remote;
+    use crate::dataops::store::BucketConfig;
 
-    fn store_with_remote(alias: &str) -> Store {
+    fn store_with_bucket_config(alias: &str) -> Store {
         let mut store = Store::default();
-        store.push(Remote {
+        store.push(BucketConfig {
             alias: alias.to_string(),
             endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
             bucket: "my-bucket".to_string(),
@@ -52,11 +52,11 @@ mod tests {
     }
 
     #[test]
-    fn known_remote_with_no_path_is_remote_root() {
-        let store = store_with_remote("email");
+    fn known_bucket_config_with_no_path_is_bucket_root() {
+        let store = store_with_bucket_config("email");
         assert_eq!(
             parse("email:", &store),
-            Location::Remote {
+            Location::Bucket {
                 alias: "email".to_string(),
                 path: String::new(),
             }
@@ -64,11 +64,11 @@ mod tests {
     }
 
     #[test]
-    fn known_remote_with_path_is_remote() {
-        let store = store_with_remote("email");
+    fn known_bucket_config_with_path_is_bucket() {
+        let store = store_with_bucket_config("email");
         assert_eq!(
             parse("email:archive/2020", &store),
-            Location::Remote {
+            Location::Bucket {
                 alias: "email".to_string(),
                 path: "archive/2020".to_string(),
             }
@@ -77,7 +77,7 @@ mod tests {
 
     #[test]
     fn unknown_alias_with_colon_falls_back_to_local() {
-        let store = store_with_remote("email");
+        let store = store_with_bucket_config("email");
         assert_eq!(
             parse("typo:archive", &store),
             Location::Local(PathBuf::from("typo:archive"))

@@ -9,7 +9,7 @@ pub const FAILURE_EXIT_CODE: i32 = 1;
 pub fn dispatch(command: Commands) -> i32 {
     match command {
         Commands::Email(args) => crate::email::commands::dispatch(args.command),
-        Commands::Remote(args) => crate::remote::commands::dispatch(args.command),
+        Commands::Dataops(args) => crate::dataops::commands::dispatch(args.command),
     }
 }
 

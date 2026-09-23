@@ -9,10 +9,10 @@ use minio::s3::response_traits::HasEtagFromHeaders;
 use minio::s3::segmented_bytes::SegmentedBytes;
 use minio::s3::types::{S3Api, ToStream};
 
-use crate::remote::store::Remote;
+use crate::dataops::store::BucketConfig;
 
 /// A listed S3 object or (in non-recursive/`lsd` mode) common prefix.
-pub(crate) struct ObjectEntry {
+pub struct ObjectEntry {
     pub key: String,
     pub size: u64,
     pub is_prefix: bool,
@@ -24,14 +24,18 @@ pub(crate) enum UploadOutcome {
     Unchanged,
 }
 
-fn build_client(remote: &Remote, secret_key: &str) -> Result<MinioClient, String> {
-    let base_url: BaseUrl = remote
+fn build_client(bucket_config: &BucketConfig, secret_key: &str) -> Result<MinioClient, String> {
+    let base_url: BaseUrl = bucket_config
         .endpoint
         .parse()
-        .map_err(|err| format!("invalid endpoint '{}': {err}", remote.endpoint))?;
-    let provider = StaticProvider::new(&remote.access_key_id, secret_key, None);
-    MinioClient::new(base_url, Some(provider), None, None)
-        .map_err(|err| format!("failed to create S3 client for '{}': {err}", remote.alias))
+        .map_err(|err| format!("invalid endpoint '{}': {err}", bucket_config.endpoint))?;
+    let provider = StaticProvider::new(&bucket_config.access_key_id, secret_key, None);
+    MinioClient::new(base_url, Some(provider), None, None).map_err(|err| {
+        format!(
+            "failed to create S3 client for '{}': {err}",
+            bucket_config.alias
+        )
+    })
 }
 
 /// Formats an S3 client error concisely. The `minio` crate's own `Display`
@@ -51,10 +55,15 @@ fn format_error(err: &S3Error) -> String {
     err.to_string()
 }
 
-/// Lists every bucket reachable with `remote`'s credentials (ADR-0009's
-/// `list-buckets`).
-pub(crate) async fn list_buckets(remote: &Remote, secret_key: &str) -> Result<Vec<String>, String> {
-    let client = build_client(remote, secret_key)?;
+/// Lists every bucket reachable with `bucket_config`'s credentials. No
+/// longer backs a standalone CLI command (ADR-0017 removed `list-buckets`,
+/// and ADR-0010 already removed `configure`'s inline discovery step before
+/// that) -- kept as a plain function for reuse.
+pub async fn list_buckets(
+    bucket_config: &BucketConfig,
+    secret_key: &str,
+) -> Result<Vec<String>, String> {
+    let client = build_client(bucket_config, secret_key)?;
     let resp = client
         .list_buckets()
         .build()
@@ -70,15 +79,18 @@ pub(crate) async fn list_buckets(remote: &Remote, secret_key: &str) -> Result<Ve
         .collect())
 }
 
-/// Checks whether `remote.bucket` exists and is reachable with `remote`'s
-/// credentials. Used by `configure`/`edit` to verify before persisting
-/// (ADR-0010) -- a bucket-scoped key that can't call account-level
-/// `ListBuckets` should still be able to answer this.
-pub(crate) async fn bucket_exists(remote: &Remote, secret_key: &str) -> Result<bool, String> {
-    let client = build_client(remote, secret_key)?;
+/// Checks whether `bucket_config.bucket` exists and is reachable with
+/// `bucket_config`'s credentials. Used by `bucket-config new`/`edit` to
+/// verify before persisting (ADR-0010) -- a bucket-scoped key that can't
+/// call account-level `ListBuckets` should still be able to answer this.
+pub(crate) async fn bucket_exists(
+    bucket_config: &BucketConfig,
+    secret_key: &str,
+) -> Result<bool, String> {
+    let client = build_client(bucket_config, secret_key)?;
     let resp = client
-        .bucket_exists(remote.bucket.as_str())
-        .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
+        .bucket_exists(bucket_config.bucket.as_str())
+        .map_err(|err| format!("invalid bucket name '{}': {err}", bucket_config.bucket))?
         .build()
         .send()
         .await
@@ -86,28 +98,29 @@ pub(crate) async fn bucket_exists(remote: &Remote, secret_key: &str) -> Result<b
     Ok(resp.exists())
 }
 
-/// Lists objects under `prefix` in `remote`'s bucket. `recursive` mirrors
-/// `ls` (flat, every object); non-recursive mirrors `lsd` (one level of
-/// `/`-delimited pseudo-directories, `ObjectEntry::is_prefix` marking them).
-pub(crate) async fn list_objects(
-    remote: &Remote,
+/// Lists objects under `prefix` in `bucket_config`'s bucket. `recursive`
+/// mirrors `ls` (flat, every object); non-recursive mirrors `lsd` (one level
+/// of `/`-delimited pseudo-directories, `ObjectEntry::is_prefix` marking
+/// them).
+pub async fn list_objects(
+    bucket_config: &BucketConfig,
     secret_key: &str,
     prefix: &str,
     recursive: bool,
 ) -> Result<Vec<ObjectEntry>, String> {
-    let client = build_client(remote, secret_key)?;
+    let client = build_client(bucket_config, secret_key)?;
     let prefix = Some(prefix.to_string());
     let list = if recursive {
         client
-            .list_objects(remote.bucket.as_str())
-            .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
+            .list_objects(bucket_config.bucket.as_str())
+            .map_err(|err| format!("invalid bucket name '{}': {err}", bucket_config.bucket))?
             .prefix(prefix)
             .recursive(true)
             .build()
     } else {
         client
-            .list_objects(remote.bucket.as_str())
-            .map_err(|err| format!("invalid bucket name '{}': {err}", remote.bucket))?
+            .list_objects(bucket_config.bucket.as_str())
+            .map_err(|err| format!("invalid bucket name '{}': {err}", bucket_config.bucket))?
             .prefix(prefix)
             .delimiter(Some("/".to_string()))
             .build()
@@ -128,17 +141,17 @@ pub(crate) async fn list_objects(
     Ok(entries)
 }
 
-/// Downloads `key` from `remote`'s bucket into memory. Whole-object,
+/// Downloads `key` from `bucket_config`'s bucket into memory. Whole-object,
 /// non-streaming -- fine for the email-archive-sized files this project
 /// deals with; chunked/multipart transfer is future work if that changes.
-pub(crate) async fn get_object(
-    remote: &Remote,
+pub async fn get_object(
+    bucket_config: &BucketConfig,
     secret_key: &str,
     key: &str,
 ) -> Result<Vec<u8>, String> {
-    let client = build_client(remote, secret_key)?;
+    let client = build_client(bucket_config, secret_key)?;
     let resp = client
-        .get_object(remote.bucket.as_str(), key)
+        .get_object(bucket_config.bucket.as_str(), key)
         .map_err(|err| format!("invalid object key '{key}': {err}"))?
         .build()
         .send()
@@ -153,26 +166,26 @@ pub(crate) async fn get_object(
     Ok(content.to_bytes().to_vec())
 }
 
-/// Uploads `data` to `key` in `remote`'s bucket, but only if it differs from
-/// what's already there. For a simple (non-multipart) PUT, an S3 ETag is the
-/// hex MD5 digest of the object's bytes -- so an existing object's ETag
-/// (fetched via a HEAD request, `stat_object`, no download needed) is
-/// compared directly against `data`'s local hex MD5:
+/// Uploads `data` to `key` in `bucket_config`'s bucket, but only if it
+/// differs from what's already there. For a simple (non-multipart) PUT, an
+/// S3 ETag is the hex MD5 digest of the object's bytes -- so an existing
+/// object's ETag (fetched via a HEAD request, `stat_object`, no download
+/// needed) is compared directly against `data`'s local hex MD5:
 /// - no existing object: upload, `Uploaded`.
 /// - existing object, matching hash: skip the PUT, `Unchanged`.
 /// - existing object, different hash: note that the key changed (the bucket's
 ///   versioning means nothing is destroyed, but pigeon says so rather than
 ///   silently overwriting a stable-looking key), then upload, `Uploaded`.
 pub(crate) async fn upload_if_changed(
-    remote: &Remote,
+    bucket_config: &BucketConfig,
     secret_key: &str,
     key: &str,
     data: Vec<u8>,
 ) -> Result<UploadOutcome, String> {
-    let client = build_client(remote, secret_key)?;
+    let client = build_client(bucket_config, secret_key)?;
 
     let existing_etag = match client
-        .stat_object(remote.bucket.as_str(), key)
+        .stat_object(bucket_config.bucket.as_str(), key)
         .map_err(|err| format!("invalid object key '{key}': {err}"))?
         .build()
         .send()
@@ -204,7 +217,7 @@ pub(crate) async fn upload_if_changed(
 
     let bytes = SegmentedBytes::from(Bytes::from(data));
     client
-        .put_object(remote.bucket.as_str(), key, bytes)
+        .put_object(bucket_config.bucket.as_str(), key, bytes)
         .map_err(|err| format!("invalid object key '{key}': {err}"))?
         .build()
         .send()

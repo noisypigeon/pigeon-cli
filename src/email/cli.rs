@@ -57,10 +57,11 @@ pub enum EmailCommands {
         #[arg(long)]
         local_output: Option<PathBuf>,
 
-        /// Alias of a configured `pigeon remote` (see `remote configure`) to
-        /// upload each synced message's Markdown and attachments to, in
-        /// addition to --local-output. Rejected as a usage error when
-        /// combined with --debug (sink/transform stay local-only).
+        /// Alias of a configured bucket-config (see `pigeon dataops
+        /// bucket-config new`) to upload each synced message's Markdown and
+        /// attachments to, in addition to --local-output. Rejected as a
+        /// usage error when combined with --debug (sink/transform stay
+        /// local-only).
         #[arg(long)]
         remote_output: Option<String>,
 

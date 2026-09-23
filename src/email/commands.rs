@@ -4,12 +4,12 @@ use std::path::PathBuf;
 use dialoguer::Password;
 
 use crate::commands::FAILURE_EXIT_CODE;
+use crate::dataops::credentials as remote_credentials;
+use crate::dataops::store::{BucketConfig, Store as DataopsStore};
 use crate::email::cli::{DebugPhase, EmailCommands};
 use crate::email::identity::{self, Identity, Store};
 use crate::email::provider::Provider;
 use crate::email::{credentials, imap_client};
-use crate::remote::credentials as remote_credentials;
-use crate::remote::store::{Remote, Store as RemoteStore};
 
 pub fn dispatch(command: EmailCommands) -> i32 {
     match command {
@@ -204,22 +204,22 @@ fn sync(
     let staging_dir = local_output.join("staging");
     let output_dir = local_output.join("result");
 
-    let resolved_remote: Option<(Remote, String)> = match &remote_output {
+    let resolved_remote: Option<(BucketConfig, String)> = match &remote_output {
         Some(remote_alias) => {
             if debug.is_some() {
                 return fail("--remote-output cannot be combined with --debug");
             }
-            let remote_path = match RemoteStore::default_path() {
+            let remote_path = match DataopsStore::default_path() {
                 Ok(path) => path,
                 Err(err) => return fail(err),
             };
-            let remote_store = match RemoteStore::load(&remote_path) {
+            let remote_store = match DataopsStore::load(&remote_path) {
                 Ok(store) => store,
                 Err(err) => return fail(err),
             };
             let remote = match remote_store.find(remote_alias) {
                 Some(remote) => remote.clone(),
-                None => return fail(format!("no remote named '{remote_alias}'")),
+                None => return fail(format!("no bucket-config named '{remote_alias}'")),
             };
             let secret = match remote_credentials::get_secret(&remote.alias) {
                 Ok(secret) => secret,

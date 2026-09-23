@@ -129,9 +129,17 @@ impl Store {
     }
 }
 
+/// Caps a sanitized segment's length so it can never blow past a
+/// filesystem's per-component name limit (255 bytes on APFS/most Unix
+/// filesystems) on its own -- e.g. an email subject line long enough to be
+/// a whole paragraph. `sanitize_segment`'s output is always pure ASCII, so
+/// a byte count is also a char count here.
+const MAX_SEGMENT_LENGTH: usize = 100;
+
 /// Sanitizes a single path/name segment: lowercase, non-alphanumeric runs
-/// collapsed to a single hyphen, leading/trailing hyphens trimmed. Shared by
-/// `sanitize_alias` and `sink`'s per-mailbox directory naming.
+/// collapsed to a single hyphen, leading/trailing hyphens trimmed, capped to
+/// `MAX_SEGMENT_LENGTH`. Shared by `sanitize_alias` and `sink`'s
+/// per-mailbox directory naming.
 pub fn sanitize_segment(input: &str) -> String {
     let mut segment = String::with_capacity(input.len());
     let mut last_was_hyphen = false;
@@ -144,6 +152,7 @@ pub fn sanitize_segment(input: &str) -> String {
             last_was_hyphen = true;
         }
     }
+    segment.truncate(MAX_SEGMENT_LENGTH);
     if segment.ends_with('-') {
         segment.pop();
     }
@@ -171,6 +180,14 @@ mod tests {
     #[test]
     fn sanitizes_plus_addressing() {
         assert_eq!(sanitize_alias("jane+work@example.com"), "jane-work");
+    }
+
+    #[test]
+    fn sanitize_segment_truncates_long_input_with_no_trailing_hyphen() {
+        let long_subject = "word ".repeat(50); // far more than MAX_SEGMENT_LENGTH once hyphenated
+        let segment = sanitize_segment(&long_subject);
+        assert!(segment.len() <= MAX_SEGMENT_LENGTH);
+        assert!(!segment.ends_with('-'));
     }
 
     #[test]

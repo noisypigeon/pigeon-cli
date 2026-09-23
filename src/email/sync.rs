@@ -9,13 +9,13 @@ use futures::TryStreamExt;
 use futures::stream::{self, StreamExt};
 use indicatif::MultiProgress;
 
+use crate::dataops::client;
+use crate::dataops::store::BucketConfig;
 use crate::email::dedup::ContentIndex;
 use crate::email::identity::Identity;
 use crate::email::imap_client;
 use crate::email::transform::TransformedMessage;
 use crate::email::{sink, transform};
-use crate::remote::client;
-use crate::remote::store::Remote;
 
 const PROCESSED_FILE_NAME: &str = ".processed";
 
@@ -59,7 +59,7 @@ struct SyncContext {
     secret: String,
     staging_dir: PathBuf,
     output_dir: PathBuf,
-    output_remote: Option<(Remote, String)>,
+    output_remote: Option<(BucketConfig, String)>,
 }
 
 /// For every mailbox, for every message not yet in `.processed`: fetch it
@@ -73,7 +73,7 @@ pub fn run(
     secret: &str,
     staging_dir: &Path,
     output_dir: &Path,
-    output_remote: Option<(&Remote, &str)>,
+    output_remote: Option<(&BucketConfig, &str)>,
     concurrency: usize,
 ) -> Result<SyncSummary, String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -96,7 +96,7 @@ async fn run_async(
     secret: &str,
     staging_dir: &Path,
     output_dir: &Path,
-    output_remote: Option<(&Remote, &str)>,
+    output_remote: Option<(&BucketConfig, &str)>,
     concurrency: usize,
 ) -> Result<SyncSummary, String> {
     let mut session = imap_client::connect_and_login(
@@ -450,11 +450,11 @@ fn upload_key(output_dir: &Path, path: &Path) -> Result<String, String> {
 }
 
 /// Uploads a transformed message's Markdown and every attachment to
-/// `remote`, mirroring `output_dir`'s relative tree at the bucket root. Bails
+/// `bucket_config`, mirroring `output_dir`'s relative tree at the bucket root. Bails
 /// out (via `?`) on the first failing file, so a message's upload is treated
 /// as atomic -- a partially-uploaded message never gets `.processed`/deleted.
 async fn upload_transformed(
-    remote: &Remote,
+    bucket_config: &BucketConfig,
     secret: &str,
     output_dir: &Path,
     transformed: &TransformedMessage,
@@ -464,7 +464,7 @@ async fn upload_transformed(
         let key = upload_key(output_dir, path)?;
         let data =
             fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-        outcomes.push(client::upload_if_changed(remote, secret, &key, data).await?);
+        outcomes.push(client::upload_if_changed(bucket_config, secret, &key, data).await?);
     }
     Ok(outcomes)
 }

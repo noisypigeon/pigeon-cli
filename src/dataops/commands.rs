@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 use dialoguer::{Confirm, Input, Password, theme::ColorfulTheme};
 
 use crate::commands::FAILURE_EXIT_CODE;
-use crate::remote::cli::RemoteCommands;
-use crate::remote::location::{self, Location};
-use crate::remote::store::{Remote, Store};
-use crate::remote::{client, credentials};
+use crate::dataops::cli::{BucketConfigCommands, DataopsCommands};
+use crate::dataops::location::{self, Location};
+use crate::dataops::store::{BucketConfig, Store};
+use crate::dataops::{client, credentials};
 
-pub fn dispatch(command: RemoteCommands) -> i32 {
+pub fn dispatch(command: DataopsCommands) -> i32 {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -21,20 +21,21 @@ pub fn dispatch(command: RemoteCommands) -> i32 {
     runtime.block_on(dispatch_async(command))
 }
 
-async fn dispatch_async(command: RemoteCommands) -> i32 {
+async fn dispatch_async(command: DataopsCommands) -> i32 {
     match command {
-        RemoteCommands::Configure { alias } => configure(alias).await,
-        RemoteCommands::List => list_remotes(),
-        RemoteCommands::Edit { alias } => edit(alias).await,
-        RemoteCommands::Remove { alias } => remove(alias),
-        RemoteCommands::ListBuckets { alias } => list_buckets(alias).await,
-        RemoteCommands::Ls { location } => list(location, true).await,
-        RemoteCommands::Lsd { location } => list(location, false).await,
-        RemoteCommands::Copy { source, dest } => copy(source, dest).await,
+        DataopsCommands::BucketConfig(args) => bucket_config_dispatch(args.command).await,
     }
 }
 
-async fn configure(alias: Option<String>) -> i32 {
+async fn bucket_config_dispatch(command: BucketConfigCommands) -> i32 {
+    match command {
+        BucketConfigCommands::New { alias } => new_bucket_config(alias).await,
+        BucketConfigCommands::Edit { alias } => edit(alias).await,
+        BucketConfigCommands::Remove { alias } => remove(alias),
+    }
+}
+
+async fn new_bucket_config(alias: Option<String>) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -52,7 +53,7 @@ async fn configure(alias: Option<String>) -> i32 {
         },
     };
     if store.contains_alias(&alias) {
-        return fail(format!("a remote named '{alias}' already exists"));
+        return fail(format!("a bucket-config named '{alias}' already exists"));
     }
 
     let bucket = match Input::<String>::new()
@@ -84,7 +85,7 @@ async fn configure(alias: Option<String>) -> i32 {
         Err(err) => return fail(err),
     };
 
-    let candidate = Remote {
+    let candidate = BucketConfig {
         alias: alias.clone(),
         endpoint,
         bucket,
@@ -109,14 +110,14 @@ async fn configure(alias: Option<String>) -> i32 {
         return fail(err);
     }
 
-    println!("Configured remote '{alias}'.");
+    println!("Configured bucket-config '{alias}'.");
     0
 }
 
 /// Reads the S3 secret access key. Masked and interactive on a real TTY;
 /// falls back to a plain line read from stdin otherwise -- duplicated from
 /// `email::commands::read_secret`'s shape rather than shared, since `email`
-/// and `remote` are meant to stay independent siblings per ADR-0008 and this
+/// and `dataops` are meant to stay independent siblings per ADR-0008 and this
 /// is a small enough function that the duplication costs little.
 fn read_secret(prompt: &str) -> Result<String, String> {
     if std::io::stdin().is_terminal() {
@@ -160,7 +161,9 @@ fn confirm(prompt: &str, default: bool) -> Result<bool, String> {
     }
 }
 
-fn list_remotes() -> i32 {
+/// Lists every configured bucket-config. No longer backs a CLI command
+/// (ADR-0017 removed `dataops list`) -- kept as a plain function for reuse.
+pub fn list_bucket_configs() -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -171,17 +174,17 @@ fn list_remotes() -> i32 {
     };
 
     if store.is_empty() {
-        println!("No remotes configured.");
+        println!("No bucket-configs configured.");
         return 0;
     }
 
     let rows: Vec<Vec<String>> = store
         .iter()
-        .map(|remote| {
+        .map(|bucket_config| {
             vec![
-                remote.alias.clone(),
-                remote.endpoint.clone(),
-                remote.bucket.clone(),
+                bucket_config.alias.clone(),
+                bucket_config.endpoint.clone(),
+                bucket_config.bucket.clone(),
             ]
         })
         .collect();
@@ -246,7 +249,7 @@ async fn edit(alias: Option<String>) -> i32 {
         },
     };
 
-    let candidate = Remote {
+    let candidate = BucketConfig {
         alias: alias.clone(),
         endpoint,
         bucket,
@@ -270,7 +273,7 @@ async fn edit(alias: Option<String>) -> i32 {
         return fail(err);
     }
 
-    println!("Updated remote '{alias}'.");
+    println!("Updated bucket-config '{alias}'.");
     0
 }
 
@@ -289,7 +292,7 @@ fn remove(alias: Option<String>) -> i32 {
         Err(err) => return fail(err),
     };
 
-    match confirm(&format!("Remove remote '{alias}'?"), false) {
+    match confirm(&format!("Remove bucket-config '{alias}'?"), false) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");
@@ -306,22 +309,27 @@ fn remove(alias: Option<String>) -> i32 {
         return fail(err);
     }
 
-    println!("Removed remote '{alias}'.");
+    println!("Removed bucket-config '{alias}'.");
     0
 }
 
 /// Resolves an alias that must already exist: the given `alias` if it's a
-/// known remote, an error if it's given but unknown, or an interactive
-/// selection when omitted. Shared by `edit` and `remove`.
+/// known bucket-config, an error if it's given but unknown, or an
+/// interactive selection when omitted. Shared by `edit` and `remove`.
 fn resolve_existing_alias(store: &Store, alias: Option<String>) -> Result<String, String> {
     match alias {
         Some(alias) if store.contains_alias(&alias) => Ok(alias),
-        Some(alias) => Err(format!("no remote named '{alias}'")),
-        None => store.prompt_select().map(|remote| remote.alias.clone()),
+        Some(alias) => Err(format!("no bucket-config named '{alias}'")),
+        None => store
+            .prompt_select()
+            .map(|bucket_config| bucket_config.alias.clone()),
     }
 }
 
-async fn list_buckets(alias: Option<String>) -> i32 {
+/// Lists every bucket reachable with a configured bucket-config's
+/// credentials. No longer backs a CLI command (ADR-0017 removed
+/// `list-buckets`) -- kept as a plain function for reuse.
+pub async fn list_buckets(alias: Option<String>) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -331,23 +339,23 @@ async fn list_buckets(alias: Option<String>) -> i32 {
         Err(err) => return fail(err),
     };
 
-    let remote = match &alias {
+    let bucket_config = match &alias {
         Some(alias) => match store.find(alias) {
-            Some(remote) => remote,
-            None => return fail(format!("no remote named '{alias}'")),
+            Some(bucket_config) => bucket_config,
+            None => return fail(format!("no bucket-config named '{alias}'")),
         },
         None => match store.prompt_select() {
-            Ok(remote) => remote,
+            Ok(bucket_config) => bucket_config,
             Err(err) => return fail(err),
         },
     };
 
-    let secret = match credentials::get_secret(&remote.alias) {
+    let secret = match credentials::get_secret(&bucket_config.alias) {
         Ok(secret) => secret,
         Err(err) => return fail(err),
     };
 
-    match client::list_buckets(remote, &secret).await {
+    match client::list_buckets(bucket_config, &secret).await {
         Ok(buckets) if buckets.is_empty() => {
             println!("No buckets found.");
             0
@@ -362,7 +370,10 @@ async fn list_buckets(alias: Option<String>) -> i32 {
     }
 }
 
-async fn list(location_arg: String, recursive: bool) -> i32 {
+/// Lists objects (`ls`/`lsd`) under a bucket-config location. No longer
+/// backs a CLI command (ADR-0017 removed `ls`/`lsd`) -- kept as a plain
+/// function for reuse.
+pub async fn list(location_arg: String, recursive: bool) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -372,22 +383,22 @@ async fn list(location_arg: String, recursive: bool) -> i32 {
         Err(err) => return fail(err),
     };
 
-    let (remote, prefix) = match location::parse(&location_arg, &store) {
-        Location::Remote { alias, path } => match store.find(&alias) {
-            Some(remote) => (remote, path),
-            None => return fail(format!("no remote named '{alias}'")),
+    let (bucket_config, prefix) = match location::parse(&location_arg, &store) {
+        Location::Bucket { alias, path } => match store.find(&alias) {
+            Some(bucket_config) => (bucket_config, path),
+            None => return fail(format!("no bucket-config named '{alias}'")),
         },
         Location::Local(_) => {
-            return fail("ls/lsd only operate on a configured remote, e.g. 'email:path'");
+            return fail("ls/lsd only operate on a configured bucket-config, e.g. 'email:path'");
         }
     };
 
-    let secret = match credentials::get_secret(&remote.alias) {
+    let secret = match credentials::get_secret(&bucket_config.alias) {
         Ok(secret) => secret,
         Err(err) => return fail(err),
     };
 
-    match client::list_objects(remote, &secret, &prefix, recursive).await {
+    match client::list_objects(bucket_config, &secret, &prefix, recursive).await {
         Ok(entries) => {
             for entry in entries {
                 if entry.is_prefix {
@@ -402,7 +413,10 @@ async fn list(location_arg: String, recursive: bool) -> i32 {
     }
 }
 
-async fn copy(source: String, dest: String) -> i32 {
+/// Copies between a local path and a bucket-config location. No longer
+/// backs a CLI command (ADR-0017 removed `copy`) -- kept as a plain
+/// function for reuse.
+pub async fn copy(source: String, dest: String) -> i32 {
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -418,33 +432,33 @@ async fn copy(source: String, dest: String) -> i32 {
     match (source_loc, dest_loc) {
         (
             Location::Local(local),
-            Location::Remote {
+            Location::Bucket {
                 alias,
-                path: remote_path,
+                path: bucket_path,
             },
-        ) => upload(&store, &local, &alias, &remote_path).await,
+        ) => upload(&store, &local, &alias, &bucket_path).await,
         (
-            Location::Remote {
+            Location::Bucket {
                 alias,
-                path: remote_path,
+                path: bucket_path,
             },
             Location::Local(local),
-        ) => download(&store, &alias, &remote_path, &local).await,
-        (Location::Remote { .. }, Location::Remote { .. }) => {
-            fail("remote-to-remote copy is not supported")
+        ) => download(&store, &alias, &bucket_path, &local).await,
+        (Location::Bucket { .. }, Location::Bucket { .. }) => {
+            fail("bucket-to-bucket copy is not supported")
         }
         (Location::Local(_), Location::Local(_)) => {
-            fail("at least one of SOURCE/DEST must be a remote (alias:path)")
+            fail("at least one of SOURCE/DEST must be a bucket-config (alias:path)")
         }
     }
 }
 
-async fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) -> i32 {
-    let remote = match store.find(remote_alias) {
-        Some(remote) => remote,
-        None => return fail(format!("no remote named '{remote_alias}'")),
+async fn upload(store: &Store, local: &Path, bucket_alias: &str, bucket_path: &str) -> i32 {
+    let bucket_config = match store.find(bucket_alias) {
+        Some(bucket_config) => bucket_config,
+        None => return fail(format!("no bucket-config named '{bucket_alias}'")),
     };
-    let secret = match credentials::get_secret(&remote.alias) {
+    let secret = match credentials::get_secret(&bucket_config.alias) {
         Ok(secret) => secret,
         Err(err) => return fail(err),
     };
@@ -459,52 +473,52 @@ async fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &s
     let mut unchanged = 0;
     for file in &files {
         let key = if is_single_file {
-            single_file_key(remote_path, file)
+            single_file_key(bucket_path, file)
         } else {
             let relative = file.strip_prefix(local).unwrap_or(file);
-            join_key(remote_path, &relative.to_string_lossy())
+            join_key(bucket_path, &relative.to_string_lossy())
         };
 
         let data = match fs::read(file) {
             Ok(data) => data,
             Err(err) => return fail(format!("failed to read {}: {err}", file.display())),
         };
-        match client::upload_if_changed(remote, &secret, &key, data).await {
+        match client::upload_if_changed(bucket_config, &secret, &key, data).await {
             Ok(client::UploadOutcome::Uploaded) => uploaded += 1,
             Ok(client::UploadOutcome::Unchanged) => unchanged += 1,
             Err(err) => return fail(err),
         }
     }
     println!(
-        "Uploaded {uploaded} file(s), {unchanged} unchanged, to '{remote_alias}:{remote_path}'."
+        "Uploaded {uploaded} file(s), {unchanged} unchanged, to '{bucket_alias}:{bucket_path}'."
     );
     0
 }
 
-async fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &Path) -> i32 {
-    let remote = match store.find(remote_alias) {
-        Some(remote) => remote,
-        None => return fail(format!("no remote named '{remote_alias}'")),
+async fn download(store: &Store, bucket_alias: &str, bucket_path: &str, local: &Path) -> i32 {
+    let bucket_config = match store.find(bucket_alias) {
+        Some(bucket_config) => bucket_config,
+        None => return fail(format!("no bucket-config named '{bucket_alias}'")),
     };
-    let secret = match credentials::get_secret(&remote.alias) {
+    let secret = match credentials::get_secret(&bucket_config.alias) {
         Ok(secret) => secret,
         Err(err) => return fail(err),
     };
 
-    let entries = match client::list_objects(remote, &secret, remote_path, true).await {
+    let entries = match client::list_objects(bucket_config, &secret, bucket_path, true).await {
         Ok(entries) => entries,
         Err(err) => return fail(err),
     };
     if entries.is_empty() {
         return fail(format!(
-            "no objects found under '{remote_alias}:{remote_path}'"
+            "no objects found under '{bucket_alias}:{bucket_path}'"
         ));
     }
-    let single = entries.len() == 1 && entries[0].key == remote_path;
+    let single = entries.len() == 1 && entries[0].key == bucket_path;
 
     let mut count = 0;
     for entry in &entries {
-        let data = match client::get_object(remote, &secret, &entry.key).await {
+        let data = match client::get_object(bucket_config, &secret, &entry.key).await {
             Ok(data) => data,
             Err(err) => return fail(err),
         };
@@ -514,7 +528,7 @@ async fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &
         } else {
             let relative = entry
                 .key
-                .strip_prefix(remote_path)
+                .strip_prefix(bucket_path)
                 .unwrap_or(&entry.key)
                 .trim_start_matches('/');
             local.join(relative)
@@ -531,7 +545,7 @@ async fn download(store: &Store, remote_alias: &str, remote_path: &str, local: &
         count += 1;
     }
     println!(
-        "Downloaded {count} file(s) from '{remote_alias}:{remote_path}' to {}.",
+        "Downloaded {count} file(s) from '{bucket_alias}:{bucket_path}' to {}.",
         local.display()
     );
     0
@@ -567,23 +581,23 @@ fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// The S3 key for a single-file upload: `remote_path` verbatim when it looks
-/// like an exact destination key, or `remote_path` + the file's own name
-/// when `remote_path` is empty or looks like a directory (ends with `/`).
-fn single_file_key(remote_path: &str, file: &Path) -> String {
-    if remote_path.is_empty() || remote_path.ends_with('/') {
+/// The S3 key for a single-file upload: `bucket_path` verbatim when it looks
+/// like an exact destination key, or `bucket_path` + the file's own name
+/// when `bucket_path` is empty or looks like a directory (ends with `/`).
+fn single_file_key(bucket_path: &str, file: &Path) -> String {
+    if bucket_path.is_empty() || bucket_path.ends_with('/') {
         let file_name = file
             .file_name()
             .map(|name| name.to_string_lossy().to_string())
             .unwrap_or_default();
-        join_key(remote_path, &file_name)
+        join_key(bucket_path, &file_name)
     } else {
-        remote_path.to_string()
+        bucket_path.to_string()
     }
 }
 
-fn join_key(remote_path: &str, suffix: &str) -> String {
-    let base = remote_path.trim_end_matches('/');
+fn join_key(bucket_path: &str, suffix: &str) -> String {
+    let base = bucket_path.trim_end_matches('/');
     if base.is_empty() {
         suffix.to_string()
     } else {

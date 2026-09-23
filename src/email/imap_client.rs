@@ -1,9 +1,17 @@
+use std::time::Duration;
+
 use async_native_tls::TlsConnector;
 use tokio::net::TcpStream;
+use tokio::time::timeout;
 
 /// The concrete `async-imap` session type used throughout `pigeon`: a TLS
 /// connection over a plain TCP socket.
 pub(crate) type ImapSession = async_imap::Session<async_native_tls::TlsStream<TcpStream>>;
+
+/// Budget for the whole connect/TLS/greeting/LOGIN sequence. Without this,
+/// a network or server stall at any point in that sequence hangs forever
+/// with no output at all, since nothing is printed until this call returns.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Connects to `host:port` over TLS and logs in with `email`/`secret`,
 /// returning the still-open session. Callers are responsible for eventually
@@ -12,6 +20,26 @@ pub(crate) type ImapSession = async_imap::Session<async_native_tls::TlsStream<Tc
 /// `accept_invalid_certs` should only be `true` for Proton Mail Bridge,
 /// which terminates TLS locally with a self-signed certificate.
 pub(crate) async fn connect_and_login(
+    host: &str,
+    port: u16,
+    email: &str,
+    secret: &str,
+    accept_invalid_certs: bool,
+) -> Result<ImapSession, String> {
+    match timeout(
+        CONNECT_TIMEOUT,
+        connect_and_login_inner(host, port, email, secret, accept_invalid_certs),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(format!(
+            "timed out connecting to {host}:{port} after {CONNECT_TIMEOUT:?}"
+        )),
+    }
+}
+
+async fn connect_and_login_inner(
     host: &str,
     port: u16,
     email: &str,
@@ -53,7 +81,7 @@ pub fn verify_login(
     accept_invalid_certs: bool,
 ) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
+        .enable_all()
         .build()
         .map_err(|err| format!("failed to start async runtime: {err}"))?;
 
