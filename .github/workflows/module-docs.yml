@@ -1,0 +1,32 @@
+name: module-docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'digitalocean/**/*.tf'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: module-docs-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate module docs
+        uses: terraform-docs/gh-actions@v1.4.1
+        with:
+          working-dir: digitalocean/access-key,digitalocean/object-bucket,digitalocean/object-bucket-cold,digitalocean/project
+          output-file: README.md
+          output-method: inject
+          output-format: markdown table
+          args: --show inputs --show outputs
+          git-push: "true"
+          git-commit-message: "docs: regenerate module input/output tables"
