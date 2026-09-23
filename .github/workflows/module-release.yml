@@ -133,6 +133,8 @@ jobs:
         if: steps.modules.outputs.changed != ''
         run: |
           git commit -m "chore: update changelog(s) for PR #${{ github.event.pull_request.number }}"
+          git fetch origin main
+          git rebase origin/main
           git push origin HEAD:main
 
       - name: Tag and release each changed module
