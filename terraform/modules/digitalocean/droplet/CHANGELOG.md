@@ -4,6 +4,16 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-09-23
+
+### Pin droplet's access-key dependency to a tagged version
+
+Replaces droplet's local `../access-key` relative-path module source with an explicit remote git source pinned to `digitalocean/access-key/v0.1.0`, so droplet's access-key dependency is versioned independently instead of implicitly floating with whatever commit droplet itself is checked out at. This partially supersedes ADR-0004's original relative-path decision (not rewritten here) — worth a follow-up note there.
+
+Also drops `region`'s default (now a required input — confirmed as an intentional breaking change, tagged as a patch release anyway since nothing consumes this module yet) and fixes two `droplet.tf` references to the module block, which was renamed from `compute_bucket_access` to `compute_bucket_access_key` (would otherwise have failed `terraform validate` with an undeclared-module reference).
+
+[#10](https://github.com/noisypigeon/pigeon-tf/pull/10)
+
 ## [0.1.0] - 2026-09-23
 
 ### Port droplet module from pigeon-pizza
