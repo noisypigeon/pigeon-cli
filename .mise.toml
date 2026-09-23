@@ -32,3 +32,9 @@ run = "cargo clippy --all-targets --all-features -- -D warnings"
 
 [tasks.ci]
 depends = ["fmt-check", "lint", "test"]
+
+[tasks.publish-dry-run]
+run = "cargo publish --dry-run"
+
+[tasks.publish]
+run = "cargo publish"

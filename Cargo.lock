@@ -2090,7 +2090,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "pigeon"
+name = "pigeon-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",

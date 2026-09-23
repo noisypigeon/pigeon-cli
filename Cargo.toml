@@ -1,9 +1,21 @@
 [package]
-name = "pigeon"
+name = "pigeon-cli"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.92"
 description = "Pigeon: authenticate, sink, and transform personal data from external services."
+license = "GPL-3.0-or-later"
+repository = "https://github.com/noisypigeon/pigeon-cli"
+readme = "README.md"
+keywords = ["email", "imap", "s3", "backup", "cli"]
+categories = ["command-line-utilities", "email"]
+
+[lib]
+name = "pigeon"
+
+[[bin]]
+name = "pigeon"
+path = "src/main.rs"
 
 [dependencies]
 async-imap = { version = "0.11.3", default-features = false, features = ["runtime-tokio"] }
