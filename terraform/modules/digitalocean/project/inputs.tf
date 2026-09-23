@@ -1,26 +1,26 @@
 variable "name" {
   type        = string
-  description = "Name of Digital Ocean project"
+  description = "Project name"
 }
 
 variable "environment" {
   type        = string
-  description = "Values: Production, Staging, Development"
+  description = "Deployment environment (Production, Staging, or Development)"
 }
 
 variable "purpose" {
   type        = string
-  description = "Purpose of Digital Ocean project"
+  description = "Project purpose"
 }
 
 variable "description" {
   type        = string
-  description = "Description of Digital Ocean project"
+  description = "Project description"
   default     = null
 }
 
 variable "is_default" {
   type        = bool
-  description = "Is default project (true/false)"
+  description = "Default-project flag (true/false)"
   default     = false
 }
