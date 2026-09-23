@@ -1,8 +1,3 @@
-#
-# Droplets follow the same naming scheme as buckets.
-# Format: {namespace}-{random_code}-{name}
-# I.e. example-com-q82q17-sample
-#
 variable "image" {
   type        = string
   description = "Droplet image (slug or ID)"
@@ -50,7 +45,6 @@ variable "namespace" {
 variable "region" {
   type        = string
   description = "Droplet region"
-  default     = "tor1"
 }
 
 variable "size" {

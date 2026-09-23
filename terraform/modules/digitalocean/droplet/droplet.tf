@@ -39,8 +39,8 @@ resource "digitalocean_droplet" "droplet" {
           [${bucket.bucket_name}]
           type = s3
           provider = DigitalOcean
-          access_key_id = ${module.compute_bucket_access.access_key}
-          secret_access_key = ${module.compute_bucket_access.secret_key}
+          access_key_id = ${module.compute_bucket_access_key.access_key}
+          secret_access_key = ${module.compute_bucket_access_key.secret_key}
           endpoint = ${var.region}.digitaloceanspaces.com
           acl = private
           no_check_bucket = true
