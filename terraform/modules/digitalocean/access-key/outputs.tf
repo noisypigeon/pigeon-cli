@@ -1,11 +1,11 @@
 output "access_key" {
-  description = "The access key ID of the key"
+  description = "Spaces access key ID"
   value       = digitalocean_spaces_key.bucket_key.access_key
   sensitive   = true
 }
 
 output "secret_key" {
-  description = "The access key secret of the key"
+  description = "Spaces access key secret"
   value       = digitalocean_spaces_key.bucket_key.secret_key
   sensitive   = true
 }

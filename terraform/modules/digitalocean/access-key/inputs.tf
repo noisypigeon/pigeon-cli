@@ -1,22 +1,22 @@
 variable "name" {
   type        = string
-  description = "The name of the bucket"
+  description = "Base name for the access key and default bucket grant"
 }
 
 variable "permission" {
   type        = string
-  description = "permission set"
+  description = "Spaces permission granted to each bucket (e.g. read, readwrite)"
   default     = "readwrite"
 }
 
 variable "is_bucket_scoped" {
   type        = bool
-  description = "limit key access to the bucket"
+  description = "Restrict key access to specific buckets (true) or grant full account access (false)"
   default     = true
 }
 
 variable "bucket_grants" {
   type        = list(string)
-  description = "List of bucket names to grant access to. If null, uses name variable for backward compatibility."
+  description = "Bucket names to grant access to when scoped; defaults to a single grant for `name`"
   default     = null
 }
