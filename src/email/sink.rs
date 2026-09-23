@@ -112,6 +112,18 @@ async fn run_async(
     Ok(summary)
 }
 
+/// Builds a `ProgressBar` with the style shared by every phase of a
+/// `sync`/`sink` run (fetch, and -- per ADR-0013 -- transform/upload), so
+/// they read consistently in scrollback: `{prefix} {bar:40} {pos}/{len}`.
+pub(crate) fn new_progress_bar(prefix: String, len: u64) -> ProgressBar {
+    let bar = ProgressBar::new(len);
+    if let Ok(style) = ProgressStyle::with_template("{prefix} {bar:40} {pos}/{len}") {
+        bar.set_style(style);
+    }
+    bar.set_prefix(prefix);
+    bar
+}
+
 /// Fetches every UID in `missing` from `mailbox_name` (already `EXAMINE`d on
 /// `session`) via `BODY.PEEK[]` and writes each as `<mailbox_dir>/<uid>.eml`.
 /// Returns the count written. Shared by `sink::run` and `sync::run`
@@ -128,11 +140,7 @@ pub(crate) async fn fetch_uids(
         return Ok(0);
     }
 
-    let bar = ProgressBar::new(missing.len() as u64);
-    if let Ok(style) = ProgressStyle::with_template("{prefix} {bar:40} {pos}/{len}") {
-        bar.set_style(style);
-    }
-    bar.set_prefix(mailbox_name.to_string());
+    let bar = new_progress_bar(format!("{mailbox_name} fetch"), missing.len() as u64);
 
     let uid_set = missing
         .iter()

@@ -118,6 +118,7 @@ async fn run_async(
         let pending = sink::missing_uids(&server_uids, &processed);
 
         if pending.is_empty() {
+            println!("{mailbox_name}: up to date ({} processed)", processed.len());
             summary.already_processed += processed.len();
             summary.mailboxes += 1;
             continue;
@@ -128,7 +129,14 @@ async fn run_async(
         let to_fetch = sink::missing_uids(&pending_set, &on_disk);
         sink::fetch_uids(&mut session, mailbox_name, &mailbox_dir, &to_fetch).await?;
 
+        // ADR-0013: the transform/verify/upload/delete loop below can take
+        // as long as (or longer than) the fetch phase above for a large
+        // mailbox, so it gets its own progress bar rather than leaving the
+        // terminal looking stuck once the fetch bar finishes.
+        let sync_bar = sink::new_progress_bar(format!("{mailbox_name} sync"), pending.len() as u64);
+
         for uid in &pending {
+            sync_bar.inc(1);
             let eml_path = mailbox_dir.join(format!("{uid}.eml"));
             match transform::transform_one(
                 identity,
@@ -194,6 +202,7 @@ async fn run_async(
                 }
             }
         }
+        sync_bar.finish();
 
         summary.already_processed += processed.len();
         summary.mailboxes += 1;

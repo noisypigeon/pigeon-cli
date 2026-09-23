@@ -232,7 +232,8 @@ pub(crate) fn transform_one(
                 relpath
             }
             None => {
-                let original_name = part.attachment_name().unwrap_or("attachment");
+                let original_name =
+                    sanitize_attachment_name(part.attachment_name().unwrap_or("attachment"));
                 let attachment_path =
                     unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
                 fs::write(&attachment_path, contents).map_err(|err| {
@@ -404,6 +405,19 @@ fn render_frontmatter(
     out.push_str(&format!("uid: {uid}\n"));
     out.push_str("---\n");
     out
+}
+
+/// Reduces a sender-controlled MIME attachment name to a safe filename:
+/// keeps only the final path component (so an embedded `/` can't make
+/// `Path::join` create an implicit, never-created subdirectory, per
+/// ADR-0013) and falls back to `"attachment"` if nothing usable remains.
+/// Extension is preserved, unlike `identity::sanitize_segment`, which would
+/// corrupt it.
+fn sanitize_attachment_name(name: &str) -> String {
+    match Path::new(name).file_name().and_then(|f| f.to_str()) {
+        Some(base) if !base.is_empty() => base.to_string(),
+        _ => "attachment".to_string(),
+    }
 }
 
 /// If `desired` doesn't exist yet, returns it as-is; otherwise appends
@@ -604,12 +618,12 @@ mod tests {
 
         fs::write(
             inbox.join("1.eml"),
-            eml_with_attachment("First", attachment_body),
+            eml_with_attachment("First", "a.pdf", attachment_body),
         )
         .unwrap();
         fs::write(
             inbox.join("2.eml"),
-            eml_with_attachment("Second", attachment_body),
+            eml_with_attachment("Second", "a.pdf", attachment_body),
         )
         .unwrap();
 
@@ -727,6 +741,72 @@ mod tests {
         assert!(!third.canonical_frontmatter_changed);
     }
 
+    #[test]
+    fn transform_one_sanitizes_attachment_name_with_path_separators() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let inbox = staging.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+
+        let identity = test_identity();
+        fs::write(
+            inbox.join("1.eml"),
+            eml_with_attachment("Shipping", "/img0.png", "JVBERi0xLjQK"),
+        )
+        .unwrap();
+
+        let message_index =
+            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let attachment_index =
+            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+
+        let result = transform_one(
+            &identity,
+            &inbox.join("1.eml"),
+            staging.path(),
+            output.path(),
+            &message_index,
+            &attachment_index,
+        )
+        .unwrap()
+        .unwrap();
+
+        let attachment_path = &result.attachment_paths[0];
+        assert!(
+            !attachment_path
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains('/')
+        );
+        assert!(fs::metadata(attachment_path).is_ok_and(|meta| meta.len() > 0));
+    }
+
+    #[test]
+    fn sanitize_attachment_name_strips_leading_slash() {
+        assert_eq!(sanitize_attachment_name("/img0.png"), "img0.png");
+    }
+
+    #[test]
+    fn sanitize_attachment_name_strips_nested_directories() {
+        assert_eq!(sanitize_attachment_name("a/b/c.pdf"), "c.pdf");
+    }
+
+    #[test]
+    fn sanitize_attachment_name_preserves_normal_name() {
+        assert_eq!(sanitize_attachment_name("report.pdf"), "report.pdf");
+    }
+
+    #[test]
+    fn sanitize_attachment_name_falls_back_for_dot_dot() {
+        assert_eq!(sanitize_attachment_name(".."), "attachment");
+    }
+
+    #[test]
+    fn sanitize_attachment_name_falls_back_for_bare_slash() {
+        assert_eq!(sanitize_attachment_name("/"), "attachment");
+    }
+
     fn test_identity() -> Identity {
         Identity {
             alias: "first-last".to_string(),
@@ -749,7 +829,7 @@ mod tests {
         )
     }
 
-    fn eml_with_attachment(subject: &str, attachment_base64: &str) -> String {
+    fn eml_with_attachment(subject: &str, filename: &str, attachment_base64: &str) -> String {
         format!(
             "From: Jane Doe <jane.doe@example.com>\r\n\
              To: first.last@example.com\r\n\
@@ -764,7 +844,7 @@ mod tests {
              Hello there!\r\n\
              --BOUNDARY\r\n\
              Content-Type: application/pdf\r\n\
-             Content-Disposition: attachment; filename=\"a.pdf\"\r\n\
+             Content-Disposition: attachment; filename=\"{filename}\"\r\n\
              Content-Transfer-Encoding: base64\r\n\
              \r\n\
              {attachment_base64}\r\n\
