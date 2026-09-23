@@ -72,6 +72,12 @@ pub enum EmailCommands {
         /// delete the source .eml).
         #[arg(long)]
         debug: Option<DebugPhase>,
+
+        /// Maximum number of mailboxes to process concurrently. Rejected in
+        /// combination with --debug, which stays single-mailbox and
+        /// sequential.
+        #[arg(long, default_value_t = 4)]
+        concurrency: usize,
     },
 }
 

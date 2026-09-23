@@ -304,4 +304,53 @@ mod tests {
         let path = dir.path().join("does-not-exist.md");
         assert!(amend_frontmatter_for_duplicate(&path, "mailbox/archive", 45).is_err());
     }
+
+    /// ADR-0014: `sync`'s concurrent mailbox workers share one `ContentIndex`
+    /// per dedup file behind an `Arc<Mutex<_>>`, each committing a distinct
+    /// hash. This exercises that same lock-guarded `commit()` pattern under
+    /// real thread concurrency, checking neither the in-memory map nor the
+    /// on-disk file loses or corrupts an entry.
+    #[test]
+    fn commit_survives_concurrent_access_from_multiple_threads() {
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+
+        let dir = tempfile::tempdir().unwrap();
+        let index = Arc::new(Mutex::new(
+            ContentIndex::load(dir.path(), ContentIndex::ATTACHMENT_HASHES).unwrap(),
+        ));
+
+        let handles: Vec<_> = (0..8)
+            .map(|n| {
+                let index = Arc::clone(&index);
+                let staging_dir = dir.path().to_path_buf();
+                thread::spawn(move || {
+                    index
+                        .lock()
+                        .unwrap()
+                        .commit(
+                            &staging_dir,
+                            &format!("hash{n}"),
+                            &format!("identity/a{n}.pdf"),
+                        )
+                        .unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let guard = index.lock().unwrap();
+        for n in 0..8 {
+            assert_eq!(
+                guard.check(&format!("hash{n}")),
+                Some(format!("identity/a{n}.pdf")).as_deref()
+            );
+        }
+
+        let contents =
+            fs::read_to_string(dir.path().join(ContentIndex::ATTACHMENT_HASHES)).unwrap();
+        assert_eq!(contents.lines().count(), 8);
+    }
 }

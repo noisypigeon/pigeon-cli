@@ -27,7 +27,15 @@ pub fn dispatch(command: EmailCommands) -> i32 {
             output_dir,
             output_remote,
             debug,
-        } => sync(alias, staging_dir, output_dir, output_remote, debug),
+            concurrency,
+        } => sync(
+            alias,
+            staging_dir,
+            output_dir,
+            output_remote,
+            debug,
+            concurrency,
+        ),
     }
 }
 
@@ -170,7 +178,12 @@ fn sync(
     output_dir: PathBuf,
     output_remote: Option<String>,
     debug: Option<DebugPhase>,
+    concurrency: usize,
 ) -> i32 {
+    if debug.is_some() && concurrency != 4 {
+        return fail("--concurrency cannot be combined with --debug");
+    }
+
     let path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -275,6 +288,7 @@ fn sync(
                 &staging_dir,
                 &output_dir,
                 output_remote,
+                concurrency,
             ) {
                 Ok(summary) => {
                     println!(

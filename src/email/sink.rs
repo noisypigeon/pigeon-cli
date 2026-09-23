@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
-use indicatif::{ProgressBar, ProgressStyle};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
 use crate::email::identity::sanitize_segment;
 use crate::email::imap_client::{self, ImapSession};
@@ -69,6 +69,10 @@ async fn run_async(
         .map_err(|err| format!("failed to list mailboxes: {err}"))?;
 
     let mut summary = SinkSummary::default();
+    // `--debug sink` stays sequential (ADR-0014), so a single-slot
+    // `MultiProgress` renders identically to a bare bar -- this just lets it
+    // share `new_progress_bar`/`fetch_uids` with the concurrent `sync` path.
+    let multi_progress = MultiProgress::new();
 
     for name in &names {
         if name.attributes().contains(&NameAttribute::NoSelect) {
@@ -98,8 +102,14 @@ async fn run_async(
         let local_uids = on_disk_uids(&mailbox_dir)?;
         let missing = missing_uids(&server_uids, &local_uids);
 
-        summary.downloaded +=
-            fetch_uids(&mut session, mailbox_name, &mailbox_dir, &missing).await?;
+        summary.downloaded += fetch_uids(
+            &mut session,
+            mailbox_name,
+            &mailbox_dir,
+            &missing,
+            &multi_progress,
+        )
+        .await?;
         summary.already_present += local_uids.len();
         summary.mailboxes += 1;
     }
@@ -115,13 +125,19 @@ async fn run_async(
 /// Builds a `ProgressBar` with the style shared by every phase of a
 /// `sync`/`sink` run (fetch, and -- per ADR-0013 -- transform/upload), so
 /// they read consistently in scrollback: `{prefix} {bar:40} {pos}/{len}`.
-pub(crate) fn new_progress_bar(prefix: String, len: u64) -> ProgressBar {
+/// Registered on `multi_progress` so concurrent `sync` workers (ADR-0014)
+/// render as simultaneous lines rather than overwriting each other.
+pub(crate) fn new_progress_bar(
+    prefix: String,
+    len: u64,
+    multi_progress: &MultiProgress,
+) -> ProgressBar {
     let bar = ProgressBar::new(len);
     if let Ok(style) = ProgressStyle::with_template("{prefix} {bar:40} {pos}/{len}") {
         bar.set_style(style);
     }
     bar.set_prefix(prefix);
-    bar
+    multi_progress.add(bar)
 }
 
 /// Fetches every UID in `missing` from `mailbox_name` (already `EXAMINE`d on
@@ -135,12 +151,17 @@ pub(crate) async fn fetch_uids(
     mailbox_name: &str,
     mailbox_dir: &Path,
     missing: &[u32],
+    multi_progress: &MultiProgress,
 ) -> Result<usize, String> {
     if missing.is_empty() {
         return Ok(0);
     }
 
-    let bar = new_progress_bar(format!("{mailbox_name} fetch"), missing.len() as u64);
+    let bar = new_progress_bar(
+        format!("{mailbox_name} fetch"),
+        missing.len() as u64,
+        multi_progress,
+    );
 
     let uid_set = missing
         .iter()

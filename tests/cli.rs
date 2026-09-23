@@ -295,6 +295,36 @@ fn sync_debug_transform_with_output_remote_is_rejected() {
 }
 
 #[test]
+fn sync_debug_sink_with_concurrency_is_rejected() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--concurrency",
+            "8",
+            "--debug",
+            "sink",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--concurrency cannot be combined with --debug",
+        ));
+}
+
+#[test]
 fn sync_default_flow_with_unknown_output_remote_fails_fast() {
     let config_dir = TempDir::new().unwrap();
     let staging_dir = TempDir::new().unwrap();
