@@ -9,7 +9,7 @@ This repo holds only module source — it has no root provider/backend configura
 | Path | Description |
 | --- | --- |
 | `digitalocean/access-key` | A DigitalOcean Spaces access key (`digitalocean_spaces_key`), optionally scoped to one or more buckets. |
-| `digitalocean/object-bucket` | A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) with a randomized name suffix. |
+| `digitalocean/standard-storage-bucket` | A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) with a randomized name suffix. |
 | `digitalocean/object-bucket-cold` | A data-source wrapper for a DigitalOcean Spaces Cold Storage bucket (not yet supported as a Terraform resource by the DO provider — the bucket is created click-ops and managed as a data source), optionally attached to a project. |
 | `digitalocean/project` | A thin wrapper around `digitalocean_project`. |
 

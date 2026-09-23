@@ -1,4 +1,4 @@
-# object-bucket
+# standard-storage-bucket
 
 A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) with a randomized name suffix.
 

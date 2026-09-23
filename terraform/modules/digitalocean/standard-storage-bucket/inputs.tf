@@ -32,5 +32,5 @@ variable "enable_versioning" {
 
 variable "project" {
   type        = string
-  description = "Name of Digital Ocean project bucket is associated to"
+  description = "Project this bucket is attached to"
 }
