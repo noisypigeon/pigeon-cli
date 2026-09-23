@@ -6,7 +6,7 @@ A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) with a randomized na
 ## Inputs
 
 | Name | Description | Type | Default | Required |
-| ---- | ----------- | ---- | ------- | :------: |
+|------|-------------|------|---------|:--------:|
 | <a name="input_acl"></a> [acl](#input\_acl) | Bucket ACL policy | `string` | `"private"` | no |
 | <a name="input_enable_versioning"></a> [enable\_versioning](#input\_enable\_versioning) | Object versioning enabled (true/false) | `bool` | `false` | no |
 | <a name="input_name"></a> [name](#input\_name) | Bucket name suffix | `string` | n/a | yes |
@@ -17,7 +17,7 @@ A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) with a randomized na
 ## Outputs
 
 | Name | Description |
-| ---- | ----------- |
+|------|-------------|
 | <a name="output_name"></a> [name](#output\_name) | Bucket computed name |
 | <a name="output_urn"></a> [urn](#output\_urn) | Bucket URN |
 <!-- END_TF_DOCS -->
