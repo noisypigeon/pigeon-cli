@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: module-docs-${{ github.ref }}
+  group: main-writer
   cancel-in-progress: false
 
 jobs:
