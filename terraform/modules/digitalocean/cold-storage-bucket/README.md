@@ -1,4 +1,4 @@
-# object-bucket-cold
+# cold-storage-bucket
 
 A data-source wrapper for a DigitalOcean Spaces Cold Storage bucket (not yet supported as a Terraform resource by the DO provider — the bucket is created click-ops and managed as a data source), optionally attached to a project.
 
