@@ -436,7 +436,8 @@ fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) ->
     };
     let is_single_file = files.len() == 1 && local.is_file();
 
-    let mut count = 0;
+    let mut uploaded = 0;
+    let mut unchanged = 0;
     for file in &files {
         let key = if is_single_file {
             single_file_key(remote_path, file)
@@ -449,12 +450,15 @@ fn upload(store: &Store, local: &Path, remote_alias: &str, remote_path: &str) ->
             Ok(data) => data,
             Err(err) => return fail(format!("failed to read {}: {err}", file.display())),
         };
-        if let Err(err) = client::put_object(remote, &secret, &key, data) {
-            return fail(err);
+        match client::upload_if_changed(remote, &secret, &key, data) {
+            Ok(client::UploadOutcome::Uploaded) => uploaded += 1,
+            Ok(client::UploadOutcome::Unchanged) => unchanged += 1,
+            Err(err) => return fail(err),
         }
-        count += 1;
     }
-    println!("Uploaded {count} file(s) to '{remote_alias}:{remote_path}'.");
+    println!(
+        "Uploaded {uploaded} file(s), {unchanged} unchanged, to '{remote_alias}:{remote_path}'."
+    );
     0
 }
 

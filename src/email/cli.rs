@@ -59,6 +59,13 @@ pub enum EmailCommands {
         #[arg(long)]
         output_dir: PathBuf,
 
+        /// Alias of a configured `pigeon remote` (see `remote configure`) to
+        /// upload each synced message's Markdown and attachments to, in
+        /// addition to --output-dir. Rejected as a usage error when combined
+        /// with --debug (sink/transform stay local-only).
+        #[arg(long)]
+        output_remote: Option<String>,
+
         /// Run only one phase, exactly as it behaved standalone before this
         /// command existed: "sink" fetches without transforming; "transform"
         /// transforms without fetching. Both are non-destructive (never

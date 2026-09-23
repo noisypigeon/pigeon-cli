@@ -235,6 +235,92 @@ fn sync_debug_sink_with_unknown_alias_fails_fast() {
 }
 
 #[test]
+fn sync_debug_sink_with_output_remote_is_rejected() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--output-remote",
+            "backup",
+            "--debug",
+            "sink",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--output-remote cannot be combined with --debug",
+        ));
+}
+
+#[test]
+fn sync_debug_transform_with_output_remote_is_rejected() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--output-remote",
+            "backup",
+            "--debug",
+            "transform",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--output-remote cannot be combined with --debug",
+        ));
+}
+
+#[test]
+fn sync_default_flow_with_unknown_output_remote_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let staging_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--staging-dir",
+            staging_dir.path().to_str().unwrap(),
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--output-remote",
+            "no-such-remote",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no remote named 'no-such-remote'"));
+}
+
+#[test]
 fn sync_debug_transform_without_alias_on_empty_store_says_to_authenticate() {
     let config_dir = TempDir::new().unwrap();
     let staging_dir = TempDir::new().unwrap();

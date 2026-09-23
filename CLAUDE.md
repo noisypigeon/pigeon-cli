@@ -16,6 +16,7 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0008-src-module-layout.md` — groups all email-specific code under `src/email/` (cli/commands/logic together), keeping top-level `src/cli.rs`/`src/commands/mod.rs` as thin roll-ups, so future command groups get their own sibling folder.
 - `docs/adr/0009-remote-storage.md` — `pigeon remote`: rclone-style S3-compatible storage via the `minio` crate, bucket-scoped remotes (`name:path` addressing), `configure`/`list-buckets`/`ls`/`lsd`/`copy`, secret key in the OS keychain per ADR-0003's precedent, `src/remote/` reusing ADR-0008's module shape.
 - `docs/adr/0010-remote-storage-improvements.md` — amends ADR-0009 from first real use: `name`→`alias` rename, reordered/simplified `configure` prompts, drops the dead `region` field and the unreliable inline list-buckets step (replaced by a `bucket_exists` verify-before-save check), concise S3 error formatting, and new `list`/`edit`/`remove` commands for configured remotes.
+- `docs/adr/0011-email-sync-remote-upload.md` — wires `--output-remote` into `pigeon email sync`: per-message upload inline in the existing verify/resume pipeline, `remote::client::upload_if_changed`'s ETag/MD5-based same-file-or-different-file check (warn-then-proceed on a real collision), default-flow-only (`--debug` modes reject it) — `email`'s first justified dependency on `remote`.
 
 ## Commands
 

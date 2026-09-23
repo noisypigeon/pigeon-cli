@@ -8,6 +8,8 @@ use crate::email::cli::{DebugPhase, EmailCommands};
 use crate::email::identity::{self, Identity, Store};
 use crate::email::provider::Provider;
 use crate::email::{credentials, imap_client};
+use crate::remote::credentials as remote_credentials;
+use crate::remote::store::{Remote, Store as RemoteStore};
 
 pub fn dispatch(command: EmailCommands) -> i32 {
     match command {
@@ -23,8 +25,9 @@ pub fn dispatch(command: EmailCommands) -> i32 {
             alias,
             staging_dir,
             output_dir,
+            output_remote,
             debug,
-        } => sync(alias, staging_dir, output_dir, debug),
+        } => sync(alias, staging_dir, output_dir, output_remote, debug),
     }
 }
 
@@ -165,6 +168,7 @@ fn sync(
     alias: Option<String>,
     staging_dir: PathBuf,
     output_dir: PathBuf,
+    output_remote: Option<String>,
     debug: Option<DebugPhase>,
 ) -> i32 {
     let path = match Store::default_path() {
@@ -185,6 +189,32 @@ fn sync(
             Ok(identity) => identity,
             Err(err) => return fail(err),
         },
+    };
+
+    let resolved_remote: Option<(Remote, String)> = match &output_remote {
+        Some(remote_alias) => {
+            if debug.is_some() {
+                return fail("--output-remote cannot be combined with --debug");
+            }
+            let remote_path = match RemoteStore::default_path() {
+                Ok(path) => path,
+                Err(err) => return fail(err),
+            };
+            let remote_store = match RemoteStore::load(&remote_path) {
+                Ok(store) => store,
+                Err(err) => return fail(err),
+            };
+            let remote = match remote_store.find(remote_alias) {
+                Some(remote) => remote.clone(),
+                None => return fail(format!("no remote named '{remote_alias}'")),
+            };
+            let secret = match remote_credentials::get_secret(&remote.alias) {
+                Ok(secret) => secret,
+                Err(err) => return fail(err),
+            };
+            Some((remote, secret))
+        }
+        None => None,
     };
 
     match debug {
@@ -231,15 +261,27 @@ fn sync(
                 Ok(secret) => secret,
                 Err(err) => return fail(err),
             };
-            match crate::email::sync::run(identity, &secret, &staging_dir, &output_dir) {
+            let output_remote = resolved_remote
+                .as_ref()
+                .map(|(remote, secret)| (remote, secret.as_str()));
+            match crate::email::sync::run(
+                identity,
+                &secret,
+                &staging_dir,
+                &output_dir,
+                output_remote,
+            ) {
                 Ok(summary) => {
                     println!(
-                        "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed.",
+                        "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed, {} uploaded, {} unchanged, {} upload failed.",
                         identity.alias,
                         summary.mailboxes,
                         summary.synced,
                         summary.already_processed,
-                        summary.failed
+                        summary.failed,
+                        summary.uploaded,
+                        summary.unchanged,
+                        summary.upload_failed
                     );
                     0
                 }

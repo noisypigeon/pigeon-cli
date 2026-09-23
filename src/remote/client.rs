@@ -4,6 +4,8 @@ use minio::s3::MinioClient;
 use minio::s3::creds::StaticProvider;
 use minio::s3::error::{Error as S3Error, S3ServerError};
 use minio::s3::http::BaseUrl;
+use minio::s3::minio_error_response::MinioErrorCode;
+use minio::s3::response_traits::HasEtagFromHeaders;
 use minio::s3::segmented_bytes::SegmentedBytes;
 use minio::s3::types::{S3Api, ToStream};
 
@@ -14,6 +16,12 @@ pub(crate) struct ObjectEntry {
     pub key: String,
     pub size: u64,
     pub is_prefix: bool,
+}
+
+/// Outcome of `upload_if_changed`'s existing-object hash comparison.
+pub(crate) enum UploadOutcome {
+    Uploaded,
+    Unchanged,
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -157,16 +165,56 @@ pub(crate) fn get_object(remote: &Remote, secret_key: &str, key: &str) -> Result
     })
 }
 
-/// Uploads `data` to `key` in `remote`'s bucket. Whole-object, non-streaming
-/// -- see `get_object`'s note.
-pub(crate) fn put_object(
+/// Uploads `data` to `key` in `remote`'s bucket, but only if it differs from
+/// what's already there. For a simple (non-multipart) PUT, an S3 ETag is the
+/// hex MD5 digest of the object's bytes -- so an existing object's ETag
+/// (fetched via a HEAD request, `stat_object`, no download needed) is
+/// compared directly against `data`'s local hex MD5:
+/// - no existing object: upload, `Uploaded`.
+/// - existing object, matching hash: skip the PUT, `Unchanged`.
+/// - existing object, different hash: note that the key changed (the bucket's
+///   versioning means nothing is destroyed, but pigeon says so rather than
+///   silently overwriting a stable-looking key), then upload, `Uploaded`.
+pub(crate) fn upload_if_changed(
     remote: &Remote,
     secret_key: &str,
     key: &str,
     data: Vec<u8>,
-) -> Result<(), String> {
+) -> Result<UploadOutcome, String> {
     runtime()?.block_on(async {
         let client = build_client(remote, secret_key)?;
+
+        let existing_etag = match client
+            .stat_object(remote.bucket.as_str(), key)
+            .map_err(|err| format!("invalid object key '{key}': {err}"))?
+            .build()
+            .send()
+            .await
+        {
+            Ok(resp) => Some(
+                resp.etag()
+                    .map_err(|err| format!("failed to read ETag for '{key}': {err}"))?
+                    .to_string(),
+            ),
+            Err(S3Error::S3Server(S3ServerError::S3Error(ref response)))
+                if response.code() == MinioErrorCode::NoSuchKey =>
+            {
+                None
+            }
+            Err(err) => {
+                return Err(format!("failed to check '{key}': {}", format_error(&err)));
+            }
+        };
+
+        let local_hash = format!("{:x}", md5::compute(&data));
+
+        if let Some(existing) = existing_etag {
+            if existing == local_hash {
+                return Ok(UploadOutcome::Unchanged);
+            }
+            println!("note: '{key}' changed since last upload, new version created");
+        }
+
         let bytes = SegmentedBytes::from(Bytes::from(data));
         client
             .put_object(remote.bucket.as_str(), key, bytes)
@@ -175,6 +223,6 @@ pub(crate) fn put_object(
             .send()
             .await
             .map_err(|err| format!("failed to upload '{key}': {}", format_error(&err)))?;
-        Ok(())
+        Ok(UploadOutcome::Uploaded)
     })
 }

@@ -8,7 +8,10 @@ use futures::TryStreamExt;
 
 use crate::email::identity::Identity;
 use crate::email::imap_client;
+use crate::email::transform::TransformedMessage;
 use crate::email::{sink, transform};
+use crate::remote::client;
+use crate::remote::store::Remote;
 
 const PROCESSED_FILE_NAME: &str = ".processed";
 
@@ -19,6 +22,9 @@ pub struct SyncSummary {
     pub synced: usize,
     pub already_processed: usize,
     pub failed: usize,
+    pub uploaded: usize,
+    pub unchanged: usize,
+    pub upload_failed: usize,
 }
 
 /// For every mailbox, for every message not yet in `.processed`: fetch it
@@ -31,13 +37,20 @@ pub fn run(
     secret: &str,
     staging_dir: &Path,
     output_dir: &Path,
+    output_remote: Option<(&Remote, &str)>,
 ) -> Result<SyncSummary, String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_io()
         .build()
         .map_err(|err| format!("failed to start async runtime: {err}"))?;
 
-    runtime.block_on(run_async(identity, secret, staging_dir, output_dir))
+    runtime.block_on(run_async(
+        identity,
+        secret,
+        staging_dir,
+        output_dir,
+        output_remote,
+    ))
 }
 
 async fn run_async(
@@ -45,6 +58,7 @@ async fn run_async(
     secret: &str,
     staging_dir: &Path,
     output_dir: &Path,
+    output_remote: Option<(&Remote, &str)>,
 ) -> Result<SyncSummary, String> {
     let mut session = imap_client::connect_and_login(
         &identity.host,
@@ -110,6 +124,26 @@ async fn run_async(
             let eml_path = mailbox_dir.join(format!("{uid}.eml"));
             match transform::transform_one(identity, &eml_path, staging_dir, output_dir)? {
                 Some(transformed) if transform::verify_transformed(&transformed) => {
+                    if let Some((remote, remote_secret)) = output_remote {
+                        match upload_transformed(remote, remote_secret, output_dir, &transformed) {
+                            Ok(outcomes) => {
+                                for outcome in outcomes {
+                                    match outcome {
+                                        client::UploadOutcome::Uploaded => summary.uploaded += 1,
+                                        client::UploadOutcome::Unchanged => summary.unchanged += 1,
+                                    }
+                                }
+                            }
+                            Err(err) => {
+                                eprintln!(
+                                    "Warning: upload failed for UID {uid} in '{mailbox_name}': {err}, keeping {}",
+                                    eml_path.display()
+                                );
+                                summary.upload_failed += 1;
+                                continue;
+                            }
+                        }
+                    }
                     let _ = fs::remove_file(&eml_path);
                     append_processed(&mailbox_dir, *uid)?;
                     summary.synced += 1;
@@ -166,6 +200,42 @@ fn append_processed(mailbox_dir: &Path, uid: u32) -> Result<(), String> {
     writeln!(file, "{uid}").map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
+/// The S3 key for `path` (an absolute path rooted at `output_dir`, as
+/// produced by `transform::transform_one`): `output_dir`'s relative tree
+/// mirrored directly at the bucket root, per ADR-0011. Joined component-wise
+/// rather than via `to_string_lossy()` on the whole relative path so the key
+/// always uses `/`, regardless of the host platform's path separator.
+fn upload_key(output_dir: &Path, path: &Path) -> Result<String, String> {
+    let relative = path
+        .strip_prefix(output_dir)
+        .map_err(|_| format!("{} is not under {}", path.display(), output_dir.display()))?;
+    Ok(relative
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/"))
+}
+
+/// Uploads a transformed message's Markdown and every attachment to
+/// `remote`, mirroring `output_dir`'s relative tree at the bucket root. Bails
+/// out (via `?`) on the first failing file, so a message's upload is treated
+/// as atomic -- a partially-uploaded message never gets `.processed`/deleted.
+fn upload_transformed(
+    remote: &Remote,
+    secret: &str,
+    output_dir: &Path,
+    transformed: &TransformedMessage,
+) -> Result<Vec<client::UploadOutcome>, String> {
+    let mut outcomes = Vec::new();
+    for path in std::iter::once(&transformed.md_path).chain(transformed.attachment_paths.iter()) {
+        let key = upload_key(output_dir, path)?;
+        let data =
+            fs::read(path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        outcomes.push(client::upload_if_changed(remote, secret, &key, data)?);
+    }
+    Ok(outcomes)
+}
+
 /// Removes the `.processed` marker -- used alongside `sink::clear_eml_files`
 /// when a mailbox's `UIDVALIDITY` changes, since old processed-UID records
 /// are as meaningless as old raw `.eml`s once that happens.
@@ -214,5 +284,35 @@ mod tests {
     fn clear_processed_missing_file_is_ok() {
         let dir = tempfile::tempdir().unwrap();
         assert!(clear_processed(dir.path()).is_ok());
+    }
+
+    #[test]
+    fn upload_key_joins_nested_relative_path_with_forward_slashes() {
+        let output_dir = Path::new("/staging/output");
+        let path = output_dir.join("identity-at-example.com/attachments/2026-01-01-hi-file.pdf");
+
+        assert_eq!(
+            upload_key(output_dir, &path).unwrap(),
+            "identity-at-example.com/attachments/2026-01-01-hi-file.pdf"
+        );
+    }
+
+    #[test]
+    fn upload_key_top_level_file_has_no_separator() {
+        let output_dir = Path::new("/staging/output");
+        let path = output_dir.join("identity-at-example.com/2026-01-01-hi.md");
+
+        assert_eq!(
+            upload_key(output_dir, &path).unwrap(),
+            "identity-at-example.com/2026-01-01-hi.md"
+        );
+    }
+
+    #[test]
+    fn upload_key_errors_when_path_is_not_under_output_dir() {
+        let output_dir = Path::new("/staging/output");
+        let path = Path::new("/elsewhere/file.md");
+
+        assert!(upload_key(output_dir, path).is_err());
     }
 }
