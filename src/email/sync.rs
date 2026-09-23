@@ -267,7 +267,13 @@ async fn sync_mailbox(
     let pending = sink::missing_uids(&server_uids, &processed);
 
     if pending.is_empty() {
-        println!("{mailbox_name}: up to date ({} processed)", processed.len());
+        // ADR-0015: routed through `MultiProgress` rather than a raw
+        // `println!` -- a plain print while other mailboxes' bars are
+        // active corrupts their shared redraw state.
+        let _ = multi_progress.println(format!(
+            "{mailbox_name}: up to date ({} processed)",
+            processed.len()
+        ));
         summary.already_processed += processed.len();
         summary.mailboxes += 1;
         session
@@ -305,8 +311,11 @@ async fn sync_mailbox(
 
         // Both indexes are locked only for this synchronous call
         // (`transform_one` never awaits) and dropped immediately after --
-        // never held across an `.await` below.
-        let transform_result = {
+        // never held across an `.await` below. Wrapped in `suspend` (ADR-0015)
+        // so `transform_one`'s own internal warning `eprintln!`s -- which
+        // `transform.rs` prints directly, with no `MultiProgress` of its own
+        // -- don't corrupt the active bars' redraw state either.
+        let transform_result = multi_progress.suspend(|| {
             let message_guard = message_index.lock().unwrap();
             let attachment_guard = attachment_index.lock().unwrap();
             transform::transform_one(
@@ -317,7 +326,7 @@ async fn sync_mailbox(
                 &message_guard,
                 &attachment_guard,
             )
-        };
+        });
 
         match transform_result? {
             Some(transformed) if transform::verify_transformed(&transformed) => {
@@ -354,10 +363,10 @@ async fn sync_mailbox(
                             }
                         }
                         Err(err) => {
-                            eprintln!(
+                            let _ = multi_progress.println(format!(
                                 "Warning: upload failed for UID {uid} in '{mailbox_name}': {err}, keeping {}",
                                 eml_path.display()
-                            );
+                            ));
                             summary.upload_failed += 1;
                             continue;
                         }
@@ -373,10 +382,10 @@ async fn sync_mailbox(
                 summary.deduped_attachments += transformed.attachments_deduped;
             }
             Some(_) => {
-                eprintln!(
+                let _ = multi_progress.println(format!(
                     "Warning: verification failed for UID {uid} in '{mailbox_name}', keeping {}",
                     eml_path.display()
-                );
+                ));
                 summary.failed += 1;
             }
             None => {
