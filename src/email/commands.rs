@@ -206,7 +206,7 @@ fn sync(
 
     let resolved_remote: Option<(BucketConfig, String)> = match &remote_output {
         Some(remote_alias) => {
-            if debug.is_some() {
+            if matches!(debug, Some(DebugPhase::Sink) | Some(DebugPhase::Transform)) {
                 return fail("--remote-output cannot be combined with --debug");
             }
             let remote_path = match DataopsStore::default_path() {
@@ -268,6 +268,30 @@ fn sync(
                         summary.skipped,
                         summary.merged_messages,
                         summary.deduped_attachments
+                    );
+                    0
+                }
+                Err(err) => fail(err),
+            }
+        }
+        Some(DebugPhase::Upload) => {
+            let Some((remote, remote_secret)) = resolved_remote
+                .as_ref()
+                .map(|(remote, secret)| (remote, secret.as_str()))
+            else {
+                return fail("--remote-output is required with --debug upload");
+            };
+            match crate::email::sync::run_upload(
+                identity,
+                &staging_dir,
+                &output_dir,
+                remote,
+                remote_secret,
+            ) {
+                Ok(summary) => {
+                    println!(
+                        "Uploaded {} identity: {} uploaded, {} unchanged, {} upload failed.",
+                        identity.alias, summary.uploaded, summary.unchanged, summary.upload_failed
                     );
                     0
                 }

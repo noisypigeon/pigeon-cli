@@ -58,17 +58,19 @@ pub enum EmailCommands {
         local_output: Option<PathBuf>,
 
         /// Alias of a configured bucket-config (see `pigeon dataops
-        /// bucket-config new`) to upload each synced message's Markdown and
-        /// attachments to, in addition to --local-output. Rejected as a
-        /// usage error when combined with --debug (sink/transform stay
-        /// local-only).
+        /// bucket-config new`) to upload the local result tree to, once the
+        /// entire local fetch/transform/dedupe phase is complete. Rejected
+        /// as a usage error with --debug sink/transform (which stay
+        /// local-only); required with --debug upload.
         #[arg(long)]
         remote_output: Option<String>,
 
         /// Run only one phase, exactly as it behaved standalone before this
         /// command existed: "sink" fetches without transforming; "transform"
-        /// transforms without fetching. Both are non-destructive (never
-        /// delete the source .eml).
+        /// transforms without fetching; "upload" uploads the existing local
+        /// result tree to --remote-output without touching IMAP at all.
+        /// sink/transform are non-destructive (never delete the source
+        /// .eml).
         #[arg(long)]
         debug: Option<DebugPhase>,
 
@@ -87,4 +89,7 @@ pub enum DebugPhase {
     Sink,
     /// Transform-only: read existing .eml files, never fetch or delete them.
     Transform,
+    /// Upload-only: upload the local result tree to --remote-output,
+    /// skipping fetch/transform entirely. Requires --remote-output.
+    Upload,
 }

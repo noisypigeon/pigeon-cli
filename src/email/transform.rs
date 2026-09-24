@@ -30,11 +30,6 @@ pub(crate) struct TransformedMessage {
     /// True if this call merged a duplicate whole message into an existing
     /// canonical file rather than writing anything new (ADR-0012).
     pub merged: bool,
-    /// True only when `merged` and the canonical file's frontmatter was
-    /// actually rewritten (a new mailbox/uid combination). False for a
-    /// fresh (non-merged) message, and false for an idempotent replay of an
-    /// already-recorded duplicate.
-    pub canonical_frontmatter_changed: bool,
     /// Count of this message's attachments that hit the attachment-hash
     /// index instead of being freshly written.
     pub attachments_deduped: usize,
@@ -161,11 +156,10 @@ pub(crate) fn transform_one(
     if let Some(canonical_relpath) = message_index.check(&message_hash) {
         let canonical_md_path = identity_dir.join(canonical_relpath);
         return match dedup::amend_frontmatter_for_duplicate(&canonical_md_path, &mailbox, uid) {
-            Ok(changed) => Ok(Some(TransformedMessage {
+            Ok(_) => Ok(Some(TransformedMessage {
                 md_path: canonical_md_path,
                 attachment_paths: Vec::new(),
                 merged: true,
-                canonical_frontmatter_changed: changed,
                 attachments_deduped: 0,
                 pending_message_hash: None,
                 pending_attachment_hashes: Vec::new(),
@@ -284,7 +278,6 @@ pub(crate) fn transform_one(
         md_path,
         attachment_paths,
         merged: false,
-        canonical_frontmatter_changed: false,
         attachments_deduped,
         pending_message_hash,
         pending_attachment_hashes,
@@ -587,7 +580,6 @@ mod tests {
             md_path,
             attachment_paths,
             merged: false,
-            canonical_frontmatter_changed: false,
             attachments_deduped: 0,
             pending_message_hash: None,
             pending_attachment_hashes: Vec::new(),
@@ -637,7 +629,6 @@ mod tests {
 
         let mut transformed = dummy_transformed(canonical_path, vec![]);
         transformed.merged = true;
-        transformed.canonical_frontmatter_changed = true;
 
         assert!(verify_transformed(&transformed));
     }
@@ -754,7 +745,6 @@ mod tests {
         .unwrap();
 
         assert!(second.merged);
-        assert!(second.canonical_frontmatter_changed);
         assert!(second.attachment_paths.is_empty());
         assert_eq!(second.md_path, first.md_path);
 
@@ -774,7 +764,6 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(third.merged);
-        assert!(!third.canonical_frontmatter_changed);
     }
 
     #[test]

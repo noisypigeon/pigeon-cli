@@ -304,6 +304,31 @@ fn sync_debug_sink_with_concurrency_is_rejected() {
 }
 
 #[test]
+fn sync_debug_upload_without_remote_output_is_rejected() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    pigeon_in(&config_dir)
+        .args([
+            "email",
+            "sync",
+            "first-last",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--debug",
+            "upload",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--remote-output is required with --debug upload",
+        ));
+}
+
+#[test]
 fn sync_default_flow_with_unknown_remote_output_fails_fast() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
