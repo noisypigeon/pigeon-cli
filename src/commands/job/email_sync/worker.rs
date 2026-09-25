@@ -1,11 +1,12 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use indicatif::MultiProgress;
+use futures::{StreamExt, stream};
+use indicatif::{MultiProgress, ProgressBar};
 
 use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
@@ -244,6 +245,19 @@ async fn process_batch_on_session(
     Ok(outcome)
 }
 
+/// One file queued for upload, carrying everything the concurrent upload
+/// phase needs without re-deriving it: which identity's `.uploaded` index
+/// to commit into, the absolute path to read, and its already-computed S3
+/// key.
+struct UploadTask {
+    staging_dir: PathBuf,
+    path: PathBuf,
+    key: String,
+}
+
+const UPLOAD_RETRIES: usize = 3;
+const UPLOAD_RETRY_BACKOFF: Duration = Duration::from_secs(2);
+
 const UPLOADED_FILE_NAME: &str = ".uploaded";
 
 /// Tracks which output files (by their S3 key, per `upload_key`) have
@@ -312,41 +326,146 @@ struct UploadSummary {
     upload_failed: usize,
 }
 
-/// Uploads every file under `identity_dir` that isn't already recorded in
-/// `.uploaded`, per ADR-0019 -- runs only after this identity's dedup pass
-/// has fully completed, so every file it sees is already in its final,
-/// deduped state.
-async fn run_upload_phase(
+/// Builds this identity's not-yet-uploaded file list (per ADR-0019's
+/// `.uploaded` tracking) and loads its index, without uploading anything --
+/// kept separate from the upload itself (ADR-0024 §1) so it's unit-testable
+/// without any network call, and so every identity's tasks can be gathered
+/// into one shared queue before the concurrent upload phase runs.
+fn pending_upload_tasks(
+    ctx: &IdentityContext,
     identity_dir: &Path,
-    output_dir: &Path,
-    staging_dir: &Path,
+) -> Result<(Vec<UploadTask>, UploadedIndex), String> {
+    let uploaded_index = UploadedIndex::load(&ctx.staging_dir)?;
+    let mut tasks = Vec::new();
+    for path in collect_files(identity_dir)? {
+        let key = upload_key(&ctx.output_dir, &path)?;
+        if !uploaded_index.contains(&key) {
+            tasks.push(UploadTask {
+                staging_dir: ctx.staging_dir.clone(),
+                path,
+                key,
+            });
+        }
+    }
+    Ok((tasks, uploaded_index))
+}
+
+/// Commits a successful upload into the uploading identity's index, locked
+/// only for the duration of this call -- identities never contend on each
+/// other's lock, only concurrent uploads for the *same* identity do
+/// (ADR-0024 §3).
+fn commit_uploaded(
+    uploaded_indexes: &HashMap<PathBuf, Arc<Mutex<UploadedIndex>>>,
+    task: &UploadTask,
+) -> Result<(), String> {
+    let index = uploaded_indexes
+        .get(&task.staging_dir)
+        .expect("every task's staging_dir has a registered index");
+    index.lock().unwrap().commit(&task.staging_dir, &task.key)
+}
+
+/// Outcome of one file's upload attempt, for `run_upload_phase`'s summary
+/// fold.
+enum UploadOutcomeKind {
+    Uploaded,
+    Unchanged,
+    Failed,
+}
+
+/// Reads and uploads one file, retrying transient failures with backoff the
+/// same way `connect_with_retry` does for IMAP (ADR-0024 §6), then commits
+/// success into its identity's index and advances the shared progress bar.
+/// A file that still fails after exhausting retries is warned about via
+/// `multi_progress.println` (load-bearing now that upload bars are live,
+/// ADR-0024 §4/ADR-0015) and counted as failed -- never committed, so it's
+/// retried again on the job's next invocation.
+async fn upload_one(
+    task: UploadTask,
+    uploaded_indexes: &HashMap<PathBuf, Arc<Mutex<UploadedIndex>>>,
     bucket_config: &BucketConfig,
     secret: &str,
-) -> Result<UploadSummary, String> {
-    let mut uploaded_index = UploadedIndex::load(staging_dir)?;
-    let files = collect_files(identity_dir)?;
-
-    let mut summary = UploadSummary::default();
-    for path in files {
-        let key = upload_key(output_dir, &path)?;
-        if uploaded_index.contains(&key) {
-            continue;
-        }
-
-        let data =
-            fs::read(&path).map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-        match client::upload_if_changed(bucket_config, secret, &key, data).await {
-            Ok(client::UploadOutcome::Uploaded) => summary.uploaded += 1,
-            Ok(client::UploadOutcome::Unchanged) => summary.unchanged += 1,
-            Err(err) => {
-                eprintln!("Warning: upload failed for {}: {err}", path.display());
-                summary.upload_failed += 1;
-                continue;
-            }
-        }
-        uploaded_index.commit(staging_dir, &key)?;
+    bar: &ProgressBar,
+    multi_progress: &MultiProgress,
+) -> UploadOutcomeKind {
+    let outcome = async {
+        let data = fs::read(&task.path)
+            .map_err(|err| format!("failed to read {}: {err}", task.path.display()))?;
+        retry_with_backoff(UPLOAD_RETRIES, UPLOAD_RETRY_BACKOFF, || {
+            client::upload_if_changed(bucket_config, secret, &task.key, data.clone())
+        })
+        .await
     }
-    Ok(summary)
+    .await;
+
+    bar.inc(1);
+    match outcome {
+        Ok(client::UploadOutcome::Uploaded) => {
+            let _ = commit_uploaded(uploaded_indexes, &task);
+            UploadOutcomeKind::Uploaded
+        }
+        Ok(client::UploadOutcome::Unchanged) => {
+            let _ = commit_uploaded(uploaded_indexes, &task);
+            UploadOutcomeKind::Unchanged
+        }
+        Err(err) => {
+            let _ = multi_progress.println(format!(
+                "Warning: upload failed for {}: {err}",
+                task.path.display()
+            ));
+            UploadOutcomeKind::Failed
+        }
+    }
+}
+
+/// Uploads every task in `tasks` -- spanning every selected identity's
+/// not-yet-uploaded files, gathered once every identity's dedup pass has
+/// completed (ADR-0024 §1) -- concurrently at `concurrency`, via
+/// `stream::buffer_unordered` rather than a manual worker pool: uploads
+/// have no per-worker session to reuse (`client::upload_if_changed` already
+/// builds a fresh S3 client per call), so there's no connection-affinity
+/// reason to prefer the fetch/transform worker-pool shape here. Each task
+/// is yielded by `stream::iter` exactly once, so no two concurrently
+/// in-flight uploads can ever be for the same file (ADR-0024 §2).
+async fn run_upload_phase(
+    tasks: Vec<UploadTask>,
+    uploaded_indexes: &HashMap<PathBuf, Arc<Mutex<UploadedIndex>>>,
+    bucket_config: &BucketConfig,
+    secret: &str,
+    concurrency: usize,
+    multi_progress: &MultiProgress,
+) -> UploadSummary {
+    if tasks.is_empty() {
+        return UploadSummary::default();
+    }
+    let bar = sink::new_progress_bar("upload".to_string(), tasks.len() as u64, multi_progress);
+
+    let summary = stream::iter(tasks)
+        .map(|task| {
+            upload_one(
+                task,
+                uploaded_indexes,
+                bucket_config,
+                secret,
+                &bar,
+                multi_progress,
+            )
+        })
+        .buffer_unordered(concurrency.max(1))
+        .fold(
+            UploadSummary::default(),
+            |mut summary, outcome| async move {
+                match outcome {
+                    UploadOutcomeKind::Uploaded => summary.uploaded += 1,
+                    UploadOutcomeKind::Unchanged => summary.unchanged += 1,
+                    UploadOutcomeKind::Failed => summary.upload_failed += 1,
+                }
+                summary
+            },
+        )
+        .await;
+
+    bar.finish();
+    summary
 }
 
 /// Outcome of a full `job run email-sync` execution, across every selected
@@ -422,6 +541,9 @@ pub(crate) async fn run_email_sync_job(
         return Err(err);
     }
 
+    let mut all_upload_tasks = Vec::new();
+    let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
+
     for ctx in identities.iter() {
         let identity_dir = ctx
             .output_dir
@@ -445,19 +567,29 @@ pub(crate) async fn run_email_sync_job(
         summary.merged_messages += dedup_summary.merged_messages;
         summary.deduped_attachments += dedup_summary.deduped_attachments;
 
-        if let Some((bucket_config, secret)) = remote {
-            let upload_summary = run_upload_phase(
-                &identity_dir,
-                &ctx.output_dir,
-                &ctx.staging_dir,
-                bucket_config,
-                secret,
-            )
-            .await?;
-            summary.uploaded += upload_summary.uploaded;
-            summary.unchanged += upload_summary.unchanged;
-            summary.upload_failed += upload_summary.upload_failed;
+        if remote.is_some() {
+            let (tasks, uploaded_index) = pending_upload_tasks(ctx, &identity_dir)?;
+            all_upload_tasks.extend(tasks);
+            uploaded_indexes.insert(
+                ctx.staging_dir.clone(),
+                Arc::new(Mutex::new(uploaded_index)),
+            );
         }
+    }
+
+    if let Some((bucket_config, secret)) = remote {
+        let upload_summary = run_upload_phase(
+            all_upload_tasks,
+            &uploaded_indexes,
+            bucket_config,
+            secret,
+            concurrency,
+            &multi_progress,
+        )
+        .await;
+        summary.uploaded += upload_summary.uploaded;
+        summary.unchanged += upload_summary.unchanged;
+        summary.upload_failed += upload_summary.upload_failed;
     }
 
     Ok(summary)
@@ -515,5 +647,68 @@ mod tests {
 
         assert_eq!(result, Ok("connected"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    fn test_ctx(staging_dir: &Path, output_dir: &Path) -> IdentityContext {
+        IdentityContext {
+            identity: crate::commands::keyring::email::identity::Identity {
+                alias: "alias".to_string(),
+                email: "person@example.com".to_string(),
+                provider: crate::commands::keyring::email::provider::Provider::Gmail,
+                host: "imap.gmail.com".to_string(),
+                port: 993,
+            },
+            secret: "secret".to_string(),
+            staging_dir: staging_dir.to_path_buf(),
+            output_dir: output_dir.to_path_buf(),
+        }
+    }
+
+    #[test]
+    fn pending_upload_tasks_includes_every_file_when_index_is_empty() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let identity_dir = output.path().join("alias-out");
+        fs::create_dir_all(&identity_dir).unwrap();
+        fs::write(identity_dir.join("a.md"), b"a").unwrap();
+        fs::write(identity_dir.join("b.md"), b"b").unwrap();
+
+        let ctx = test_ctx(staging.path(), output.path());
+        let (tasks, index) = pending_upload_tasks(&ctx, &identity_dir).unwrap();
+
+        let mut keys: Vec<String> = tasks.iter().map(|task| task.key.clone()).collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec!["alias-out/a.md".to_string(), "alias-out/b.md".to_string()]
+        );
+        assert!(!index.contains("alias-out/a.md"));
+    }
+
+    #[test]
+    fn pending_upload_tasks_skips_files_already_in_uploaded_index() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let identity_dir = output.path().join("alias-out");
+        fs::create_dir_all(&identity_dir).unwrap();
+        fs::write(identity_dir.join("a.md"), b"a").unwrap();
+        fs::write(identity_dir.join("b.md"), b"b").unwrap();
+
+        let ctx = test_ctx(staging.path(), output.path());
+        let key_a = upload_key(&ctx.output_dir, &identity_dir.join("a.md")).unwrap();
+        fs::write(
+            staging.path().join(UPLOADED_FILE_NAME),
+            format!("{key_a}\n"),
+        )
+        .unwrap();
+
+        let (tasks, index) = pending_upload_tasks(&ctx, &identity_dir).unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0].key,
+            upload_key(&ctx.output_dir, &identity_dir.join("b.md")).unwrap()
+        );
+        assert!(index.contains(&key_a));
     }
 }
