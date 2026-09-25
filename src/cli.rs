@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::dataops::cli::DataopsArgs;
 use crate::email::cli::EmailArgs;
+use crate::job::cli::JobArgs;
 
 /// Pigeon: authenticate, sink, and transform personal data from external services.
 #[derive(Parser, Debug)]
@@ -17,4 +18,6 @@ pub enum Commands {
     Email(EmailArgs),
     /// Manage S3-compatible bucket configurations
     Dataops(DataopsArgs),
+    /// Run job-orchestrated pipelines (e.g. email-sync)
+    Job(JobArgs),
 }

@@ -186,6 +186,44 @@ pub(crate) fn amend_frontmatter_for_duplicate(
     Ok(true)
 }
 
+/// Rewrites a single `attachments:` frontmatter entry from `old_relpath` to
+/// `new_relpath` -- needed when a message's own `.md` was already written
+/// referencing an attachment's staged location, but that attachment turned
+/// out to be a cross-message content duplicate (or hit a filename
+/// collision) and was placed somewhere else by the post-transform dedup
+/// pass (ADR-0021 §7/§10). Same pure-textual-edit technique as
+/// `amend_frontmatter_for_duplicate`, targeting an `  - <path>` line instead
+/// of the `tags:`/`also-in:` block.
+///
+/// Returns `Ok(true)` if a line matching `old_relpath` was found and
+/// rewritten, `Ok(false)` if it wasn't (already rewritten -- an idempotent
+/// resume/crash-recovery replay leaves the file untouched). `Err` if
+/// `md_path` can't be read.
+pub(crate) fn rewrite_attachment_reference(
+    md_path: &Path,
+    old_relpath: &str,
+    new_relpath: &str,
+) -> Result<bool, String> {
+    let contents = fs::read_to_string(md_path)
+        .map_err(|err| format!("failed to read {}: {err}", md_path.display()))?;
+    let had_trailing_newline = contents.ends_with('\n');
+    let mut lines: Vec<String> = contents.lines().map(str::to_string).collect();
+
+    let old_line = format!("  - {old_relpath}");
+    let Some(idx) = lines.iter().position(|line| line == &old_line) else {
+        return Ok(false);
+    };
+    lines[idx] = format!("  - {new_relpath}");
+
+    let mut rewritten = lines.join("\n");
+    if had_trailing_newline {
+        rewritten.push('\n');
+    }
+    fs::write(md_path, rewritten)
+        .map_err(|err| format!("failed to write {}: {err}", md_path.display()))?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,6 +338,60 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("does-not-exist.md");
         assert!(amend_frontmatter_for_duplicate(&path, "mailbox/archive", 45).is_err());
+    }
+
+    #[test]
+    fn rewrite_attachment_reference_replaces_matching_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("canonical.md");
+        fs::write(&path, FIXTURE).unwrap();
+
+        let changed = rewrite_attachment_reference(
+            &path,
+            "attachments/2024-01-26-hello-world-bingo.pdf",
+            "attachments/2024-01-26-hello-world-bingo-2.pdf",
+        )
+        .unwrap();
+        assert!(changed);
+
+        let contents = fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("attachments:\n  - attachments/2024-01-26-hello-world-bingo-2.pdf")
+        );
+        assert!(!contents.contains("attachments/2024-01-26-hello-world-bingo.pdf\n"));
+    }
+
+    #[test]
+    fn rewrite_attachment_reference_is_idempotent_when_old_path_already_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("canonical.md");
+        fs::write(&path, FIXTURE).unwrap();
+
+        rewrite_attachment_reference(
+            &path,
+            "attachments/2024-01-26-hello-world-bingo.pdf",
+            "attachments/canonical.pdf",
+        )
+        .unwrap();
+        let after_first = fs::read_to_string(&path).unwrap();
+
+        let changed = rewrite_attachment_reference(
+            &path,
+            "attachments/2024-01-26-hello-world-bingo.pdf",
+            "attachments/canonical.pdf",
+        )
+        .unwrap();
+        assert!(!changed);
+        assert_eq!(fs::read_to_string(&path).unwrap(), after_first);
+    }
+
+    #[test]
+    fn rewrite_attachment_reference_errors_on_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.md");
+        assert!(
+            rewrite_attachment_reference(&path, "attachments/a.pdf", "attachments/b.pdf").is_err()
+        );
     }
 
     #[test]

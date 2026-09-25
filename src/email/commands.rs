@@ -1,12 +1,9 @@
 use std::io::{BufRead, IsTerminal};
-use std::path::PathBuf;
 
 use dialoguer::Password;
 
 use crate::commands::FAILURE_EXIT_CODE;
-use crate::dataops::credentials as remote_credentials;
-use crate::dataops::store::{BucketConfig, Store as DataopsStore};
-use crate::email::cli::{DebugPhase, EmailCommands};
+use crate::email::cli::EmailCommands;
 use crate::email::identity::{self, Identity, Store};
 use crate::email::provider::Provider;
 use crate::email::{credentials, imap_client};
@@ -21,13 +18,6 @@ pub fn dispatch(command: EmailCommands) -> i32 {
             port,
         } => authenticate(email, alias, provider, host, port),
         EmailCommands::List => list_identities(),
-        EmailCommands::Sync {
-            alias,
-            local_output,
-            remote_output,
-            debug,
-            concurrency,
-        } => sync(alias, local_output, remote_output, debug, concurrency),
     }
 }
 
@@ -167,173 +157,6 @@ fn list_identities() -> i32 {
         .collect();
     crate::commands::print_table(&["ALIAS", "EMAIL", "PROVIDER"], &rows);
     0
-}
-
-fn sync(
-    alias: Option<String>,
-    local_output: Option<PathBuf>,
-    remote_output: Option<String>,
-    debug: Option<DebugPhase>,
-    concurrency: usize,
-) -> i32 {
-    if debug.is_some() && concurrency != 4 {
-        return fail("--concurrency cannot be combined with --debug");
-    }
-
-    let path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let store = match Store::load(&path) {
-        Ok(store) => store,
-        Err(err) => return fail(err),
-    };
-
-    let identity = match &alias {
-        Some(alias) => match store.iter().find(|identity| &identity.alias == alias) {
-            Some(identity) => identity,
-            None => return fail(format!("no identity with alias '{alias}'")),
-        },
-        None => match store.prompt_select() {
-            Ok(identity) => identity,
-            Err(err) => return fail(err),
-        },
-    };
-
-    let local_output = local_output.unwrap_or_else(|| std::env::temp_dir().join(&identity.alias));
-    let staging_dir = local_output.join("staging");
-    let output_dir = local_output.join("result");
-
-    let resolved_remote: Option<(BucketConfig, String)> = match &remote_output {
-        Some(remote_alias) => {
-            if matches!(debug, Some(DebugPhase::Sink) | Some(DebugPhase::Transform)) {
-                return fail("--remote-output cannot be combined with --debug");
-            }
-            let remote_path = match DataopsStore::default_path() {
-                Ok(path) => path,
-                Err(err) => return fail(err),
-            };
-            let remote_store = match DataopsStore::load(&remote_path) {
-                Ok(store) => store,
-                Err(err) => return fail(err),
-            };
-            let remote = match remote_store.find(remote_alias) {
-                Some(remote) => remote.clone(),
-                None => return fail(format!("no bucket-config named '{remote_alias}'")),
-            };
-            let secret = match remote_credentials::get_secret(&remote.alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
-            };
-            Some((remote, secret))
-        }
-        None => None,
-    };
-
-    match debug {
-        Some(DebugPhase::Sink) => {
-            let secret = match credentials::get_secret(&identity.alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
-            };
-            match crate::email::sink::run(
-                &identity.email,
-                &identity.host,
-                identity.port,
-                &secret,
-                identity.provider.accepts_invalid_certs(),
-                &staging_dir,
-            ) {
-                Ok(summary) => {
-                    println!(
-                        "Sunk {} identity across {} mailbox(es): {} message(s) downloaded, {} already present.",
-                        identity.alias,
-                        summary.mailboxes,
-                        summary.downloaded,
-                        summary.already_present
-                    );
-                    0
-                }
-                Err(err) => fail(err),
-            }
-        }
-        Some(DebugPhase::Transform) => {
-            match crate::email::transform::run(identity, &staging_dir, &output_dir) {
-                Ok(summary) => {
-                    println!(
-                        "Transformed {} identity: {} message(s), {} attachment(s), {} skipped, {} message(s) merged, {} attachment(s) deduped.",
-                        identity.alias,
-                        summary.messages,
-                        summary.attachments,
-                        summary.skipped,
-                        summary.merged_messages,
-                        summary.deduped_attachments
-                    );
-                    0
-                }
-                Err(err) => fail(err),
-            }
-        }
-        Some(DebugPhase::Upload) => {
-            let Some((remote, remote_secret)) = resolved_remote
-                .as_ref()
-                .map(|(remote, secret)| (remote, secret.as_str()))
-            else {
-                return fail("--remote-output is required with --debug upload");
-            };
-            match crate::email::sync::run_upload(
-                identity,
-                &staging_dir,
-                &output_dir,
-                remote,
-                remote_secret,
-            ) {
-                Ok(summary) => {
-                    println!(
-                        "Uploaded {} identity: {} uploaded, {} unchanged, {} upload failed.",
-                        identity.alias, summary.uploaded, summary.unchanged, summary.upload_failed
-                    );
-                    0
-                }
-                Err(err) => fail(err),
-            }
-        }
-        None => {
-            let secret = match credentials::get_secret(&identity.alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
-            };
-            let output_remote = resolved_remote
-                .as_ref()
-                .map(|(remote, secret)| (remote, secret.as_str()));
-            match crate::email::sync::run(
-                identity,
-                &secret,
-                &staging_dir,
-                &output_dir,
-                output_remote,
-                concurrency,
-            ) {
-                Ok(summary) => {
-                    println!(
-                        "Synced {} identity across {} mailbox(es): {} new message(s), {} already processed, {} failed, {} uploaded, {} unchanged, {} upload failed, {} message(s) merged, {} attachment(s) deduped.",
-                        identity.alias,
-                        summary.mailboxes,
-                        summary.synced,
-                        summary.already_processed,
-                        summary.failed,
-                        summary.uploaded,
-                        summary.unchanged,
-                        summary.upload_failed,
-                        summary.merged_messages,
-                        summary.deduped_attachments
-                    );
-                    0
-                }
-                Err(err) => fail(err),
-            }
-        }
-    }
 }
 
 fn fail(message: impl std::fmt::Display) -> i32 {

@@ -1,6 +1,4 @@
-use std::path::PathBuf;
-
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 
 use crate::email::provider::Provider;
 
@@ -41,55 +39,4 @@ pub enum EmailCommands {
 
     /// List all locally authenticated email identities
     List,
-
-    /// Download and transform all mail for an authenticated identity in one step
-    Sync {
-        /// Alias of the identity to sync, as registered via `authenticate`.
-        /// Interactively selected from the authenticated identities when omitted.
-        alias: Option<String>,
-
-        /// Local directory to stage raw .eml files under `staging/` and
-        /// write transformed Markdown output under `result/`. The staging
-        /// side is transient by default: each message is deleted once its
-        /// transform is verified. Only persists when --debug sink is used
-        /// and the default flow is never run against it afterward. Defaults
-        /// to a per-alias directory under the OS temp directory when omitted.
-        #[arg(long)]
-        local_output: Option<PathBuf>,
-
-        /// Alias of a configured bucket-config (see `pigeon dataops
-        /// bucket-config new`) to upload the local result tree to, once the
-        /// entire local fetch/transform/dedupe phase is complete. Rejected
-        /// as a usage error with --debug sink/transform (which stay
-        /// local-only); required with --debug upload.
-        #[arg(long)]
-        remote_output: Option<String>,
-
-        /// Run only one phase, exactly as it behaved standalone before this
-        /// command existed: "sink" fetches without transforming; "transform"
-        /// transforms without fetching; "upload" uploads the existing local
-        /// result tree to --remote-output without touching IMAP at all.
-        /// sink/transform are non-destructive (never delete the source
-        /// .eml).
-        #[arg(long)]
-        debug: Option<DebugPhase>,
-
-        /// Maximum number of mailboxes to process concurrently. Rejected in
-        /// combination with --debug, which stays single-mailbox and
-        /// sequential.
-        #[arg(long, default_value_t = 4)]
-        concurrency: usize,
-    },
-}
-
-/// A single phase of `sync`, run in isolation via `--debug`.
-#[derive(Copy, Clone, Debug, ValueEnum)]
-pub enum DebugPhase {
-    /// Fetch-only: write raw .eml files, never transform or delete them.
-    Sink,
-    /// Transform-only: read existing .eml files, never fetch or delete them.
-    Transform,
-    /// Upload-only: upload the local result tree to --remote-output,
-    /// skipping fetch/transform entirely. Requires --remote-output.
-    Upload,
 }

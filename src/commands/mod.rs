@@ -10,6 +10,7 @@ pub fn dispatch(command: Commands) -> i32 {
     match command {
         Commands::Email(args) => crate::email::commands::dispatch(args.command),
         Commands::Dataops(args) => crate::dataops::commands::dispatch(args.command),
+        Commands::Job(args) => crate::job::commands::dispatch(args.command),
     }
 }
 
