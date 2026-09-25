@@ -46,7 +46,13 @@ pub(crate) struct DedupSummary {
 /// canonical (non-merged) messages only -- a merged duplicate's own
 /// attachments are redundant by construction (identical message hash means
 /// identical raw bytes, so the canonical message's own attachments already
-/// cover them) and are simply deleted alongside its staged `.md`.
+/// cover them) and are simply deleted alongside its staged `.md`. The
+/// attachment pass resolves each entry's canonical `.md` path via
+/// `message_index` rather than tracking what the message pass placed *in
+/// this call* -- `message_index` persists across runs, so a message
+/// canonicalized by an earlier call is just as eligible for attachment
+/// placement as one canonicalized moments ago (ADR-0030 amendment: this is
+/// what actually makes a re-run recover previously-orphaned attachments).
 pub(crate) fn run_dedup_pass(
     identity_dir: &Path,
     staging_dir: &Path,
@@ -57,9 +63,8 @@ pub(crate) fn run_dedup_pass(
     entries.sort_by(|a, b| (&a.mailbox, a.uid).cmp(&(&b.mailbox, b.uid)));
 
     let mut summary = DedupSummary::default();
-    let mut placed_md_paths = vec![None; entries.len()];
 
-    for (index, entry) in entries.iter().enumerate() {
+    for entry in entries.iter() {
         if !staging_dir.join(&entry.md_staged_relpath).exists() {
             // Already fully handled by a prior dedup pass run (placed as
             // canonical, or merged as a duplicate -- either way its staged
@@ -92,30 +97,30 @@ pub(crate) fn run_dedup_pass(
                             "Warning: canonical file for duplicate {} is missing or malformed: {err}, treating as canonical instead",
                             entry.md_staged_relpath
                         );
-                        placed_md_paths[index] = Some(place_canonical_message(
-                            identity_dir,
-                            staging_dir,
-                            entry,
-                            message_index,
-                        )?);
+                        place_canonical_message(identity_dir, staging_dir, entry, message_index)?;
                     }
                 }
             }
             None => {
-                placed_md_paths[index] = Some(place_canonical_message(
-                    identity_dir,
-                    staging_dir,
-                    entry,
-                    message_index,
-                )?);
+                place_canonical_message(identity_dir, staging_dir, entry, message_index)?;
             }
         }
     }
 
-    for (index, entry) in entries.iter().enumerate() {
-        let Some(md_path) = &placed_md_paths[index] else {
+    for entry in entries.iter() {
+        // Resolves this entry's canonical destination via `message_index`
+        // rather than trusting that this same call is what placed it --
+        // `message_index` is loaded from its persisted file at the top of
+        // every call, so a hash committed by an *earlier* run is just as
+        // visible here as one committed moments ago in the loop above. A
+        // duplicate entry's own staged attachments are already deleted by
+        // `remove_staged_files` whenever it was merged (this run or an
+        // earlier one), so the per-attachment `exists()` check below still
+        // correctly no-ops for them (ADR-0030 amendment).
+        let Some(message_canonical_relpath) = message_index.check(&entry.message_hash) else {
             continue;
         };
+        let md_path = identity_dir.join(message_canonical_relpath);
         for (hash, staged_relpath) in &entry.attachments {
             let staged_path = staged_attachment_path(staging_dir, entry, staged_relpath);
             if !staged_path.exists() {
@@ -126,7 +131,11 @@ pub(crate) fn run_dedup_pass(
                 Some(canonical_relpath) => {
                     summary.deduped_attachments += 1;
                     let _ = fs::remove_file(&staged_path);
-                    data::rewrite_attachment_reference(md_path, staged_relpath, canonical_relpath)?;
+                    data::rewrite_attachment_reference(
+                        &md_path,
+                        staged_relpath,
+                        canonical_relpath,
+                    )?;
                 }
                 None => {
                     let file_name = Path::new(staged_relpath)
@@ -152,7 +161,7 @@ pub(crate) fn run_dedup_pass(
                     attachment_index.commit(hash, &final_relpath)?;
                     if final_relpath != *staged_relpath {
                         data::rewrite_attachment_reference(
-                            md_path,
+                            &md_path,
                             staged_relpath,
                             &final_relpath,
                         )?;
@@ -167,15 +176,17 @@ pub(crate) fn run_dedup_pass(
 
 /// Places a canonical (non-duplicate) message's staged `.md` at its final
 /// location under `identity_dir`, resolving any genuine filename collision
-/// via `unique_path`, and commits its hash to `message_index`. Returns the
-/// final path, needed by the attachment-placement pass above to target
-/// `rewrite_attachment_reference` calls at the right file.
+/// via `unique_path`, and commits its hash to `message_index`. The
+/// attachment-placement pass above re-derives this same final path itself
+/// (via `message_index.check`) rather than being handed it directly, so it
+/// works the same way whether this entry's message was placed in this call
+/// or an earlier one (ADR-0030 amendment).
 fn place_canonical_message(
     identity_dir: &Path,
     staging_dir: &Path,
     entry: &CheckpointEntry,
     message_index: &mut EmailDedup,
-) -> Result<PathBuf, String> {
+) -> Result<(), String> {
     fs::create_dir_all(identity_dir)
         .map_err(|err| format!("failed to create {}: {err}", identity_dir.display()))?;
     let final_path = data::unique_path(&identity_dir.join(&entry.desired_md_name));
@@ -193,7 +204,7 @@ fn place_canonical_message(
         .to_string_lossy()
         .into_owned();
     message_index.commit(&entry.message_hash, &final_relpath)?;
-    Ok(final_path)
+    Ok(())
 }
 
 /// Deletes a merged duplicate's staged `.md` and every staged attachment it
@@ -393,6 +404,68 @@ mod tests {
         let second_md = identity_dir.path().join("2024-01-27-second.md");
         let contents = fs::read_to_string(&second_md).unwrap();
         assert!(contents.contains("attachments:\n  - attachments/a.pdf"));
+    }
+
+    /// Regression coverage for the ADR-0030 amendment (Finding 2): a
+    /// message that was already canonicalized by an *earlier* run (its
+    /// staged `.md` is gone and its hash is already committed to
+    /// `message_index`, exactly what a prior `run_dedup_pass` call would
+    /// have left behind) must still have its attachment placed if that
+    /// attachment is still sitting, unplaced, in staging -- this is what
+    /// makes a re-run actually self-healing, rather than only working when
+    /// message and attachment happen to be placed in the very same call.
+    #[test]
+    fn run_dedup_pass_places_attachment_for_a_message_already_canonicalized_by_an_earlier_run() {
+        let staging = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let (mut message_index, mut attachment_index) = indexes(staging.path());
+
+        let e = entry(
+            "INBOX",
+            1,
+            "hash-a",
+            "2024-01-26-hello.md",
+            vec![("attach-hash", "attachments/a.pdf")],
+        );
+
+        // Simulate the state left behind by an earlier `run_dedup_pass`
+        // call: the message is already at its final location and its hash
+        // already committed, but its staged `.md` is gone (so this call's
+        // message-placement pass has nothing to do for it) while its
+        // attachment is still sitting, untouched, in staging.
+        fs::write(
+            identity_dir.path().join("2024-01-26-hello.md"),
+            FIXTURE_BODY,
+        )
+        .unwrap();
+        message_index
+            .commit("hash-a", "2024-01-26-hello.md")
+            .unwrap();
+        stage_attachment(
+            staging.path(),
+            "transformed/INBOX/1/attachments/a.pdf",
+            b"content",
+        );
+
+        let mut entries = vec![e];
+        let summary = run_dedup_pass(
+            identity_dir.path(),
+            staging.path(),
+            &mut entries,
+            &mut message_index,
+            &mut attachment_index,
+        )
+        .unwrap();
+
+        assert_eq!(summary.merged_messages, 0);
+        let attachments_dir = identity_dir.path().join("attachments");
+        assert_eq!(
+            fs::read_dir(&attachments_dir)
+                .unwrap_or_else(|err| panic!("{} should exist: {err}", attachments_dir.display()))
+                .count(),
+            1,
+            "the attachment should be placed even though its message was canonicalized before this call"
+        );
     }
 
     #[test]

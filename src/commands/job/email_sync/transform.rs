@@ -162,11 +162,21 @@ impl Transform for EmailTransform {
         let mut attachment_relpaths = Vec::new();
         for part in message.attachments() {
             let contents = part.contents();
+            let name = part.attachment_name();
+            if contents.is_empty() && name.is_none() {
+                // A truncated/malformed trailing MIME part with no headers
+                // and no content -- not a real attachment, just an
+                // artifact of a malformed source message (ADR-0030
+                // amendment). Staging it as a 0-byte file would make
+                // `verify_transformed` reject the entire message over a
+                // phantom part it never actually sent.
+                continue;
+            }
             let hash = format!("{:x}", md5::compute(contents));
             fs::create_dir_all(&attachments_dir)
                 .map_err(|err| format!("failed to create {}: {err}", attachments_dir.display()))?;
 
-            let original_name = sanitize_filename(part.attachment_name().unwrap_or("attachment"));
+            let original_name = sanitize_filename(name.unwrap_or("attachment"));
             let staged_path = unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
             fs::write(&staged_path, contents)
                 .map_err(|err| format!("failed to write {}: {err}", staged_path.display()))?;
@@ -630,5 +640,45 @@ mod tests {
         // must still be truncated to a safe length.
         assert!(outcome.desired_md_name.len() <= 255);
         assert!(fs::metadata(&outcome.md_staged_path).is_ok());
+    }
+
+    /// Regression coverage for the ADR-0030 amendment (Finding 1): a
+    /// malformed source message (mirroring real messages seen in
+    /// production -- a `multipart/mixed` body whose second part opens a
+    /// boundary line but never has headers, content, or a closing
+    /// terminator, i.e. the raw message is truncated) must not have its
+    /// real content rejected just because `mail_parser` exposes that
+    /// dangling part as a phantom, nameless, zero-byte "attachment."
+    #[test]
+    fn transform_one_skips_a_phantom_empty_nameless_attachment_part() {
+        let staging = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        let inbox = input.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+
+        let eml = "From: Jane Doe <jane.doe@example.com>\r\n\
+            To: first.last@example.com\r\n\
+            Subject: Receipt\r\n\
+            Date: Fri, 26 Jan 2024 09:15:00 +0000\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=BOUNDARY\r\n\
+            \r\n\
+            --BOUNDARY\r\n\
+            Content-Type: text/html; charset=UTF-8\r\n\
+            \r\n\
+            <html><body>Receipt</body></html>\r\n\
+            --BOUNDARY\r\n";
+        fs::write(inbox.join("1.eml"), eml).unwrap();
+
+        let outcome = transformer(input.path(), staging.path())
+            .transform(inbox.join("1.eml"))
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            outcome.attachments.is_empty(),
+            "the dangling, header-less trailing part should not be staged as an attachment"
+        );
+        assert!(verify_transformed(&outcome));
     }
 }
