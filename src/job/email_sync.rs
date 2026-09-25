@@ -1,11 +1,12 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
-use futures::stream::{self, StreamExt};
 use indicatif::MultiProgress;
 
 use crate::commands::FAILURE_EXIT_CODE;
@@ -14,7 +15,7 @@ use crate::dataops::dedup::{self, ContentIndex};
 use crate::dataops::store::BucketConfig;
 use crate::dataops::transform::unique_path;
 use crate::email::identity::{self, Identity};
-use crate::email::imap_client;
+use crate::email::imap_client::{self, ImapSession};
 use crate::email::sink;
 use crate::email::transform;
 use crate::job::manifest::{self, Batch, CheckpointEntry, ManifestEntry};
@@ -159,7 +160,16 @@ async fn dispatch_async(
                 summary.unchanged,
                 summary.upload_failed
             );
-            0
+            // A worker absorbing a connect/fetch failure into `failed`
+            // (ADR-0021 §6 addendum) lets the run complete and checkpoint
+            // everything that succeeded, but that must still be visible to
+            // a script checking the exit code -- otherwise a partially
+            // failed run would silently report success.
+            if summary.failed > 0 || summary.upload_failed > 0 {
+                FAILURE_EXIT_CODE
+            } else {
+                0
+            }
         }
         Err(err) => fail(err),
     }
@@ -204,6 +214,54 @@ pub(crate) struct PendingMailbox {
     pub uids: Vec<u32>,
 }
 
+const CONNECT_RETRIES: usize = 3;
+const RETRY_BACKOFF: Duration = Duration::from_secs(5);
+
+/// Retries `f` up to `attempts` times, sleeping `backoff * attempt_number`
+/// between tries (linear: `backoff`, `2*backoff`, ...) before giving up --
+/// absorbs a transient provider-side throttle (e.g. a burst of
+/// `concurrency` workers all connecting within the same instant at job
+/// start) instead of failing on the first timeout. Generic over `f` so it's
+/// testable without any real I/O (see the unit tests below).
+async fn retry_with_backoff<T, F, Fut>(
+    attempts: usize,
+    backoff: Duration,
+    mut f: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let mut last_err = None;
+    for attempt in 0..attempts.max(1) {
+        if attempt > 0 {
+            tokio::time::sleep(backoff * attempt as u32).await;
+        }
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) => last_err = Some(err),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| "retry_with_backoff called with zero attempts".to_string()))
+}
+
+/// Connects and logs in to `ctx`'s identity, retrying on failure per
+/// `retry_with_backoff` (ADR-0021 §6 addendum) -- used by `gather_pending`'s
+/// one-shot per-identity connection and by each persistent worker's
+/// initial connect/reconnect (`run_worker`, below).
+async fn connect_with_retry(ctx: &IdentityContext) -> Result<ImapSession, String> {
+    retry_with_backoff(CONNECT_RETRIES, RETRY_BACKOFF, || {
+        imap_client::connect_and_login(
+            &ctx.identity.host,
+            ctx.identity.port,
+            &ctx.identity.email,
+            &ctx.secret,
+            ctx.identity.provider.accepts_invalid_certs(),
+        )
+    })
+    .await
+}
+
 /// Connects to `ctx`'s identity, lists its mailboxes, and for each one:
 /// resets on a `UIDVALIDITY` change (ADR-0005 precedent, applied to the new
 /// checkpoint per the ADR-0021 addendum), computes pending UIDs (server
@@ -216,14 +274,7 @@ pub(crate) struct PendingMailbox {
 pub(crate) async fn gather_pending(
     ctx: &IdentityContext,
 ) -> Result<(Vec<PendingMailbox>, IdentityManifestSummary), String> {
-    let mut session = imap_client::connect_and_login(
-        &ctx.identity.host,
-        ctx.identity.port,
-        &ctx.identity.email,
-        &ctx.secret,
-        ctx.identity.provider.accepts_invalid_certs(),
-    )
-    .await?;
+    let mut session = connect_with_retry(ctx).await?;
 
     let names: Vec<_> = session
         .list(None, Some("*"))
@@ -346,43 +397,128 @@ pub(crate) fn batches_from_pending(pending: &[PendingMailbox], concurrency: usiz
         .collect()
 }
 
-/// Outcome of one worker's `process_batch` call, for the job-level summary.
+/// Outcome of one worker's processing, for the job-level summary.
 #[derive(Default)]
 struct BatchOutcome {
     synced: usize,
     failed: usize,
 }
 
-/// Fetches, transforms, and verifies every UID in `batch` on its own IMAP
-/// connection (ADR-0021 §6's unit of concurrency), appending a checkpoint
-/// entry for each one that verifies and deleting its `.eml` -- no lock of
-/// any kind, since a batch's UIDs are staged under a UID-keyed tree
-/// exclusive to this worker (ADR-0021 §7/§10, addendum).
-async fn process_batch(
+/// A worker's currently-open IMAP session, if any -- tracks which identity
+/// and mailbox it's scoped to, so `run_worker` can tell whether its next
+/// batch needs a full reconnect (different identity -> different
+/// credentials) or just a re-`EXAMINE` (same identity, different mailbox --
+/// cheap, no new TCP/TLS/LOGIN) before it can be processed.
+struct WorkerConnection {
+    identity_index: usize,
+    mailbox: String,
+    session: ImapSession,
+}
+
+/// Pulls `(identity_index, Batch)` pairs from `queue` until it's drained,
+/// holding one IMAP session per identity for as long as consecutive batches
+/// it pulls belong to that identity (ADR-0021 §6 addendum) -- the direct
+/// fix for the connection-churn bug: a job with `concurrency` workers now
+/// opens on the order of `concurrency` connections total over its whole
+/// run, not one per batch. A connect/re-`EXAMINE` failure (even after
+/// `connect_with_retry`'s retries) drops the current session and counts
+/// that batch's UIDs as failed, then moves on to the next queued batch --
+/// which may belong to a different, unaffected identity -- rather than
+/// aborting the worker outright.
+async fn run_worker(
+    queue: Arc<Mutex<VecDeque<(usize, Batch)>>>,
+    identities: Arc<Vec<IdentityContext>>,
+    multi_progress: MultiProgress,
+) -> BatchOutcome {
+    let mut connection: Option<WorkerConnection> = None;
+    let mut outcome = BatchOutcome::default();
+
+    loop {
+        let next = { queue.lock().unwrap().pop_front() };
+        let Some((identity_index, batch)) = next else {
+            break;
+        };
+        let ctx = &identities[identity_index];
+
+        if connection
+            .as_ref()
+            .is_none_or(|conn| conn.identity_index != identity_index)
+        {
+            if let Some(mut conn) = connection.take() {
+                let _ = conn.session.logout().await;
+            }
+            match connect_with_retry(ctx).await {
+                Ok(session) => {
+                    connection = Some(WorkerConnection {
+                        identity_index,
+                        mailbox: String::new(),
+                        session,
+                    });
+                }
+                Err(err) => {
+                    let _ = multi_progress.println(format!("Error: {err}"));
+                    outcome.failed += batch.uids.len();
+                    continue;
+                }
+            }
+        }
+
+        let conn = connection.as_mut().unwrap();
+        if conn.mailbox != batch.mailbox {
+            match conn.session.examine(&batch.mailbox).await {
+                Ok(_) => conn.mailbox = batch.mailbox.clone(),
+                Err(err) => {
+                    let _ = multi_progress.println(format!(
+                        "Error: failed to open '{}' read-only: {err}",
+                        batch.mailbox
+                    ));
+                    outcome.failed += batch.uids.len();
+                    connection = None;
+                    continue;
+                }
+            }
+        }
+
+        let conn = connection.as_mut().unwrap();
+        match process_batch_on_session(ctx, &batch, &mut conn.session, &multi_progress).await {
+            Ok(batch_outcome) => {
+                outcome.synced += batch_outcome.synced;
+                outcome.failed += batch_outcome.failed;
+            }
+            Err(err) => {
+                let _ = multi_progress.println(format!("Error: {err}"));
+                outcome.failed += batch.uids.len();
+                connection = None;
+            }
+        }
+    }
+
+    if let Some(mut conn) = connection {
+        let _ = conn.session.logout().await;
+    }
+
+    outcome
+}
+
+/// Fetches, transforms, and verifies every UID in `batch` on an
+/// already-connected, already-`EXAMINE`d `session` (owned by the calling
+/// `run_worker`, reused across every batch it processes for the same
+/// identity/mailbox), appending a checkpoint entry for each UID that
+/// verifies and deleting its `.eml` -- no lock of any kind, since a batch's
+/// UIDs are staged under a UID-keyed tree exclusive to this worker
+/// (ADR-0021 §7/§10, addendum).
+async fn process_batch_on_session(
     ctx: &IdentityContext,
     batch: &Batch,
+    session: &mut ImapSession,
     multi_progress: &MultiProgress,
 ) -> Result<BatchOutcome, String> {
-    let mut session = imap_client::connect_and_login(
-        &ctx.identity.host,
-        ctx.identity.port,
-        &ctx.identity.email,
-        &ctx.secret,
-        ctx.identity.provider.accepts_invalid_certs(),
-    )
-    .await?;
-
     let mailbox_dir = ctx.staging_dir.join(&batch.mailbox_relpath);
     fs::create_dir_all(&mailbox_dir)
         .map_err(|err| format!("failed to create {}: {err}", mailbox_dir.display()))?;
 
-    session
-        .examine(&batch.mailbox)
-        .await
-        .map_err(|err| format!("failed to open '{}' read-only: {err}", batch.mailbox))?;
-
     sink::fetch_uids(
-        &mut session,
+        session,
         &batch.mailbox,
         &mailbox_dir,
         &batch.uids,
@@ -429,11 +565,6 @@ async fn process_batch(
             }
         }
     }
-
-    session
-        .logout()
-        .await
-        .map_err(|err| format!("logout failed for '{}': {err}", batch.mailbox))?;
 
     Ok(outcome)
 }
@@ -574,40 +705,41 @@ pub(crate) async fn run_email_sync_job(
     concurrency: usize,
     remote: Option<(&BucketConfig, &str)>,
 ) -> Result<JobSummary, String> {
-    let mut all_batches: Vec<(usize, Batch)> = Vec::new();
+    let mut all_batches: VecDeque<(usize, Batch)> = VecDeque::new();
     for (index, pending) in pending_by_identity.iter().enumerate() {
         let batches = batches_from_pending(pending, concurrency);
         all_batches.extend(batches.into_iter().map(|batch| (index, batch)));
     }
 
+    // A fixed-size pool of `concurrency` persistent workers pulling from one
+    // shared queue (ADR-0021 §6), never more than there are batches to hand
+    // out.
+    let worker_count = concurrency.max(1).min(all_batches.len().max(1));
+    let queue = Arc::new(Mutex::new(all_batches));
     let identities = Arc::new(identities);
     let multi_progress = MultiProgress::new();
 
-    let results: Vec<Result<BatchOutcome, String>> = stream::iter(all_batches)
-        .map(|(index, batch)| {
-            let identities = Arc::clone(&identities);
-            let multi_progress = multi_progress.clone();
-            tokio::spawn(
-                async move { process_batch(&identities[index], &batch, &multi_progress).await },
-            )
-        })
-        .buffer_unordered(concurrency.max(1))
-        .map(|joined| joined.unwrap_or_else(|err| Err(format!("worker task panicked: {err}"))))
-        .collect()
-        .await;
+    let mut handles = Vec::with_capacity(worker_count);
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
+        let identities = Arc::clone(&identities);
+        let multi_progress = multi_progress.clone();
+        handles.push(tokio::spawn(run_worker(queue, identities, multi_progress)));
+    }
 
     let mut summary = JobSummary::default();
     let mut first_error = None;
-    for result in results {
-        match result {
+    for handle in handles {
+        match handle.await {
             Ok(outcome) => {
                 summary.synced += outcome.synced;
                 summary.failed += outcome.failed;
             }
             Err(err) => {
-                eprintln!("Error: {err}");
+                let message = format!("worker task panicked: {err}");
+                eprintln!("Error: {message}");
                 if first_error.is_none() {
-                    first_error = Some(err);
+                    first_error = Some(message);
                 }
             }
         }
@@ -846,7 +978,57 @@ fn remove_staged_files(staging_dir: &Path, entry: &CheckpointEntry) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    #[tokio::test]
+    async fn retry_with_backoff_succeeds_after_transient_failures() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<&str, String> =
+            retry_with_backoff(CONNECT_RETRIES, Duration::from_millis(1), || {
+                let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if count < 3 {
+                        Err(format!("attempt {count} failed"))
+                    } else {
+                        Ok("connected")
+                    }
+                }
+            })
+            .await;
+
+        assert_eq!(result, Ok("connected"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_returns_the_last_error_after_exhausting_attempts() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), String> =
+            retry_with_backoff(CONNECT_RETRIES, Duration::from_millis(1), || {
+                let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                async move { Err(format!("attempt {count} failed")) }
+            })
+            .await;
+
+        assert_eq!(result, Err("attempt 3 failed".to_string()));
+        assert_eq!(attempts.load(Ordering::SeqCst), CONNECT_RETRIES);
+    }
+
+    #[tokio::test]
+    async fn retry_with_backoff_does_not_retry_a_first_success() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<&str, String> =
+            retry_with_backoff(CONNECT_RETRIES, Duration::from_millis(1), || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async move { Ok("connected") }
+            })
+            .await;
+
+        assert_eq!(result, Ok("connected"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
 
     fn entry(
         mailbox: &str,
