@@ -4,6 +4,16 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0] - 2026-09-25
+
+### Add namespaced naming to scaleway/object-bucket
+
+Ports `digitalocean/standard-storage-bucket`'s `{namespace}-{random}-{name}` bucket naming scheme to `scaleway/object-bucket`, via the same `random_string` resource shape (6-character lowercase alphanumeric suffix).
+
+**Breaking**: adds a new required `namespace` input, and changes `name`'s meaning from "the full bucket name" to "the bucket name suffix" — the bucket's actual name is now computed as `${namespace}-${random}-${name}`. The `name` output's description is updated to "Computed bucket name" to reflect this. No consumers reference this module yet, so there's no real migration needed today, but this follows this repo's convention of labeling input-schema changes as breaking regardless. `enable_versioning` and `storage_class` are unaffected. See ADR-0008 for the full reasoning.
+
+[#14](https://github.com/noisypigeon/pigeon-tf/pull/14)
+
 ## [0.1.0] - 2026-09-25
 
 ### Add scaleway/object-bucket module
