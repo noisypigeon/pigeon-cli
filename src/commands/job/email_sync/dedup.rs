@@ -1,9 +1,12 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use indicatif::MultiProgress;
+
 use crate::core::data::{self, ContentIndex, Dedup};
 
 use super::manifest::CheckpointEntry;
+use super::sink;
 
 /// The email-specific `Dedup` implementor (ADR-0023): wraps a generic
 /// `ContentIndex` (ADR-0020) and forwards straight through -- nothing about
@@ -59,12 +62,19 @@ pub(crate) fn run_dedup_pass(
     entries: &mut [CheckpointEntry],
     message_index: &mut EmailDedup,
     attachment_index: &mut EmailDedup,
+    multi_progress: &MultiProgress,
 ) -> Result<DedupSummary, String> {
     entries.sort_by(|a, b| (&a.mailbox, a.uid).cmp(&(&b.mailbox, b.uid)));
 
     let mut summary = DedupSummary::default();
+    let bar = sink::new_progress_bar(
+        "dedup".to_string(),
+        (entries.len() * 2) as u64,
+        multi_progress,
+    );
 
     for entry in entries.iter() {
+        bar.inc(1);
         if !staging_dir.join(&entry.md_staged_relpath).exists() {
             // Already fully handled by a prior dedup pass run (placed as
             // canonical, or merged as a duplicate -- either way its staged
@@ -93,10 +103,10 @@ pub(crate) fn run_dedup_pass(
                         remove_staged_files(staging_dir, entry);
                     }
                     Err(err) => {
-                        eprintln!(
+                        let _ = multi_progress.println(format!(
                             "Warning: canonical file for duplicate {} is missing or malformed: {err}, treating as canonical instead",
                             entry.md_staged_relpath
-                        );
+                        ));
                         place_canonical_message(identity_dir, staging_dir, entry, message_index)?;
                     }
                 }
@@ -108,6 +118,7 @@ pub(crate) fn run_dedup_pass(
     }
 
     for entry in entries.iter() {
+        bar.inc(1);
         // Resolves this entry's canonical destination via `message_index`
         // rather than trusting that this same call is what placed it --
         // `message_index` is loaded from its persisted file at the top of
@@ -170,6 +181,7 @@ pub(crate) fn run_dedup_pass(
             }
         }
     }
+    bar.finish();
 
     Ok(summary)
 }
@@ -304,6 +316,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
 
@@ -331,6 +344,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
 
@@ -394,6 +408,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
 
@@ -454,6 +469,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
 
@@ -492,6 +508,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
         let after_first_run =
@@ -503,6 +520,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
 
@@ -595,6 +613,7 @@ mod tests {
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &MultiProgress::new(),
         )
         .unwrap();
 

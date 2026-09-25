@@ -133,7 +133,7 @@ pub(crate) fn new_progress_bar(
     multi_progress: &MultiProgress,
 ) -> ProgressBar {
     let bar = ProgressBar::new(len);
-    if let Ok(style) = ProgressStyle::with_template("{prefix} {bar:40} {pos}/{len}") {
+    if let Ok(style) = ProgressStyle::with_template("{prefix:24!} {bar:40} {pos}/{len}") {
         bar.set_style(style);
     }
     bar.set_prefix(prefix);

@@ -467,6 +467,14 @@ async fn dispatch_async(
         .iter()
         .map(|summary| summary.pending_messages)
         .sum();
+    // Captured before `plan` moves into `job.run` below, so the final
+    // summary line can show the pre-run manifest estimate next to the real,
+    // post-run `attachments_staged` count (ADR-0033 #42).
+    let estimated_pending_attachments: usize = plan
+        .manifest_summaries
+        .iter()
+        .map(|summary| summary.pending_attachments)
+        .sum();
     if total_pending == 0 {
         println!("Everything is already up to date.");
         return 0;
@@ -549,14 +557,23 @@ async fn dispatch_async(
     match job.run(plan, concurrency).await {
         Ok(summary) => {
             println!(
-                "Synced {} message(s), {} failed, {} message(s) merged, {} attachment(s) deduped, {} uploaded, {} unchanged, {} upload failed.",
+                "Synced {} message(s), {} failed ({} connect, {} examine, {} batch-error, {} verification, {} parse-skipped), {} message(s) merged, {} attachment(s) deduped, {} uploaded, {} unchanged, {} upload failed.",
                 summary.synced,
                 summary.failed,
+                summary.failure_breakdown.connect,
+                summary.failure_breakdown.examine,
+                summary.failure_breakdown.batch_error,
+                summary.failure_breakdown.verification,
+                summary.failure_breakdown.parse_skipped,
                 summary.merged_messages,
                 summary.deduped_attachments,
                 summary.uploaded,
                 summary.unchanged,
                 summary.upload_failed
+            );
+            println!(
+                "Attachments: {} estimated pre-run, {} actually staged.",
+                estimated_pending_attachments, summary.attachments_staged
             );
             // A worker absorbing a connect/fetch failure into `failed`
             // (ADR-0021 §6 addendum) lets the run complete and checkpoint

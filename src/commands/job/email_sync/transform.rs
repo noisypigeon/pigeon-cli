@@ -230,22 +230,59 @@ impl Transform for EmailTransform {
     }
 }
 
+/// Why `verify_transformed` rejected an outcome (ADR-0033 #37/#38) --
+/// carries enough detail for the worker's per-UID warning and the job-level
+/// `FailureBreakdown` count to distinguish structural verification failure
+/// from the other four failure categories.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum VerifyFailure {
+    MarkdownMissingOrEmpty,
+    FrontmatterDelimiterMissing,
+    AttachmentMissingOrEmpty(String),
+}
+
+impl std::fmt::Display for VerifyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VerifyFailure::MarkdownMissingOrEmpty => {
+                write!(f, "staged markdown file is missing or empty")
+            }
+            VerifyFailure::FrontmatterDelimiterMissing => {
+                write!(
+                    f,
+                    "staged markdown file is missing its frontmatter delimiter"
+                )
+            }
+            VerifyFailure::AttachmentMissingOrEmpty(relpath) => {
+                write!(f, "staged attachment '{relpath}' is missing or empty")
+            }
+        }
+    }
+}
+
 /// Structural check that `EmailTransform::transform`'s output is complete:
 /// the staged `.md` file exists, is non-empty, and starts with the
 /// frontmatter delimiter; every staged attachment path exists with nonzero
 /// size. Used by the worker pool to decide whether it's safe to delete the
 /// source `.eml` and record the UID as checkpointed.
-pub(crate) fn verify_transformed(outcome: &TransformOutcome) -> bool {
+pub(crate) fn verify_transformed(outcome: &TransformOutcome) -> Result<(), VerifyFailure> {
     let Ok(contents) = fs::read(&outcome.md_staged_path) else {
-        return false;
+        return Err(VerifyFailure::MarkdownMissingOrEmpty);
     };
-    if contents.is_empty() || !contents.starts_with(b"---") {
-        return false;
+    if contents.is_empty() {
+        return Err(VerifyFailure::MarkdownMissingOrEmpty);
     }
-    outcome
-        .attachments
-        .iter()
-        .all(|attachment| fs::metadata(&attachment.staged_path).is_ok_and(|meta| meta.len() > 0))
+    if !contents.starts_with(b"---") {
+        return Err(VerifyFailure::FrontmatterDelimiterMissing);
+    }
+    for attachment in &outcome.attachments {
+        if !fs::metadata(&attachment.staged_path).is_ok_and(|meta| meta.len() > 0) {
+            return Err(VerifyFailure::AttachmentMissingOrEmpty(
+                attachment.staged_relpath.clone(),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// `path`'s location relative to `base`, joined with `/` regardless of the
@@ -426,14 +463,17 @@ mod tests {
         fs::create_dir_all(attachment_path.parent().unwrap()).unwrap();
         fs::write(&attachment_path, b"content").unwrap();
 
-        assert!(verify_transformed(&dummy_outcome(
-            md_path,
-            vec![StagedAttachment {
-                hash: "h".to_string(),
-                staged_path: attachment_path,
-                staged_relpath: "attachments/a.pdf".to_string(),
-            }]
-        )));
+        assert!(
+            verify_transformed(&dummy_outcome(
+                md_path,
+                vec![StagedAttachment {
+                    hash: "h".to_string(),
+                    staged_path: attachment_path,
+                    staged_relpath: "attachments/a.pdf".to_string(),
+                }]
+            ))
+            .is_ok()
+        );
     }
 
     #[test]
@@ -441,7 +481,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let md_path = dir.path().join("does-not-exist.md");
 
-        assert!(!verify_transformed(&dummy_outcome(md_path, vec![])));
+        assert_eq!(
+            verify_transformed(&dummy_outcome(md_path, vec![])),
+            Err(VerifyFailure::MarkdownMissingOrEmpty)
+        );
     }
 
     #[test]
@@ -450,14 +493,19 @@ mod tests {
         let md_path = dir.path().join("5.md");
         fs::write(&md_path, "---\nfrom: \"a\"\n---\nbody").unwrap();
 
-        assert!(!verify_transformed(&dummy_outcome(
-            md_path,
-            vec![StagedAttachment {
-                hash: "h".to_string(),
-                staged_path: dir.path().join("missing.pdf"),
-                staged_relpath: "attachments/missing.pdf".to_string(),
-            }]
-        )));
+        assert_eq!(
+            verify_transformed(&dummy_outcome(
+                md_path,
+                vec![StagedAttachment {
+                    hash: "h".to_string(),
+                    staged_path: dir.path().join("missing.pdf"),
+                    staged_relpath: "attachments/missing.pdf".to_string(),
+                }]
+            )),
+            Err(VerifyFailure::AttachmentMissingOrEmpty(
+                "attachments/missing.pdf".to_string()
+            ))
+        );
     }
 
     fn test_identity() -> Identity {
@@ -679,6 +727,6 @@ mod tests {
             outcome.attachments.is_empty(),
             "the dangling, header-less trailing part should not be staged as an attachment"
         );
-        assert!(verify_transformed(&outcome));
+        assert!(verify_transformed(&outcome).is_ok());
     }
 }

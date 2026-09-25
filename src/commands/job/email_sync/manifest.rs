@@ -28,22 +28,31 @@ pub(crate) struct ManifestEntry {
     pub attachments: u32,
 }
 
-/// Counts attachment leaf parts in a `BODYSTRUCTURE` tree (ADR-0032): a
-/// non-multipart part counts if its `Content-Disposition` is `attachment`
-/// (case-insensitive); a `Multipart` recurses into its children and sums.
-/// An estimate only -- a different code path from `transform_one`'s real
-/// `mail_parser`-based count, not guaranteed to agree with it.
+/// Counts attachment leaf parts in a `BODYSTRUCTURE` tree (ADR-0032,
+/// widened by ADR-0033 #42): a non-multipart part counts if its
+/// `Content-Disposition` is `attachment` (case-insensitive) *or* its
+/// `Content-Type` carries a `name` param -- some MUAs never set
+/// `Content-Disposition` at all; a `Multipart` recurses into its children
+/// and sums. An estimate only -- a different code path from
+/// `transform_one`'s real `mail_parser`-based count, not guaranteed to agree
+/// with it.
 fn count_attachments(structure: &BodyStructure) -> u32 {
     match structure {
         BodyStructure::Multipart { bodies, .. } => bodies.iter().map(count_attachments).sum(),
         BodyStructure::Basic { common, .. }
         | BodyStructure::Text { common, .. }
-        | BodyStructure::Message { common, .. } => u32::from(
-            common
+        | BodyStructure::Message { common, .. } => {
+            let has_attachment_disposition = common
                 .disposition
                 .as_ref()
-                .is_some_and(|d| d.ty.eq_ignore_ascii_case("attachment")),
-        ),
+                .is_some_and(|d| d.ty.eq_ignore_ascii_case("attachment"));
+            let has_content_type_name = common.ty.params.as_ref().is_some_and(|params| {
+                params
+                    .iter()
+                    .any(|(key, _)| key.eq_ignore_ascii_case("name"))
+            });
+            u32::from(has_attachment_disposition || has_content_type_name)
+        }
     }
 }
 
@@ -440,6 +449,34 @@ mod tests {
         };
 
         assert_eq!(count_attachments(&structure), 0);
+    }
+
+    #[test]
+    fn count_attachments_content_type_name_param_counts_without_disposition() {
+        // Some MUAs never set Content-Disposition at all, only a `name`
+        // param on Content-Type (ADR-0033 #42).
+        let structure = BodyStructure::Basic {
+            common: BodyContentCommon {
+                ty: ContentType {
+                    ty: "application".into(),
+                    subtype: "pdf".into(),
+                    params: Some(vec![("name".into(), "invoice.pdf".into())]),
+                },
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            other: BodyContentSinglePart {
+                id: None,
+                md5: None,
+                description: None,
+                transfer_encoding: ContentEncoding::SevenBit,
+                octets: 100,
+            },
+            extension: None,
+        };
+
+        assert_eq!(count_attachments(&structure), 1);
     }
 
     #[test]
