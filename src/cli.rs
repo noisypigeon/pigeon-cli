@@ -1,8 +1,7 @@
 use clap::{Parser, Subcommand};
 
-use crate::dataops::cli::DataopsArgs;
-use crate::email::cli::EmailArgs;
 use crate::job::cli::JobArgs;
+use crate::keyring::cli::KeyringArgs;
 
 /// Pigeon: authenticate, sink, and transform personal data from external services.
 #[derive(Parser, Debug)]
@@ -14,10 +13,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    /// Authenticate, sink, and transform email identities and their data
-    Email(EmailArgs),
-    /// Manage S3-compatible bucket configurations
-    Dataops(DataopsArgs),
+    /// Manage email identities and bucket-configs
+    Keyring(KeyringArgs),
     /// Run job-orchestrated pipelines (e.g. email-sync)
     Job(JobArgs),
 }

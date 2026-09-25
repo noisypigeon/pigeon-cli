@@ -18,6 +18,8 @@ use crate::email::imap_client;
 use crate::email::sink;
 use crate::email::transform;
 use crate::job::manifest::{self, Batch, CheckpointEntry, ManifestEntry};
+use crate::keyring::credentials;
+use crate::keyring::store::Store;
 
 /// Entry point for `pigeon job run email-sync` -- the wizard flow of
 /// ADR-0021 §5: resolve identities → pull/load each one's manifest → show
@@ -53,16 +55,16 @@ async fn dispatch_async(
     concurrency: Option<usize>,
     yes: bool,
 ) -> i32 {
-    let identity_store_path = match identity::Store::default_path() {
+    let keyring_store_path = match Store::default_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
-    let identity_store = match identity::Store::load(&identity_store_path) {
+    let keyring_store = match Store::load(&keyring_store_path) {
         Ok(store) => store,
         Err(err) => return fail(err),
     };
     let selected_identities =
-        match crate::job::wizard::resolve_identities(&identity_store, identities) {
+        match crate::job::wizard::resolve_identities(&keyring_store, identities) {
             Ok(identities) => identities,
             Err(err) => return fail(err),
         };
@@ -74,7 +76,7 @@ async fn dispatch_async(
 
     let mut contexts = Vec::new();
     for identity in &selected_identities {
-        let secret = match crate::email::credentials::get_secret(&identity.alias) {
+        let secret = match credentials::get_secret(&identity.alias) {
             Ok(secret) => secret,
             Err(err) => return fail(err),
         };
@@ -108,26 +110,18 @@ async fn dispatch_async(
         return 0;
     }
 
-    let dataops_store_path = match crate::dataops::store::Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let dataops_store = match crate::dataops::store::Store::load(&dataops_store_path) {
-        Ok(store) => store,
-        Err(err) => return fail(err),
-    };
     let resolved_remote_alias =
-        match crate::job::wizard::resolve_remote_output(remote_output, &dataops_store) {
+        match crate::job::wizard::resolve_remote_output(remote_output, &keyring_store) {
             Ok(alias) => alias,
             Err(err) => return fail(err),
         };
     let resolved_remote: Option<(BucketConfig, String)> = match resolved_remote_alias {
         Some(alias) => {
-            let bucket_config = match dataops_store.find(&alias) {
+            let bucket_config = match keyring_store.bucket_configs().find(|b| b.alias == alias) {
                 Some(bucket_config) => bucket_config.clone(),
                 None => return fail(format!("no bucket-config named '{alias}'")),
             };
-            let secret = match crate::dataops::credentials::get_secret(&bucket_config.alias) {
+            let secret = match credentials::get_secret(&bucket_config.alias) {
                 Ok(secret) => secret,
                 Err(err) => return fail(err),
             };

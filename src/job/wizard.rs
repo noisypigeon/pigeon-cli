@@ -4,8 +4,9 @@ use std::path::PathBuf;
 use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::commands::print_table;
-use crate::email::identity::{Identity, Store};
+use crate::email::identity::Identity;
 use crate::job::email_sync::IdentityManifestSummary;
+use crate::keyring::store::Store;
 
 /// Resolves which identities to run against: `--identities` if given (every
 /// alias must already exist), an interactive `MultiSelect` if omitted and
@@ -25,7 +26,7 @@ pub(crate) fn resolve_identities(
             .into_iter()
             .map(|alias| {
                 store
-                    .iter()
+                    .email_identities()
                     .find(|identity| identity.alias == alias)
                     .cloned()
                     .ok_or_else(|| format!("no identity with alias '{alias}'"))
@@ -41,9 +42,9 @@ pub(crate) fn resolve_identities(
 }
 
 fn select_identities_interactively(store: &Store) -> Result<Vec<Identity>, String> {
-    let all: Vec<&Identity> = store.iter().collect();
+    let all: Vec<&Identity> = store.email_identities().collect();
     if all.is_empty() {
-        return Err("no identities configured; run 'pigeon email authenticate' first".to_string());
+        return Err("no identities configured; run 'pigeon keyring add email' first".to_string());
     }
     let labels: Vec<String> = all
         .iter()
@@ -100,15 +101,16 @@ pub(crate) fn resolve_local_output(local_output: Option<PathBuf>) -> Result<Path
 /// Resolves whether (and where) to upload (ADR-0021 §5 amendment):
 /// `Some(alias)` if `--remote-output` is given (validated by the caller,
 /// unchanged); on a TTY if omitted, asks whether to upload at all and, if
-/// so, reuses `Store::prompt_select` to pick among `store`'s configured
-/// bucket-configs (auto-selecting the only one if there's exactly one, or
-/// printing `prompt_select`'s own "run bucket-config new" message and
-/// skipping upload if there are none); if omitted and non-interactive,
-/// silently returns `None` (skip upload) -- same "no error, safe prior
-/// default" reasoning as `resolve_local_output`.
+/// so, reuses `Store::prompt_select_bucket` (ADR-0022 -- scoped to
+/// bucket-configs only, ignoring any configured email identities) to pick
+/// among `store`'s configured bucket-configs (auto-selecting the only one
+/// if there's exactly one, or printing `prompt_select_bucket`'s own "run
+/// keyring add bucket" message and skipping upload if there are none); if
+/// omitted and non-interactive, silently returns `None` (skip upload) --
+/// same "no error, safe prior default" reasoning as `resolve_local_output`.
 pub(crate) fn resolve_remote_output(
     remote_output: Option<String>,
-    store: &crate::dataops::store::Store,
+    store: &Store,
 ) -> Result<Option<String>, String> {
     if let Some(alias) = remote_output {
         return Ok(Some(alias));
@@ -124,7 +126,7 @@ pub(crate) fn resolve_remote_output(
     if !upload {
         return Ok(None);
     }
-    match store.prompt_select() {
+    match store.prompt_select_bucket() {
         Ok(bucket_config) => Ok(Some(bucket_config.alias.clone())),
         Err(message) => {
             println!("{message}");
@@ -274,7 +276,7 @@ mod tests {
 
     #[test]
     fn resolve_remote_output_returns_given_alias_unchanged() {
-        let store = crate::dataops::store::Store::default();
+        let store = Store::default();
         assert_eq!(
             resolve_remote_output(Some("backup".to_string()), &store).unwrap(),
             Some("backup".to_string())

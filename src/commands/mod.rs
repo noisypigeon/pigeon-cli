@@ -8,15 +8,14 @@ pub const FAILURE_EXIT_CODE: i32 = 1;
 
 pub fn dispatch(command: Commands) -> i32 {
     match command {
-        Commands::Email(args) => crate::email::commands::dispatch(args.command),
-        Commands::Dataops(args) => crate::dataops::commands::dispatch(args.command),
+        Commands::Keyring(args) => crate::keyring::commands::dispatch(args.command),
         Commands::Job(args) => crate::job::commands::dispatch(args.command),
     }
 }
 
 /// Prints `rows` as a left-aligned table with a header row, columns padded
 /// to their widest cell (except the last, which is never padded) and joined
-/// by two spaces -- shared by `email list`/`remote list`. Hand-rolled, no
+/// by two spaces -- shared by `keyring list`/`job` summaries. Hand-rolled, no
 /// table-formatting crate.
 pub fn print_table(headers: &[&str], rows: &[Vec<String>]) {
     let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();

@@ -3,15 +3,40 @@ use clap::{Args, Subcommand};
 use crate::email::provider::Provider;
 
 #[derive(Args, Debug)]
-pub struct EmailArgs {
+pub struct KeyringArgs {
     #[command(subcommand)]
-    pub command: EmailCommands,
+    pub command: KeyringCommands,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum EmailCommands {
+pub enum KeyringCommands {
+    /// Add a new email identity or bucket-config
+    Add(AddArgs),
+    /// Edit an existing email identity's or bucket-config's fields
+    Modify {
+        /// Alias of the entry to edit. Interactively selected from every
+        /// configured entry (of either kind) when omitted.
+        alias: Option<String>,
+    },
+    /// Remove a configured email identity or bucket-config and its secret
+    Delete {
+        /// Alias of the entry to remove.
+        alias: String,
+    },
+    /// List every configured email identity and bucket-config
+    List,
+}
+
+#[derive(Args, Debug)]
+pub struct AddArgs {
+    #[command(subcommand)]
+    pub kind: Option<AddKind>,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum AddKind {
     /// Authenticate an email identity and register it under a local alias
-    Authenticate {
+    Email {
         /// Email address of the identity to authenticate, e.g. first.last@example.com
         email: String,
 
@@ -37,6 +62,10 @@ pub enum EmailCommands {
         port: Option<u16>,
     },
 
-    /// List all locally authenticated email identities
-    List,
+    /// Interactively configure a new S3-compatible bucket-config
+    Bucket {
+        /// Alias to register this bucket-config under (e.g. "backup").
+        /// Prompted if omitted.
+        alias: Option<String>,
+    },
 }
