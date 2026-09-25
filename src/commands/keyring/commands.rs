@@ -1,5 +1,5 @@
-use crate::keyring::cli::KeyringCommands;
-use crate::keyring::wizard;
+use crate::commands::keyring::cli::KeyringCommands;
+use crate::commands::keyring::wizard;
 
 pub fn dispatch(command: KeyringCommands) -> i32 {
     match command {

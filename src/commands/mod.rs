@@ -1,3 +1,6 @@
+pub mod job;
+pub mod keyring;
+
 use crate::cli::Commands;
 
 /// Exit code returned by a command that ran but didn't succeed (e.g. a
@@ -8,8 +11,8 @@ pub const FAILURE_EXIT_CODE: i32 = 1;
 
 pub fn dispatch(command: Commands) -> i32 {
     match command {
-        Commands::Keyring(args) => crate::keyring::commands::dispatch(args.command),
-        Commands::Job(args) => crate::job::commands::dispatch(args.command),
+        Commands::Keyring(args) => crate::commands::keyring::commands::dispatch(args.command),
+        Commands::Job(args) => crate::commands::job::commands::dispatch(args.command),
     }
 }
 

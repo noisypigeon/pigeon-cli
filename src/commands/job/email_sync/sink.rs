@@ -6,8 +6,8 @@ use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 
-use crate::email::identity::sanitize_segment;
-use crate::email::imap_client::{self, ImapSession};
+use crate::commands::keyring::email::identity::sanitize_segment;
+use crate::commands::keyring::email::imap_client::{self, ImapSession};
 
 const UIDVALIDITY_FILE_NAME: &str = ".uidvalidity";
 

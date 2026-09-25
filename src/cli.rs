@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
-use crate::job::cli::JobArgs;
-use crate::keyring::cli::KeyringArgs;
+use crate::commands::job::cli::JobArgs;
+use crate::commands::keyring::cli::KeyringArgs;
 
 /// Pigeon: authenticate, sink, and transform personal data from external services.
 #[derive(Parser, Debug)]

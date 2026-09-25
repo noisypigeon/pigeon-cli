@@ -3,19 +3,19 @@ use std::path::{Path, PathBuf};
 
 use mail_parser::{Addr, DateTime, MessageParser, MimeHeaders};
 
-use crate::dataops::transform::{sanitize_filename, unique_path, yaml_quote};
-use crate::email::identity::{self, Identity};
+use crate::commands::keyring::email::identity::{self, Identity};
+use crate::core::data::{Transform, sanitize_filename, unique_path, yaml_quote};
 
 /// The two dedup dotfiles' names (per ADR-0012), anchored here since this
 /// module is their conceptual owner -- the generic `ContentIndex` type
-/// itself (ADR-0020) no longer hardcodes any filename. The post-transform
-/// dedup pass (`job::email_sync`, ADR-0021 §7) is now their only consumer.
+/// itself (ADR-0020) no longer hardcodes any filename. `EmailDedup`
+/// (`dedup.rs`) is now their only consumer.
 pub(crate) const MESSAGE_HASHES_FILE: &str = ".message-hashes";
 pub(crate) const ATTACHMENT_HASHES_FILE: &str = ".attachment-hashes";
 
-/// One attachment staged by `transform_one`, not yet placed at its final,
-/// possibly-deduped location -- that happens in the post-transform dedup
-/// pass (ADR-0021 §7/§10).
+/// One attachment staged by `EmailTransform::transform`, not yet placed at
+/// its final, possibly-deduped location -- that happens in the post-
+/// transform dedup pass (ADR-0021 §7/§10).
 pub(crate) struct StagedAttachment {
     pub hash: String,
     pub staged_path: PathBuf,
@@ -26,19 +26,20 @@ pub(crate) struct StagedAttachment {
     pub staged_relpath: String,
 }
 
-/// What a single `transform_one` call wrote, entirely under a UID-keyed
-/// staging tree (`<staging_root>/transformed/<mailbox-relpath>/...`) rather
-/// than the final flat identity tree. `(mailbox, uid)` is unique per IMAP's
-/// own guarantees and exclusive to whichever worker fetched it, so nothing
-/// here is ever contended by another concurrent worker -- no lock is needed
-/// (ADR-0021 §7/§10). Placing this content at its final, deduped location
-/// and resolving any real content-hash duplicates is entirely the
-/// single-threaded post-transform dedup pass's job.
+/// What a single `EmailTransform::transform` call wrote, entirely under a
+/// UID-keyed staging tree (`<staging_root>/transformed/<mailbox-relpath>/
+/// ...`) rather than the final flat identity tree. `(mailbox, uid)` is
+/// unique per IMAP's own guarantees and exclusive to whichever worker
+/// fetched it, so nothing here is ever contended by another concurrent
+/// worker -- no lock is needed (ADR-0021 §7/§10). Placing this content at
+/// its final, deduped location and resolving any real content-hash
+/// duplicates is entirely the single-threaded post-transform dedup pass's
+/// job.
 pub(crate) struct TransformOutcome {
     pub message_hash: String,
     pub md_staged_path: PathBuf,
     /// Staging-root-relative path (e.g. `transformed/inbox/5.md`), for
-    /// persisting in a `job::manifest::CheckpointEntry`.
+    /// persisting in a `manifest::CheckpointEntry`.
     pub md_staged_relpath: String,
     /// The human-readable, date+subject-derived filename (e.g.
     /// `2024-01-26-hello-world.md`) this message would be named at its
@@ -59,162 +60,171 @@ pub(crate) struct TransformOutcome {
     pub attachments: Vec<StagedAttachment>,
 }
 
-/// Parses a single `.eml` file and unconditionally stages its Markdown
+/// The email-specific implementation of `core::data::Transform` (ADR-0023):
+/// parses a single `.eml` file and unconditionally stages its Markdown
 /// rendering (and any attachments) under `staging_root`'s UID-keyed tree.
 /// `input_root` is used to derive the `mailbox/...` tag and the staged
-/// tree's mirrored mailbox subdirectory from `eml_path`'s location relative
-/// to it.
-///
-/// Returns `Ok(None)` on a lenient skip (unparseable message, missing `Date`
-/// header, or a filename that doesn't parse as a `u32` UID -- needed for the
-/// `uid:` frontmatter field) with a warning already printed; `Err` only for
-/// a hard I/O failure.
-pub(crate) fn transform_one(
-    identity: &Identity,
-    eml_path: &Path,
-    input_root: &Path,
-    staging_root: &Path,
-) -> Result<Option<TransformOutcome>, String> {
-    let Some(uid) = eml_path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.parse::<u32>().ok())
-    else {
-        eprintln!(
-            "Warning: {} is not named <uid>.eml, skipping",
-            eml_path.display()
-        );
-        return Ok(None);
-    };
-
-    let bytes = match fs::read(eml_path) {
-        Ok(bytes) => bytes,
-        Err(err) => {
-            eprintln!("Warning: failed to read {}: {err}", eml_path.display());
-            return Ok(None);
-        }
-    };
-
-    let message_hash = format!("{:x}", md5::compute(&bytes));
-
-    let Some(message) = MessageParser::default().parse(&bytes) else {
-        eprintln!("Warning: failed to parse {}, skipping", eml_path.display());
-        return Ok(None);
-    };
-
-    let Some(date) = message.date() else {
-        eprintln!(
-            "Warning: {} has no Date header, skipping",
-            eml_path.display()
-        );
-        return Ok(None);
-    };
-
-    let mailbox = mailbox_tag(eml_path, input_root);
-    let relative_dir = eml_path
-        .strip_prefix(input_root)
-        .ok()
-        .and_then(|path| path.parent())
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let staged_dir = staging_root.join("transformed").join(&relative_dir);
-    fs::create_dir_all(&staged_dir)
-        .map_err(|err| format!("failed to create {}: {err}", staged_dir.display()))?;
-
-    let subject = message.subject().unwrap_or("(no subject)");
-    let from_addr = message.from().and_then(|address| address.first());
-    let to_addr = message.to().and_then(|address| address.first());
-
-    let body = if message.html_body_count() > 0 {
-        let html = message.body_html(0).unwrap_or_default();
-        htmd::convert(&html)
-            .unwrap_or_else(|_| message.body_text(0).unwrap_or_default().to_string())
-    } else if message.text_body_count() > 0 {
-        message.body_text(0).unwrap_or_default().to_string()
-    } else {
-        String::new()
-    };
-
-    let stem = format!(
-        "{}-{}",
-        format_date_prefix(date),
-        identity::sanitize_segment(subject)
-    );
-
-    // A UID's staging subtree is exclusively this worker's -- no other
-    // concurrent worker ever writes into it (batches never share a UID) --
-    // so `unique_path` here only ever resolves a genuine within-message
-    // naming collision (e.g. two attachments both literally named
-    // "image.png"), never a cross-worker race. The durable, content-hash-
-    // based dedup decision, and its own `unique_path` call against the
-    // shared final tree, happen only in the single-threaded post-transform
-    // pass (ADR-0021 §7/§10).
-    let attachments_dir = staged_dir.join(uid.to_string()).join("attachments");
-    let mut attachments = Vec::new();
-    let mut attachment_relpaths = Vec::new();
-    for part in message.attachments() {
-        let contents = part.contents();
-        let hash = format!("{:x}", md5::compute(contents));
-        fs::create_dir_all(&attachments_dir)
-            .map_err(|err| format!("failed to create {}: {err}", attachments_dir.display()))?;
-
-        let original_name = sanitize_filename(part.attachment_name().unwrap_or("attachment"));
-        let staged_path = unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
-        fs::write(&staged_path, contents)
-            .map_err(|err| format!("failed to write {}: {err}", staged_path.display()))?;
-
-        let relpath = format!(
-            "attachments/{}",
-            staged_path.file_name().unwrap().to_string_lossy()
-        );
-        attachments.push(StagedAttachment {
-            hash,
-            staged_path,
-            staged_relpath: relpath.clone(),
-        });
-        attachment_relpaths.push(relpath);
-    }
-
-    let mut tags = vec![
-        mailbox.clone(),
-        format!("identity/{}", identity.alias),
-        format!("year/{}", date.year),
-    ];
-    if let Some(domain_tag) = sender_domain_tag(from_addr.and_then(|addr| addr.address.as_deref()))
-    {
-        tags.push(domain_tag);
-    }
-
-    let frontmatter = render_frontmatter(
-        &format_address(from_addr),
-        &format_address(to_addr),
-        subject,
-        &date.to_rfc3339(),
-        &tags,
-        &attachment_relpaths,
-        uid,
-    );
-
-    let md_staged_path = staged_dir.join(format!("{uid}.md"));
-    fs::write(&md_staged_path, format!("{frontmatter}\n{body}"))
-        .map_err(|err| format!("failed to write {}: {err}", md_staged_path.display()))?;
-    let md_staged_relpath = relpath_string(staging_root, &md_staged_path);
-
-    Ok(Some(TransformOutcome {
-        message_hash,
-        md_staged_path,
-        md_staged_relpath,
-        desired_md_name: format!("{stem}.md"),
-        mailbox_tag: mailbox,
-        attachments,
-    }))
+/// tree's mirrored mailbox subdirectory from the given `.eml` path's
+/// location relative to it. Constructed once per worker/batch and reused
+/// across every UID it processes (`identity`/`input_root`/`staging_root`
+/// never change mid-batch).
+pub(crate) struct EmailTransform {
+    pub identity: Identity,
+    pub input_root: PathBuf,
+    pub staging_root: PathBuf,
 }
 
-/// Structural check that `transform_one`'s output is complete: the staged
-/// `.md` file exists, is non-empty, and starts with the frontmatter
-/// delimiter; every staged attachment path exists with nonzero size. Used
-/// by `job::email_sync`'s per-batch worker to decide whether it's safe to
-/// delete the source `.eml` and record the UID as checkpointed.
+impl Transform for EmailTransform {
+    type Input = PathBuf;
+    type Output = TransformOutcome;
+
+    /// Returns `Ok(None)` on a lenient skip (unparseable message, missing
+    /// `Date` header, or a filename that doesn't parse as a `u32` UID --
+    /// needed for the `uid:` frontmatter field) with a warning already
+    /// printed; `Err` only for a hard I/O failure.
+    fn transform(&self, eml_path: PathBuf) -> Result<Option<TransformOutcome>, String> {
+        let Some(uid) = eml_path
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .and_then(|stem| stem.parse::<u32>().ok())
+        else {
+            eprintln!(
+                "Warning: {} is not named <uid>.eml, skipping",
+                eml_path.display()
+            );
+            return Ok(None);
+        };
+
+        let bytes = match fs::read(&eml_path) {
+            Ok(bytes) => bytes,
+            Err(err) => {
+                eprintln!("Warning: failed to read {}: {err}", eml_path.display());
+                return Ok(None);
+            }
+        };
+
+        let message_hash = format!("{:x}", md5::compute(&bytes));
+
+        let Some(message) = MessageParser::default().parse(&bytes) else {
+            eprintln!("Warning: failed to parse {}, skipping", eml_path.display());
+            return Ok(None);
+        };
+
+        let Some(date) = message.date() else {
+            eprintln!(
+                "Warning: {} has no Date header, skipping",
+                eml_path.display()
+            );
+            return Ok(None);
+        };
+
+        let mailbox = mailbox_tag(&eml_path, &self.input_root);
+        let relative_dir = eml_path
+            .strip_prefix(&self.input_root)
+            .ok()
+            .and_then(|path| path.parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let staged_dir = self.staging_root.join("transformed").join(&relative_dir);
+        fs::create_dir_all(&staged_dir)
+            .map_err(|err| format!("failed to create {}: {err}", staged_dir.display()))?;
+
+        let subject = message.subject().unwrap_or("(no subject)");
+        let from_addr = message.from().and_then(|address| address.first());
+        let to_addr = message.to().and_then(|address| address.first());
+
+        let body = if message.html_body_count() > 0 {
+            let html = message.body_html(0).unwrap_or_default();
+            htmd::convert(&html)
+                .unwrap_or_else(|_| message.body_text(0).unwrap_or_default().to_string())
+        } else if message.text_body_count() > 0 {
+            message.body_text(0).unwrap_or_default().to_string()
+        } else {
+            String::new()
+        };
+
+        let stem = format!(
+            "{}-{}",
+            format_date_prefix(date),
+            identity::sanitize_segment(subject)
+        );
+
+        // A UID's staging subtree is exclusively this worker's -- no other
+        // concurrent worker ever writes into it (batches never share a
+        // UID) -- so `unique_path` here only ever resolves a genuine
+        // within-message naming collision (e.g. two attachments both
+        // literally named "image.png"), never a cross-worker race. The
+        // durable, content-hash-based dedup decision, and its own
+        // `unique_path` call against the shared final tree, happen only in
+        // the single-threaded post-transform pass (ADR-0021 §7/§10).
+        let attachments_dir = staged_dir.join(uid.to_string()).join("attachments");
+        let mut attachments = Vec::new();
+        let mut attachment_relpaths = Vec::new();
+        for part in message.attachments() {
+            let contents = part.contents();
+            let hash = format!("{:x}", md5::compute(contents));
+            fs::create_dir_all(&attachments_dir)
+                .map_err(|err| format!("failed to create {}: {err}", attachments_dir.display()))?;
+
+            let original_name = sanitize_filename(part.attachment_name().unwrap_or("attachment"));
+            let staged_path = unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
+            fs::write(&staged_path, contents)
+                .map_err(|err| format!("failed to write {}: {err}", staged_path.display()))?;
+
+            let relpath = format!(
+                "attachments/{}",
+                staged_path.file_name().unwrap().to_string_lossy()
+            );
+            attachments.push(StagedAttachment {
+                hash,
+                staged_path,
+                staged_relpath: relpath.clone(),
+            });
+            attachment_relpaths.push(relpath);
+        }
+
+        let mut tags = vec![
+            mailbox.clone(),
+            format!("identity/{}", self.identity.alias),
+            format!("year/{}", date.year),
+        ];
+        if let Some(domain_tag) =
+            sender_domain_tag(from_addr.and_then(|addr| addr.address.as_deref()))
+        {
+            tags.push(domain_tag);
+        }
+
+        let frontmatter = render_frontmatter(
+            &format_address(from_addr),
+            &format_address(to_addr),
+            subject,
+            &date.to_rfc3339(),
+            &tags,
+            &attachment_relpaths,
+            uid,
+        );
+
+        let md_staged_path = staged_dir.join(format!("{uid}.md"));
+        fs::write(&md_staged_path, format!("{frontmatter}\n{body}"))
+            .map_err(|err| format!("failed to write {}: {err}", md_staged_path.display()))?;
+        let md_staged_relpath = relpath_string(&self.staging_root, &md_staged_path);
+
+        Ok(Some(TransformOutcome {
+            message_hash,
+            md_staged_path,
+            md_staged_relpath,
+            desired_md_name: format!("{stem}.md"),
+            mailbox_tag: mailbox,
+            attachments,
+        }))
+    }
+}
+
+/// Structural check that `EmailTransform::transform`'s output is complete:
+/// the staged `.md` file exists, is non-empty, and starts with the
+/// frontmatter delimiter; every staged attachment path exists with nonzero
+/// size. Used by the worker pool to decide whether it's safe to delete the
+/// source `.eml` and record the UID as checkpointed.
 pub(crate) fn verify_transformed(outcome: &TransformOutcome) -> bool {
     let Ok(contents) = fs::read(&outcome.md_staged_path) else {
         return false;
@@ -444,9 +454,17 @@ mod tests {
         Identity {
             alias: "first-last".to_string(),
             email: "first.last@example.com".to_string(),
-            provider: crate::email::provider::Provider::Gmail,
+            provider: crate::commands::keyring::email::provider::Provider::Gmail,
             host: "imap.gmail.com".to_string(),
             port: 993,
+        }
+    }
+
+    fn transformer(input_root: &Path, staging_root: &Path) -> EmailTransform {
+        EmailTransform {
+            identity: test_identity(),
+            input_root: input_root.to_path_buf(),
+            staging_root: staging_root.to_path_buf(),
         }
     }
 
@@ -493,15 +511,10 @@ mod tests {
         fs::create_dir_all(&inbox).unwrap();
         fs::write(inbox.join("5.eml"), plain_text_eml("Hello")).unwrap();
 
-        let identity = test_identity();
-        let outcome = transform_one(
-            &identity,
-            &inbox.join("5.eml"),
-            input.path(),
-            staging.path(),
-        )
-        .unwrap()
-        .unwrap();
+        let outcome = transformer(input.path(), staging.path())
+            .transform(inbox.join("5.eml"))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(
             outcome.md_staged_path,
@@ -524,27 +537,16 @@ mod tests {
         fs::create_dir_all(&inbox).unwrap();
         fs::create_dir_all(&archive).unwrap();
 
-        let identity = test_identity();
         let raw = plain_text_eml("Hello");
         fs::write(inbox.join("1.eml"), &raw).unwrap();
         fs::write(archive.join("2.eml"), &raw).unwrap();
 
-        let first = transform_one(
-            &identity,
-            &inbox.join("1.eml"),
-            input.path(),
-            staging.path(),
-        )
-        .unwrap()
-        .unwrap();
-        let second = transform_one(
-            &identity,
-            &archive.join("2.eml"),
-            input.path(),
-            staging.path(),
-        )
-        .unwrap()
-        .unwrap();
+        let transformer = transformer(input.path(), staging.path());
+        let first = transformer.transform(inbox.join("1.eml")).unwrap().unwrap();
+        let second = transformer
+            .transform(archive.join("2.eml"))
+            .unwrap()
+            .unwrap();
 
         // No dedup at this layer anymore -- both are staged independently,
         // as separate files, even though their content (and hash) is
@@ -568,15 +570,10 @@ mod tests {
         )
         .unwrap();
 
-        let identity = test_identity();
-        let outcome = transform_one(
-            &identity,
-            &inbox.join("1.eml"),
-            input.path(),
-            staging.path(),
-        )
-        .unwrap()
-        .unwrap();
+        let outcome = transformer(input.path(), staging.path())
+            .transform(inbox.join("1.eml"))
+            .unwrap()
+            .unwrap();
 
         assert_eq!(outcome.attachments.len(), 1);
         assert!(fs::metadata(&outcome.attachments[0].staged_path).is_ok_and(|m| m.len() > 0));
@@ -594,15 +591,10 @@ mod tests {
         )
         .unwrap();
 
-        let identity = test_identity();
-        let outcome = transform_one(
-            &identity,
-            &inbox.join("1.eml"),
-            input.path(),
-            staging.path(),
-        )
-        .unwrap()
-        .unwrap();
+        let outcome = transformer(input.path(), staging.path())
+            .transform(inbox.join("1.eml"))
+            .unwrap()
+            .unwrap();
 
         let attachment_path = &outcome.attachments[0].staged_path;
         assert!(
@@ -622,20 +614,15 @@ mod tests {
         let inbox = input.path().join("inbox");
         fs::create_dir_all(&inbox).unwrap();
 
-        let identity = test_identity();
         // Long enough that the unpatched code would build a >255-byte
         // filename and fail to write with ENAMETOOLONG.
         let long_subject = "word ".repeat(60);
         fs::write(inbox.join("1.eml"), plain_text_eml(&long_subject)).unwrap();
 
-        let outcome = transform_one(
-            &identity,
-            &inbox.join("1.eml"),
-            input.path(),
-            staging.path(),
-        )
-        .unwrap()
-        .unwrap();
+        let outcome = transformer(input.path(), staging.path())
+            .transform(inbox.join("1.eml"))
+            .unwrap()
+            .unwrap();
 
         // The staged file itself is always named `<uid>.md`, so subject
         // length can't affect it -- but `desired_md_name` (what the dedup

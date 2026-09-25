@@ -1,66 +1,20 @@
-use std::io::{BufRead, IsTerminal};
+use dialoguer::{Input, Select, theme::ColorfulTheme};
 
-use dialoguer::{Confirm, Input, Password, Select, theme::ColorfulTheme};
-
+use crate::commands::keyring::bucket::client;
+use crate::commands::keyring::bucket::store::BucketConfig;
+use crate::commands::keyring::cli::AddKind;
+use crate::commands::keyring::email::identity::{self, Identity};
+use crate::commands::keyring::email::imap_client;
+use crate::commands::keyring::email::provider::Provider;
+use crate::commands::keyring::store::{Entry, Store};
 use crate::commands::{FAILURE_EXIT_CODE, print_table};
-use crate::dataops::client;
-use crate::dataops::store::BucketConfig;
-use crate::email::identity::{self, Identity};
-use crate::email::imap_client;
-use crate::email::provider::Provider;
-use crate::keyring::cli::AddKind;
-use crate::keyring::credentials;
-use crate::keyring::store::{KeyringEntry, Store};
+use crate::core::keyring::KeyringEntry as _;
+use crate::core::keyring::credentials;
+use crate::core::wizard::{confirm, read_secret};
 
 fn fail(message: impl std::fmt::Display) -> i32 {
     eprintln!("Error: {message}");
     FAILURE_EXIT_CODE
-}
-
-/// Reads a secret. Masked and interactive on a real TTY; falls back to a
-/// plain line read from stdin otherwise, so a secret can be piped in (e.g.
-/// from a password manager). Merges `email::commands::read_secret`/
-/// `dataops::commands::read_secret`, which were byte-for-byte the same
-/// shape.
-fn read_secret(prompt: &str) -> Result<String, String> {
-    if std::io::stdin().is_terminal() {
-        Password::new()
-            .with_prompt(prompt)
-            .interact()
-            .map_err(|err| format!("failed to read secret: {err}"))
-    } else {
-        let mut line = String::new();
-        std::io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .map_err(|err| format!("failed to read secret from stdin: {err}"))?;
-        Ok(line.trim_end_matches(['\n', '\r']).to_string())
-    }
-}
-
-/// Asks a yes/no question. Interactive on a real TTY; falls back to reading
-/// a plain `y`/`n` line from stdin otherwise. From `dataops::commands::confirm`
-/// (`email` had no confirm helper before this, since it never had a
-/// destructive command needing one).
-fn confirm(prompt: &str, default: bool) -> Result<bool, String> {
-    if std::io::stdin().is_terminal() {
-        Confirm::with_theme(&ColorfulTheme::default())
-            .with_prompt(prompt)
-            .default(default)
-            .interact()
-            .map_err(|err| format!("failed to read confirmation: {err}"))
-    } else {
-        let mut line = String::new();
-        std::io::stdin()
-            .lock()
-            .read_line(&mut line)
-            .map_err(|err| format!("failed to read confirmation from stdin: {err}"))?;
-        Ok(match line.trim().to_ascii_lowercase().as_str() {
-            "y" | "yes" => true,
-            "n" | "no" => false,
-            _ => default,
-        })
-    }
 }
 
 /// Resolves the IMAP host/port to use: explicit `--host`/`--port` win, then
@@ -80,9 +34,9 @@ fn resolve_host_port(
     Ok((host, port))
 }
 
-/// Runs `dataops::client::bucket_exists` on its own short-lived async
+/// Runs `bucket::client::bucket_exists` on its own short-lived async
 /// runtime -- `keyring::wizard`'s top-level functions stay synchronous
-/// (matching `email::imap_client::verify_login`'s own self-contained-runtime
+/// (matching `imap_client::verify_login`'s own self-contained-runtime
 /// shape), since a single dispatch entry point needs to reach both this
 /// (async) and `verify_login` (which builds its own nested runtime and
 /// would panic if called from inside an already-running one).
@@ -184,7 +138,7 @@ fn add_email(
         return fail(err);
     }
 
-    store.push(KeyringEntry::Email(Identity {
+    store.push(Entry::Email(Identity {
         alias: alias.clone(),
         email: email.clone(),
         provider,
@@ -269,7 +223,7 @@ fn add_bucket(alias: Option<String>) -> i32 {
         return fail(err);
     }
 
-    store.push(KeyringEntry::Bucket(candidate));
+    store.push(Entry::Bucket(candidate));
     if let Err(err) = store.save(&path) {
         let _ = credentials::delete_secret(&alias);
         return fail(err);
@@ -301,8 +255,8 @@ pub fn modify(alias: Option<String>) -> i32 {
     let entry = store.find(&alias).unwrap().clone();
 
     match entry {
-        KeyringEntry::Email(identity) => modify_email(&mut store, &path, &identity),
-        KeyringEntry::Bucket(bucket_config) => modify_bucket(&mut store, &path, &bucket_config),
+        Entry::Email(identity) => modify_email(&mut store, &path, &identity),
+        Entry::Bucket(bucket_config) => modify_bucket(&mut store, &path, &bucket_config),
     }
 }
 
@@ -385,7 +339,7 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         port,
     };
     store.remove(&current.alias);
-    store.push(KeyringEntry::Email(updated));
+    store.push(Entry::Email(updated));
     if let Err(err) = store.save(path) {
         return fail(err);
     }
@@ -456,7 +410,7 @@ fn modify_bucket(store: &mut Store, path: &std::path::Path, current: &BucketConf
     }
 
     store.remove(&current.alias);
-    store.push(KeyringEntry::Bucket(candidate));
+    store.push(Entry::Bucket(candidate));
     if let Err(err) = store.save(path) {
         return fail(err);
     }
@@ -522,17 +476,12 @@ pub fn list() -> i32 {
 
     let rows: Vec<Vec<String>> = store
         .iter()
-        .map(|entry| match entry {
-            KeyringEntry::Email(identity) => vec![
-                "email".to_string(),
-                identity.alias.clone(),
-                format!("{} ({})", identity.email, identity.provider),
-            ],
-            KeyringEntry::Bucket(bucket_config) => vec![
-                "bucket".to_string(),
-                bucket_config.alias.clone(),
-                format!("{} ({})", bucket_config.endpoint, bucket_config.bucket),
-            ],
+        .map(|entry| {
+            vec![
+                entry.kind().to_string(),
+                entry.alias().to_string(),
+                entry.detail(),
+            ]
         })
         .collect();
     print_table(&["KIND", "ALIAS", "DETAIL"], &rows);

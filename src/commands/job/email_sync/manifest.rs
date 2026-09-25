@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use futures::TryStreamExt;
 
-use crate::email::imap_client::ImapSession;
+use crate::commands::keyring::email::imap_client::ImapSession;
 
 const MANIFEST_FILE_NAME: &str = ".manifest";
 const CHECKPOINT_FILE_NAME: &str = ".job-checkpoint";

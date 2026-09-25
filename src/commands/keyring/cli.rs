@@ -1,6 +1,6 @@
 use clap::{Args, Subcommand};
 
-use crate::email::provider::Provider;
+use crate::commands::keyring::email::provider::Provider;
 
 #[derive(Args, Debug)]
 pub struct KeyringArgs {

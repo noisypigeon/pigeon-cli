@@ -1,5 +1,5 @@
-use crate::job::cli::{JobCommands, JobType};
-use crate::job::email_sync;
+use crate::commands::job::cli::{JobCommands, JobType};
+use crate::commands::job::email_sync;
 
 pub fn dispatch(command: JobCommands) -> i32 {
     match command {
@@ -10,7 +10,13 @@ pub fn dispatch(command: JobCommands) -> i32 {
                 remote_output,
                 concurrency,
                 yes,
-            } => email_sync::dispatch(identities, local_output, remote_output, concurrency, yes),
+            } => email_sync::wizard::dispatch(
+                identities,
+                local_output,
+                remote_output,
+                concurrency,
+                yes,
+            ),
         },
     }
 }

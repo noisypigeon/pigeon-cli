@@ -9,7 +9,7 @@ use minio::s3::response_traits::HasEtagFromHeaders;
 use minio::s3::segmented_bytes::SegmentedBytes;
 use minio::s3::types::{S3Api, ToStream};
 
-use crate::dataops::store::BucketConfig;
+use crate::commands::keyring::bucket::store::BucketConfig;
 
 /// A listed S3 object or (in non-recursive/`lsd` mode) common prefix.
 pub struct ObjectEntry {

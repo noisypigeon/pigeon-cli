@@ -3,8 +3,9 @@ use std::path::{Path, PathBuf};
 use dialoguer::{Select, theme::ColorfulTheme};
 use serde::{Deserialize, Serialize};
 
-use crate::dataops::store::BucketConfig;
-use crate::email::identity::Identity;
+use crate::commands::keyring::bucket::store::BucketConfig;
+use crate::commands::keyring::email::identity::Identity;
+use crate::core::keyring::KeyringEntry as _;
 
 /// Both `email::identity`'s and `dataops::store`'s former stores read this
 /// same env var name for the same reason: an override for isolating tests
@@ -19,44 +20,55 @@ const KEYRING_FILE_NAME: &str = "keyring.toml";
 /// Wraps the existing `Identity`/`BucketConfig` structs unchanged rather
 /// than flattening their fields, so every consumer that already takes
 /// `&Identity`/`&BucketConfig` (`imap_client::verify_login`,
-/// `dataops::client::*`) needs no changes. Serde's internally-tagged
+/// `bucket::client::*`) needs no changes. Serde's internally-tagged
 /// representation flattens the wrapped struct's own fields alongside the
 /// `kind` discriminant, so `keyring.toml` still reads as a flat table per
-/// entry.
+/// entry. Named `Entry` (not `KeyringEntry`) to avoid colliding with the
+/// `core::keyring::KeyringEntry` trait it implements (ADR-0023).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
-pub enum KeyringEntry {
+pub enum Entry {
     Email(Identity),
     Bucket(BucketConfig),
 }
 
-impl KeyringEntry {
-    pub fn alias(&self) -> &str {
+impl crate::core::keyring::KeyringEntry for Entry {
+    fn alias(&self) -> &str {
         match self {
-            KeyringEntry::Email(identity) => &identity.alias,
-            KeyringEntry::Bucket(bucket_config) => &bucket_config.alias,
+            Entry::Email(identity) => identity.alias(),
+            Entry::Bucket(bucket_config) => bucket_config.alias(),
         }
     }
 
-    /// A `[kind] alias (detail)` label for `prompt_select`'s mixed listing.
-    fn label(&self) -> String {
+    fn kind(&self) -> &'static str {
         match self {
-            KeyringEntry::Email(identity) => format!(
-                "[email] {} ({}, {})",
-                identity.alias, identity.email, identity.provider
-            ),
-            KeyringEntry::Bucket(bucket_config) => format!(
-                "[bucket] {} ({}, {})",
-                bucket_config.alias, bucket_config.endpoint, bucket_config.bucket
-            ),
+            Entry::Email(identity) => identity.kind(),
+            Entry::Bucket(bucket_config) => bucket_config.kind(),
         }
+    }
+
+    fn detail(&self) -> String {
+        match self {
+            Entry::Email(identity) => identity.detail(),
+            Entry::Bucket(bucket_config) => bucket_config.detail(),
+        }
+    }
+}
+
+impl Entry {
+    /// A `[kind] alias - detail` label for `prompt_select`'s mixed listing.
+    /// `detail()` already self-parenthesizes its own content (e.g.
+    /// `willow@example.com (gmail)`), so this doesn't wrap it in another
+    /// layer of parens.
+    fn label(&self) -> String {
+        format!("[{}] {} - {}", self.kind(), self.alias(), self.detail())
     }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct StoreFile {
     #[serde(default)]
-    entries: Vec<KeyringEntry>,
+    entries: Vec<Entry>,
 }
 
 /// The on-disk collection of every configured secret's metadata -- email
@@ -64,7 +76,7 @@ struct StoreFile {
 /// `email::identity::Store` and `dataops::store::Store`.
 #[derive(Debug, Default)]
 pub struct Store {
-    entries: Vec<KeyringEntry>,
+    entries: Vec<Entry>,
 }
 
 impl Store {
@@ -117,11 +129,11 @@ impl Store {
         self.entries.iter().any(|entry| entry.alias() == alias)
     }
 
-    pub fn push(&mut self, entry: KeyringEntry) {
+    pub fn push(&mut self, entry: Entry) {
         self.entries.push(entry);
     }
 
-    pub fn find(&self, alias: &str) -> Option<&KeyringEntry> {
+    pub fn find(&self, alias: &str) -> Option<&Entry> {
         self.entries.iter().find(|entry| entry.alias() == alias)
     }
 
@@ -137,7 +149,7 @@ impl Store {
         self.entries.is_empty()
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = &KeyringEntry> {
+    pub fn iter(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter()
     }
 
@@ -145,8 +157,8 @@ impl Store {
     /// `job::wizard`'s identity resolution.
     pub fn email_identities(&self) -> impl Iterator<Item = &Identity> {
         self.entries.iter().filter_map(|entry| match entry {
-            KeyringEntry::Email(identity) => Some(identity),
-            KeyringEntry::Bucket(_) => None,
+            Entry::Email(identity) => Some(identity),
+            Entry::Bucket(_) => None,
         })
     }
 
@@ -154,8 +166,8 @@ impl Store {
     /// `job::email_sync`'s upload-target lookup.
     pub fn bucket_configs(&self) -> impl Iterator<Item = &BucketConfig> {
         self.entries.iter().filter_map(|entry| match entry {
-            KeyringEntry::Bucket(bucket_config) => Some(bucket_config),
-            KeyringEntry::Email(_) => None,
+            Entry::Bucket(bucket_config) => Some(bucket_config),
+            Entry::Email(_) => None,
         })
     }
 
@@ -163,12 +175,12 @@ impl Store {
     /// is an error pointing at `keyring add`; exactly one is returned
     /// without prompting; otherwise `dialoguer::Select` lists them all,
     /// labeled by kind. Used by `keyring modify` when no alias is given.
-    pub fn prompt_select(&self) -> Result<&KeyringEntry, String> {
+    pub fn prompt_select(&self) -> Result<&Entry, String> {
         match self.entries.as_slice() {
             [] => Err("no keyring entries configured; run 'pigeon keyring add' first".to_string()),
             [only] => Ok(only),
             entries => {
-                let labels: Vec<String> = entries.iter().map(KeyringEntry::label).collect();
+                let labels: Vec<String> = entries.iter().map(Entry::label).collect();
                 let selection = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("Select an entry")
                     .items(&labels)
@@ -215,7 +227,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::email::provider::Provider;
+    use crate::commands::keyring::email::provider::Provider;
 
     fn sample_identity(alias: &str) -> Identity {
         Identity {
@@ -242,8 +254,8 @@ mod tests {
         let path = dir.path().join("keyring.toml");
 
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
-        store.push(KeyringEntry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
         store.save(&path).unwrap();
 
         let loaded = Store::load(&path).unwrap();
@@ -266,7 +278,7 @@ mod tests {
     #[test]
     fn contains_alias_is_global_across_kinds() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Bucket(sample_bucket_config("shared-alias")));
+        store.push(Entry::Bucket(sample_bucket_config("shared-alias")));
 
         // An email identity trying to reuse a bucket-config's alias is
         // caught by the same check -- this is what makes aliases globally
@@ -277,8 +289,8 @@ mod tests {
     #[test]
     fn email_identities_ignores_bucket_entries() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
-        store.push(KeyringEntry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
 
         let aliases: Vec<&str> = store.email_identities().map(|i| i.alias.as_str()).collect();
         assert_eq!(aliases, vec!["willow"]);
@@ -287,8 +299,8 @@ mod tests {
     #[test]
     fn bucket_configs_ignores_email_entries() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
-        store.push(KeyringEntry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
 
         let aliases: Vec<&str> = store.bucket_configs().map(|b| b.alias.as_str()).collect();
         assert_eq!(aliases, vec!["backup"]);
@@ -303,8 +315,8 @@ mod tests {
     #[test]
     fn remove_deletes_matching_entry_of_either_kind() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
-        store.push(KeyringEntry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
 
         assert!(store.remove("willow"));
         assert_eq!(store.iter().count(), 1);
@@ -315,12 +327,25 @@ mod tests {
 
     #[test]
     fn label_formats_both_kinds_distinctly() {
-        let email = KeyringEntry::Email(sample_identity("willow"));
-        let bucket = KeyringEntry::Bucket(sample_bucket_config("backup"));
-        assert_eq!(email.label(), "[email] willow (willow@example.com, gmail)");
+        let email = Entry::Email(sample_identity("willow"));
+        let bucket = Entry::Bucket(sample_bucket_config("backup"));
+        assert_eq!(email.label(), "[email] willow - willow@example.com (gmail)");
         assert_eq!(
             bucket.label(),
-            "[bucket] backup (https://nyc3.digitaloceanspaces.com, my-bucket)"
+            "[bucket] backup - https://nyc3.digitaloceanspaces.com (my-bucket)"
+        );
+    }
+
+    #[test]
+    fn entry_detail_and_kind_delegate_to_the_wrapped_variant() {
+        let email = Entry::Email(sample_identity("willow"));
+        let bucket = Entry::Bucket(sample_bucket_config("backup"));
+        assert_eq!(email.kind(), "email");
+        assert_eq!(email.detail(), "willow@example.com (gmail)");
+        assert_eq!(bucket.kind(), "bucket");
+        assert_eq!(
+            bucket.detail(),
+            "https://nyc3.digitaloceanspaces.com (my-bucket)"
         );
     }
 
@@ -333,22 +358,22 @@ mod tests {
     #[test]
     fn prompt_select_auto_selects_the_only_entry() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
+        store.push(Entry::Email(sample_identity("willow")));
         assert_eq!(store.prompt_select().unwrap().alias(), "willow");
     }
 
     #[test]
     fn prompt_select_bucket_ignores_email_entries_when_auto_selecting() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
-        store.push(KeyringEntry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
         assert_eq!(store.prompt_select_bucket().unwrap().alias, "backup");
     }
 
     #[test]
     fn prompt_select_bucket_errors_when_none_configured() {
         let mut store = Store::default();
-        store.push(KeyringEntry::Email(sample_identity("willow")));
+        store.push(Entry::Email(sample_identity("willow")));
         assert!(store.prompt_select_bucket().is_err());
     }
 }

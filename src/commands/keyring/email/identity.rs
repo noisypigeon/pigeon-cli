@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 
-use crate::email::provider::Provider;
+use crate::commands::keyring::email::provider::Provider;
 
 /// A single authenticated email identity's non-secret metadata. The actual
 /// secret (app/bridge password) lives in the OS keychain, keyed by `alias`
-/// -- see `crate::keyring::credentials`. Metadata persistence itself lives
-/// in `crate::keyring::store` (ADR-0022) -- this struct is kept here since
-/// `email::sink`/`email::transform`/`job` are its main consumers.
+/// -- see `crate::core::keyring::credentials`. Metadata persistence itself
+/// lives in `crate::commands::keyring::store` (ADR-0022) -- this struct is
+/// kept here since `commands::job::email_sync` is its main consumer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub alias: String,
@@ -14,6 +14,18 @@ pub struct Identity {
     pub provider: Provider,
     pub host: String,
     pub port: u16,
+}
+
+impl crate::core::keyring::KeyringEntry for Identity {
+    fn alias(&self) -> &str {
+        &self.alias
+    }
+    fn kind(&self) -> &'static str {
+        "email"
+    }
+    fn detail(&self) -> String {
+        format!("{} ({})", self.email, self.provider)
+    }
 }
 
 /// Caps a sanitized segment's length so it can never blow past a
