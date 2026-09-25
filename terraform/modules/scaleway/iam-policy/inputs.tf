@@ -32,3 +32,9 @@ variable "project_permission_sets" {
   description = "Project permission set grants"
   default     = null
 }
+
+variable "expires_at" {
+  type        = string
+  description = "API key expiration timestamp (i.e. 2027-09-25T22:32:12Z)"
+  default     = null
+}

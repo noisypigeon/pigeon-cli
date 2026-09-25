@@ -22,4 +22,5 @@ resource "scaleway_iam_policy" "policy" {
 resource "scaleway_iam_api_key" "api_key" {
   application_id = scaleway_iam_application.application.id
   description    = var.description
+  expires_at     = var.expires_at
 }
