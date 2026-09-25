@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`pigeon` is a Rust CLI (clap + Mise), currently a scaffold with no real email logic implemented yet.
+`pigeon` is a Rust CLI (clap + Mise) that authenticates, syncs, transforms, and optionally encrypts personal email data to local storage or S3-compatible remotes, backed by a unified `keyring` for identities, buckets, and encryption keys.
 
 ## ADRs govern this project
 
@@ -18,7 +18,36 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0010-remote-storage-improvements.md` — amends ADR-0009 from first real use: `name`→`alias` rename, reordered/simplified `configure` prompts, drops the dead `region` field and the unreliable inline list-buckets step (replaced by a `bucket_exists` verify-before-save check), concise S3 error formatting, and new `list`/`edit`/`remove` commands for configured remotes.
 - `docs/adr/0011-email-sync-remote-upload.md` — wires `--output-remote` into `pigeon email sync`: per-message upload inline in the existing verify/resume pipeline, `remote::client::upload_if_changed`'s ETag/MD5-based same-file-or-different-file check (warn-then-proceed on a real collision), default-flow-only (`--debug` modes reject it) — `email`'s first justified dependency on `remote`.
 - `docs/adr/0012-email-output-deduplication.md` — deduplicates byte-identical content in `--output-dir`: content-hashed (MD5) attachment reuse (no schema change) and whole-message merge-into-canonical-file via a new additive `also-in:` frontmatter field, both keyed off two new per-identity `.attachment-hashes`/`.message-hashes` files in `--staging-dir`, composing with ADR-0011's upload dedup for free.
+- `docs/adr/0013-sync-progress-and-attachment-name-sanitization.md` — per-mailbox transform-phase progress bar, plus sanitizes sender-controlled MIME attachment names to prevent path-separator crashes.
+- `docs/adr/0014-concurrent-mailbox-processing.md` — `--concurrency` flag, one `ImapSession` per worker, dedup indexes behind `Arc<Mutex<ContentIndex>>`, `MultiProgress`.
+- `docs/adr/0015-stable-concurrent-progress-bars.md` — routes all prints through `MultiProgress::println`/`suspend` so concurrent progress bars never get corrupted by a stray `println!`.
+- `docs/adr/0016-keychain-stability-and-cli-cleanup.md` — macOS ad-hoc codesign fix for keychain ACL persistence across rebuilds, plus CLI cleanup (`list-identities`→`list`, `--staging-dir`/`--output-dir`→`--local-output`, `--output-remote`→`--remote-output`).
 - `docs/adr/0017-rename-remote-to-dataops.md` — renames `src/remote`/`pigeon remote` to `src/dataops`/`pigeon dataops`: `configure`/`edit`/`remove` move under a new `bucket-config` subgroup (`new`/`edit`/`remove`), `list-buckets` is removed, `list`/`ls`/`lsd`/`copy` are removed as CLI commands but kept as reusable internal functions, and every internal `Remote`-rooted identifier (including the on-disk `bucket-configs.toml` filename and the OS-keychain service name) renames to `BucketConfig`/`bucket-config` terminology — all breaking, no migration shim.
+- `docs/adr/0018-crates-io-publishing.md` — publishes `pigeon-cli` to crates.io (GPL-3.0-or-later), manual `mise`-driven publish.
+- `docs/adr/0019-local-first-sync-and-upload-checkpoints.md` — splits `email sync` into fetch → transform+dedup → upload phases, upload running only after all local work is done, with a new `.uploaded` checkpoint; removes ADR-0012's inline reupload-after-merge mechanism.
+- `docs/adr/0020-generic-transform-dedup-in-dataops.md` — genericizes `ContentIndex`, `amend_frontmatter_for_duplicate`, `unique_path`, `sanitize_filename`, `yaml_quote`, `collect_files` for reuse beyond email.
+- `docs/adr/0021-job-orchestration-wizard.md` — `pigeon job run email-sync` replaces `pigeon email sync`: wizard-resolved identities/local-output/remote-output/concurrency, batch-level concurrency spanning every identity's mailboxes, UID-keyed staging tree, dedup as its own sequential post-transform pass.
+- `docs/adr/0022-unified-keyring-command.md` — unifies `pigeon email authenticate`/`pigeon dataops bucket-config` into `pigeon keyring add/modify/delete/list`, one `keyring.toml`, one OS-keychain service, globally unique aliases across kinds.
+- `docs/adr/0023-lib-commands-trait-restructure.md` — restructures into trait-based `src/core/` (`Job`, `Transform`, `Dedup`, `KeyringEntry`, `WizardInput`) with concrete implementations in `src/commands/`.
+- `docs/adr/0024-concurrent-upload-phase.md` — upload becomes one concurrent, cross-identity phase (`stream::buffer_unordered`) with its own progress bar and per-file retry-with-backoff, instead of sequential per-identity.
+- `docs/adr/0025-encrypt-before-upload.md` — `email-sync` uploads can be encrypted client-side with AES-256-GCM-SIV and a content-derived deterministic nonce, so identical plaintext still dedups correctly against S3 ETags even when encrypted.
+- `docs/adr/0026-encryption-keys-in-keyring.md` — `pigeon keyring add/modify encryption-key` manages symmetric encryption keys (generated or imported) in the OS keychain.
+- `docs/adr/0027-encryption-is-a-per-run-choice.md` — an encryption key can default to a bucket-config (chosen by alias) but is always overridable per run via `--encryption-key` or interactively; non-interactive runs fall back to the bucket's default instead of always skipping encryption.
+- `docs/adr/0028-decrypt-files-job.md` — `pigeon job run decrypt-files` decrypts `*.enc` files from a local input directory into an output directory using a configured encryption key.
+- `docs/adr/0029-dev-cycle-pipeline.md` — every substantive change lands via branch → PR → local `mise run ci` gate → auto-merge → a `CHANGELOG.md [Unreleased]` entry; see "Dev cycle" below.
+
+## Dev cycle: how work lands (ADR-0029)
+
+Single-contributor repo, but every substantive change goes through a real PR. When asked to write an ADR, or to implement one already written, follow this without pausing for confirmation at each step — these steps *are* the standing authorization, per ADR-0029:
+
+1. **Branch.** Once the ADR's content (or the implementation plan) is approved, `git checkout main && git pull && git checkout -b adr-XXXX-<slug>`. Reuse one branch for both writing the ADR and implementing it when a single request covers both. One branch in flight at a time.
+2. **Build.** Commit the ADR file and/or implementation on that branch, using this repo's existing commit convention (`type(adr-XXXX): summary`).
+3. **Gate.** `mise run ci` must be clean before opening a PR.
+4. **PR.** `gh pr create` — title matches the commit convention; body is a condensed ADR (short Context, condensed Decision bullets, a relative link to the full ADR file), never the full text.
+5. **Changelog.** Once the PR exists, append one bullet to `CHANGELOG.md`'s `[Unreleased]` section (top of file; create it if missing): `- ADR-XXXX: <one-line description> ([#N](PR URL))`. Push as a follow-up commit on the same branch.
+6. **Merge.** `gh pr merge --squash --delete-branch` once CI is clean — no further confirmation needed.
+
+Releases stay manual: cutting one means hand-retitling `[Unreleased]` to `[x.y.z] - date` and starting a fresh empty `[Unreleased]` section — not part of this pipeline.
 
 ## Commands
 
