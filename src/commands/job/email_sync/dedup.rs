@@ -117,7 +117,7 @@ pub(crate) fn run_dedup_pass(
             continue;
         };
         for (hash, staged_relpath) in &entry.attachments {
-            let staged_path = staging_dir.join(staged_relpath);
+            let staged_path = staged_attachment_path(staging_dir, entry, staged_relpath);
             if !staged_path.exists() {
                 // Same idempotency guard as the message-level pass above.
                 continue;
@@ -202,14 +202,38 @@ fn place_canonical_message(
 fn remove_staged_files(staging_dir: &Path, entry: &CheckpointEntry) {
     let _ = fs::remove_file(staging_dir.join(&entry.md_staged_relpath));
     for (_, relpath) in &entry.attachments {
-        let _ = fs::remove_file(staging_dir.join(relpath));
+        let _ = fs::remove_file(staged_attachment_path(staging_dir, entry, relpath));
     }
+}
+
+/// The real, currently-staged location of an attachment. `relpath`
+/// (`entry.attachments`'s second element) is deliberately *not*
+/// staging-root-relative like `md_staged_relpath` is -- it's the
+/// attachment's *final*, `identity_dir`-relative frontmatter path
+/// (`attachments/<name>`), reused unchanged once placed. The staged copy
+/// actually lives nested under the message's own UID-keyed staging
+/// directory (`transform.rs`'s `attachments_dir`), reconstructed here from
+/// fields already on `entry`: `md_staged_relpath`'s parent directory
+/// (`transformed/<mailbox_relpath>`) plus `entry.uid` (ADR-0030).
+fn staged_attachment_path(staging_dir: &Path, entry: &CheckpointEntry, relpath: &str) -> PathBuf {
+    let md_parent = Path::new(&entry.md_staged_relpath)
+        .parent()
+        .unwrap_or_else(|| Path::new(""));
+    let file_name = Path::new(relpath)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| relpath.to_string());
+    staging_dir
+        .join(md_parent)
+        .join(entry.uid.to_string())
+        .join("attachments")
+        .join(file_name)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::job::email_sync::transform;
+    use crate::commands::job::email_sync::{manifest, transform};
 
     fn entry(
         mailbox: &str,
@@ -336,18 +360,22 @@ mod tests {
         let body_with_attachment = "---\nfrom: \"a\"\ntags:\n  - mailbox/inbox\nattachments:\n  - attachments/a.pdf\n---\nbody";
         stage_message(staging.path(), &first, body_with_attachment);
         stage_message(staging.path(), &second, body_with_attachment);
-        stage_attachment(staging.path(), "attachments/a.pdf", b"content-1");
-        // Different staged path (per-uid staging tree keeps them apart) but
-        // identical content hash.
-        let second_attachment_relpath = "transformed/INBOX/2/attachments/a.pdf";
-        stage_attachment(staging.path(), second_attachment_relpath, b"content-1");
-        let mut second_with_real_path = second;
-        second_with_real_path.attachments = vec![(
-            "attach-hash".to_string(),
-            second_attachment_relpath.to_string(),
-        )];
+        // Real `EmailTransform` layout: staged under each message's own
+        // UID-keyed directory, not directly under `staging_dir` (ADR-0030)
+        // -- different staged paths (per-uid staging tree keeps them apart)
+        // but identical content hash.
+        stage_attachment(
+            staging.path(),
+            "transformed/Archive/1/attachments/a.pdf",
+            b"content-1",
+        );
+        stage_attachment(
+            staging.path(),
+            "transformed/INBOX/2/attachments/a.pdf",
+            b"content-1",
+        );
 
-        let mut entries = vec![first, second_with_real_path];
+        let mut entries = vec![first, second];
 
         let summary = run_dedup_pass(
             identity_dir.path(),
@@ -410,6 +438,100 @@ mod tests {
             fs::read_to_string(identity_dir.path().join("2024-01-26-hello.md")).unwrap(),
             after_first_run,
             "re-running the pass must not append a spurious self-referential also-in entry"
+        );
+    }
+
+    /// Regression coverage for ADR-0030: exercises the real pipeline the
+    /// other tests in this module don't -- real `EmailTransform::transform`
+    /// staging an attachment, a real `append_checkpoint`/`load_checkpoint`
+    /// round-trip (not a hand-built `CheckpointEntry`), then real
+    /// `run_dedup_pass` -- the exact seam where the staged-path
+    /// reconstruction bug lived undetected.
+    #[test]
+    fn run_dedup_pass_places_attachment_from_real_transform_and_checkpoint_round_trip() {
+        use crate::commands::keyring::email::identity::Identity;
+        use crate::commands::keyring::email::provider::Provider;
+        use crate::core::data::Transform;
+        use transform::EmailTransform;
+
+        let staging = tempfile::tempdir().unwrap();
+        let identity_dir = tempfile::tempdir().unwrap();
+        let input = tempfile::tempdir().unwrap();
+        let inbox = input.path().join("inbox");
+        fs::create_dir_all(&inbox).unwrap();
+
+        let eml = "From: Jane Doe <jane.doe@example.com>\r\n\
+            To: first.last@example.com\r\n\
+            Subject: Shipping\r\n\
+            Date: Fri, 26 Jan 2024 09:15:00 +0000\r\n\
+            MIME-Version: 1.0\r\n\
+            Content-Type: multipart/mixed; boundary=\"BOUNDARY\"\r\n\
+            \r\n\
+            --BOUNDARY\r\n\
+            Content-Type: text/plain; charset=utf-8\r\n\
+            \r\n\
+            Hello there!\r\n\
+            --BOUNDARY\r\n\
+            Content-Type: application/pdf\r\n\
+            Content-Disposition: attachment; filename=\"a.pdf\"\r\n\
+            Content-Transfer-Encoding: base64\r\n\
+            \r\n\
+            JVBERi0xLjQK\r\n\
+            --BOUNDARY--\r\n";
+        fs::write(inbox.join("1.eml"), eml).unwrap();
+
+        let transformer = EmailTransform {
+            identity: Identity {
+                alias: "first-last".to_string(),
+                email: "first.last@example.com".to_string(),
+                provider: Provider::Gmail,
+                host: "imap.gmail.com".to_string(),
+                port: 993,
+            },
+            input_root: input.path().to_path_buf(),
+            staging_root: staging.path().to_path_buf(),
+        };
+        let outcome = transformer.transform(inbox.join("1.eml")).unwrap().unwrap();
+        assert_eq!(
+            outcome.attachments.len(),
+            1,
+            "fixture message should have exactly one attachment"
+        );
+
+        let checkpoint_entry = CheckpointEntry {
+            mailbox: "inbox".to_string(),
+            uid: 1,
+            message_hash: outcome.message_hash,
+            md_staged_relpath: outcome.md_staged_relpath,
+            desired_md_name: outcome.desired_md_name,
+            mailbox_tag: outcome.mailbox_tag,
+            attachments: outcome
+                .attachments
+                .into_iter()
+                .map(|attachment| (attachment.hash, attachment.staged_relpath))
+                .collect(),
+        };
+        manifest::append_checkpoint(staging.path(), &checkpoint_entry).unwrap();
+
+        let mut entries = manifest::load_checkpoint(staging.path()).unwrap();
+        let (mut message_index, mut attachment_index) = indexes(staging.path());
+
+        run_dedup_pass(
+            identity_dir.path(),
+            staging.path(),
+            &mut entries,
+            &mut message_index,
+            &mut attachment_index,
+        )
+        .unwrap();
+
+        let attachments_dir = identity_dir.path().join("attachments");
+        let placed = fs::read_dir(&attachments_dir)
+            .unwrap_or_else(|err| panic!("{} should exist: {err}", attachments_dir.display()))
+            .count();
+        assert_eq!(
+            placed, 1,
+            "the real staged attachment should be placed under identity_dir/attachments/"
         );
     }
 }
