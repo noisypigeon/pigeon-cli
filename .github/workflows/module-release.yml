@@ -46,7 +46,7 @@ jobs:
         run: |
           CHANGED_FILES=$(git diff --name-only "${MERGE_SHA}~1" "$MERGE_SHA")
 
-          MODULE_DIRS=$(find digitalocean -mindepth 2 -maxdepth 2 -name versions.tf -printf '%h\n' | sort)
+          MODULE_DIRS=$(find digitalocean scaleway -mindepth 2 -maxdepth 2 -name versions.tf -printf '%h\n' | sort)
 
           CHANGED_MODULES=""
           for dir in $MODULE_DIRS; do
@@ -78,9 +78,7 @@ jobs:
           TAGS=""
 
           for dir in $CHANGED_MODULES; do
-            MODULE=$(basename "$dir")
-
-            LATEST=$(git tag -l "digitalocean/${MODULE}/v*" | sed "s#digitalocean/${MODULE}/v##" | sort -V | tail -n1)
+            LATEST=$(git tag -l "${dir}/v*" | sed "s#${dir}/v##" | sort -V | tail -n1)
 
             if [ -z "$LATEST" ]; then
               NEXT="0.1.0"
@@ -124,7 +122,7 @@ jobs:
             mv "${CHANGELOG}.new" "$CHANGELOG"
 
             git add "$CHANGELOG"
-            TAGS="$TAGS digitalocean/${MODULE}/v${NEXT}"
+            TAGS="$TAGS ${dir}/v${NEXT}"
           done
 
           echo "tags=${TAGS# }" >> "$GITHUB_OUTPUT"

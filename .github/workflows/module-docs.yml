@@ -4,7 +4,7 @@ on:
   push:
     branches: [main]
     paths:
-      - 'digitalocean/**/*.tf'
+      - '**/*.tf'
   workflow_dispatch: {}
 
 permissions:
@@ -25,7 +25,7 @@ jobs:
       - name: Generate module docs
         uses: terraform-docs/gh-actions@v1.4.1
         with:
-          working-dir: digitalocean/access-key,digitalocean/standard-storage-bucket,digitalocean/cold-storage-bucket,digitalocean/project,digitalocean/droplet,digitalocean/block-storage-volume
+          working-dir: digitalocean/access-key,digitalocean/standard-storage-bucket,digitalocean/cold-storage-bucket,digitalocean/project,digitalocean/droplet,digitalocean/block-storage-volume,scaleway/project
           output-file: README.md
           output-method: inject
           output-format: markdown table

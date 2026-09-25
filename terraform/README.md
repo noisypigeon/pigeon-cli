@@ -14,6 +14,7 @@ This repo holds only module source — it has no root provider/backend configura
 | `digitalocean/project` | A thin wrapper around `digitalocean_project`. |
 | `digitalocean/droplet` | A DigitalOcean droplet (`digitalocean_droplet`) with cloud-init provisioning (rclone, an LVM auto-combine script for attached volumes, a sudo user) and a Cloudflare DNS alias. |
 | `digitalocean/block-storage-volume` | One or more DigitalOcean Block Storage volumes (`digitalocean_volume`), attached to a droplet (`digitalocean_volume_attachment`). |
+| `scaleway/project` | A thin wrapper around `scaleway_account_project`. |
 
 ## Versioning
 
