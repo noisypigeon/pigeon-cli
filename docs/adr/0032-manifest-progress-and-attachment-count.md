@@ -30,8 +30,7 @@ Separately, the wizard's post-manifest summary table
 
 ```
 IDENTITY          MAILBOXES  PENDING  SIZE
-finch-container   7          568      209.0 MB
-willow-graysen    14         31911    2.2 GB
+jane-doe          7          568      209.0 MB
 ```
 
 -- was asked to gain an `ATTACHMENTS` column. `SIZE` already reflects
@@ -140,7 +139,7 @@ positioned after `PENDING` and before `SIZE`:
 
 ```
 IDENTITY          MAILBOXES  PENDING  ATTACHMENTS  SIZE
-finch-container   7          568      42           209.0 MB
+jane-doe          7          568      42           209.0 MB
 ```
 
 ## Consequences
