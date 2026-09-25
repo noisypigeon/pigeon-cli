@@ -11,6 +11,7 @@ use std::path::PathBuf;
 
 use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
+use indicatif::MultiProgress;
 
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::email::identity::Identity;
@@ -39,6 +40,7 @@ pub(crate) struct IdentityManifestSummary {
     pub alias: String,
     pub mailboxes: usize,
     pub pending_messages: usize,
+    pub pending_attachments: usize,
     pub pending_bytes: u64,
 }
 
@@ -61,10 +63,15 @@ pub(crate) struct PendingMailbox {
 /// extra IMAP round-trip beyond the `UID SEARCH ALL` already needed for the
 /// staleness/new-mail check), pulling fresh sizes otherwise (ADR-0021
 /// §3/§4). Returns every mailbox's pending UIDs plus a summary for the
-/// wizard to display, and persists the freshly rebuilt manifest.
+/// wizard to display, and persists the freshly rebuilt manifest. Reports
+/// progress on `multi_progress` -- a connect status line plus a
+/// mailbox-scoped bar -- since this phase used to run completely silently
+/// (ADR-0032).
 pub(crate) async fn gather_pending(
     ctx: &IdentityContext,
+    multi_progress: &MultiProgress,
 ) -> Result<(Vec<PendingMailbox>, IdentityManifestSummary), String> {
+    let _ = multi_progress.println(format!("Connecting to {}...", ctx.identity.alias));
     let mut session = worker::connect_with_retry(ctx).await?;
 
     let names: Vec<_> = session
@@ -88,9 +95,12 @@ pub(crate) async fn gather_pending(
     let checkpoint_entries = manifest::load_checkpoint(&ctx.staging_dir)?;
     let done = manifest::done_uids(&checkpoint_entries);
     let persisted_manifest = manifest::load_manifest(&ctx.staging_dir)?;
-    let mut persisted_sizes: HashMap<(String, u32), u64> = HashMap::new();
+    let mut persisted_sizes: HashMap<(String, u32), (u64, u32)> = HashMap::new();
     for entry in &persisted_manifest {
-        persisted_sizes.insert((entry.mailbox.clone(), entry.uid), entry.size);
+        persisted_sizes.insert(
+            (entry.mailbox.clone(), entry.uid),
+            (entry.size, entry.attachments),
+        );
     }
 
     let mut pending_mailboxes = Vec::new();
@@ -99,6 +109,12 @@ pub(crate) async fn gather_pending(
         alias: ctx.identity.alias.clone(),
         ..Default::default()
     };
+
+    let bar = sink::new_progress_bar(
+        format!("{} manifest", ctx.identity.alias),
+        mailboxes.len() as u64,
+        multi_progress,
+    );
 
     for (mailbox_name, delimiter) in &mailboxes {
         let mailbox_relpath = sink::sanitize_mailbox_path(mailbox_name, delimiter.as_deref());
@@ -128,19 +144,24 @@ pub(crate) async fn gather_pending(
             .collect();
         let pending_uids = sink::missing_uids(&server_uids, &done_here);
         if pending_uids.is_empty() {
+            bar.inc(1);
             continue;
         }
 
-        let all_sizes_known = pending_uids
+        let all_known = pending_uids
             .iter()
             .all(|uid| persisted_sizes.contains_key(&(mailbox_name.clone(), *uid)));
-        let mailbox_manifest: Vec<ManifestEntry> = if all_sizes_known {
+        let mailbox_manifest: Vec<ManifestEntry> = if all_known {
             pending_uids
                 .iter()
-                .map(|uid| ManifestEntry {
-                    mailbox: mailbox_name.clone(),
-                    uid: *uid,
-                    size: persisted_sizes[&(mailbox_name.clone(), *uid)],
+                .map(|uid| {
+                    let (size, attachments) = persisted_sizes[&(mailbox_name.clone(), *uid)];
+                    ManifestEntry {
+                        mailbox: mailbox_name.clone(),
+                        uid: *uid,
+                        size,
+                        attachments,
+                    }
                 })
                 .collect()
         } else {
@@ -150,6 +171,10 @@ pub(crate) async fn gather_pending(
         summary.mailboxes += 1;
         summary.pending_messages += mailbox_manifest.len();
         summary.pending_bytes += mailbox_manifest.iter().map(|entry| entry.size).sum::<u64>();
+        summary.pending_attachments += mailbox_manifest
+            .iter()
+            .map(|entry| entry.attachments as usize)
+            .sum::<usize>();
         fresh_manifest.extend(mailbox_manifest);
 
         pending_mailboxes.push(PendingMailbox {
@@ -157,7 +182,9 @@ pub(crate) async fn gather_pending(
             mailbox_relpath,
             uids: pending_uids,
         });
+        bar.inc(1);
     }
+    bar.finish();
 
     session
         .logout()
@@ -212,10 +239,11 @@ impl Job for EmailSyncJob {
     type Summary = JobSummary;
 
     async fn gather(&self) -> Result<EmailSyncPlan, String> {
+        let multi_progress = MultiProgress::new();
         let mut pending_by_identity = Vec::with_capacity(self.contexts.len());
         let mut manifest_summaries = Vec::with_capacity(self.contexts.len());
         for ctx in &self.contexts {
-            let (pending, summary) = gather_pending(ctx).await?;
+            let (pending, summary) = gather_pending(ctx, &multi_progress).await?;
             pending_by_identity.push(pending);
             manifest_summaries.push(summary);
         }
