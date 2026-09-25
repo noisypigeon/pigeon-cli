@@ -4,6 +4,10 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+- ADR-0029: Every substantive change now lands via branch → PR → local `mise run ci` gate → auto-merge, with a changelog entry per PR ([#1](https://github.com/noisypigeon/pigeon-cli/pull/1)).
+
 ## [0.2.0] - 2026-09-25
 
 Unstable. Introduces a trait-based core architecture, a unified keyring, and end-to-end client-side encryption for `email-sync` uploads.
