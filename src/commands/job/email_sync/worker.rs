@@ -69,11 +69,38 @@ pub(crate) async fn connect_with_retry(ctx: &IdentityContext) -> Result<ImapSess
     .await
 }
 
+/// A `failed` count broken down by cause (ADR-0033 #37/#38): IMAP connect
+/// failure, `EXAMINE` failure, any other batch-level hard error, a per-UID
+/// `verify_transformed` structural failure, and a per-UID lenient
+/// `EmailTransform::transform` parse-skip. Always sums to the flat `failed`
+/// counter it sits alongside -- nothing downstream reading that flat total
+/// breaks.
+#[derive(Debug, Default)]
+pub(crate) struct FailureBreakdown {
+    pub connect: usize,
+    pub examine: usize,
+    pub batch_error: usize,
+    pub verification: usize,
+    pub parse_skipped: usize,
+}
+
+impl FailureBreakdown {
+    fn merge(&mut self, other: &FailureBreakdown) {
+        self.connect += other.connect;
+        self.examine += other.examine;
+        self.batch_error += other.batch_error;
+        self.verification += other.verification;
+        self.parse_skipped += other.parse_skipped;
+    }
+}
+
 /// Outcome of one worker's processing, for the job-level summary.
 #[derive(Default)]
 struct BatchOutcome {
     synced: usize,
     failed: usize,
+    attachments_staged: usize,
+    failure_breakdown: FailureBreakdown,
 }
 
 /// A worker's currently-open IMAP session, if any -- tracks which identity
@@ -130,6 +157,7 @@ async fn run_worker(
                 Err(err) => {
                     let _ = multi_progress.println(format!("Error: {err}"));
                     outcome.failed += batch.uids.len();
+                    outcome.failure_breakdown.connect += batch.uids.len();
                     continue;
                 }
             }
@@ -145,6 +173,7 @@ async fn run_worker(
                         batch.mailbox
                     ));
                     outcome.failed += batch.uids.len();
+                    outcome.failure_breakdown.examine += batch.uids.len();
                     connection = None;
                     continue;
                 }
@@ -156,10 +185,15 @@ async fn run_worker(
             Ok(batch_outcome) => {
                 outcome.synced += batch_outcome.synced;
                 outcome.failed += batch_outcome.failed;
+                outcome.attachments_staged += batch_outcome.attachments_staged;
+                outcome
+                    .failure_breakdown
+                    .merge(&batch_outcome.failure_breakdown);
             }
             Err(err) => {
                 let _ = multi_progress.println(format!("Error: {err}"));
                 outcome.failed += batch.uids.len();
+                outcome.failure_breakdown.batch_error += batch.uids.len();
                 connection = None;
             }
         }
@@ -207,38 +241,43 @@ async fn process_batch_on_session(
     let mut outcome = BatchOutcome::default();
     for uid in &batch.uids {
         let eml_path = mailbox_dir.join(format!("{uid}.eml"));
-        let transformed = transformer.transform(eml_path.clone())?;
+        let transformed = multi_progress.suspend(|| transformer.transform(eml_path.clone()))?;
         match transformed {
-            Some(transformed) if transform::verify_transformed(&transformed) => {
-                manifest::append_checkpoint(
-                    &ctx.staging_dir,
-                    &CheckpointEntry {
-                        mailbox: batch.mailbox.clone(),
-                        uid: *uid,
-                        message_hash: transformed.message_hash,
-                        md_staged_relpath: transformed.md_staged_relpath,
-                        desired_md_name: transformed.desired_md_name,
-                        mailbox_tag: transformed.mailbox_tag,
-                        attachments: transformed
-                            .attachments
-                            .into_iter()
-                            .map(|attachment| (attachment.hash, attachment.staged_relpath))
-                            .collect(),
-                    },
-                )?;
-                let _ = fs::remove_file(&eml_path);
-                outcome.synced += 1;
-            }
-            Some(_) => {
-                let _ = multi_progress.println(format!(
-                    "Warning: verification failed for UID {uid} in '{}', keeping {}",
-                    batch.mailbox,
-                    eml_path.display()
-                ));
-                outcome.failed += 1;
-            }
+            Some(transformed) => match transform::verify_transformed(&transformed) {
+                Ok(()) => {
+                    outcome.attachments_staged += transformed.attachments.len();
+                    manifest::append_checkpoint(
+                        &ctx.staging_dir,
+                        &CheckpointEntry {
+                            mailbox: batch.mailbox.clone(),
+                            uid: *uid,
+                            message_hash: transformed.message_hash,
+                            md_staged_relpath: transformed.md_staged_relpath,
+                            desired_md_name: transformed.desired_md_name,
+                            mailbox_tag: transformed.mailbox_tag,
+                            attachments: transformed
+                                .attachments
+                                .into_iter()
+                                .map(|attachment| (attachment.hash, attachment.staged_relpath))
+                                .collect(),
+                        },
+                    )?;
+                    let _ = fs::remove_file(&eml_path);
+                    outcome.synced += 1;
+                }
+                Err(reason) => {
+                    let _ = multi_progress.println(format!(
+                        "Warning: verification failed for UID {uid} in '{}', keeping {}: {reason}",
+                        batch.mailbox,
+                        eml_path.display()
+                    ));
+                    outcome.failed += 1;
+                    outcome.failure_breakdown.verification += 1;
+                }
+            },
             None => {
                 outcome.failed += 1;
+                outcome.failure_breakdown.parse_skipped += 1;
             }
         }
     }
@@ -490,6 +529,8 @@ async fn run_upload_phase(
 pub(crate) struct JobSummary {
     pub synced: usize,
     pub failed: usize,
+    pub failure_breakdown: FailureBreakdown,
+    pub attachments_staged: usize,
     pub merged_messages: usize,
     pub deduped_attachments: usize,
     pub uploaded: usize,
@@ -545,10 +586,12 @@ pub(crate) async fn run_email_sync_job(
             Ok(outcome) => {
                 summary.synced += outcome.synced;
                 summary.failed += outcome.failed;
+                summary.attachments_staged += outcome.attachments_staged;
+                summary.failure_breakdown.merge(&outcome.failure_breakdown);
             }
             Err(err) => {
                 let message = format!("worker task panicked: {err}");
-                eprintln!("Error: {message}");
+                let _ = multi_progress.println(format!("Error: {message}"));
                 if first_error.is_none() {
                     first_error = Some(message);
                 }
@@ -581,6 +624,7 @@ pub(crate) async fn run_email_sync_job(
             &mut entries,
             &mut message_index,
             &mut attachment_index,
+            &multi_progress,
         )?;
         summary.merged_messages += dedup_summary.merged_messages;
         summary.deduped_attachments += dedup_summary.deduped_attachments;

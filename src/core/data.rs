@@ -249,9 +249,28 @@ pub(crate) fn rewrite_attachment_reference(
     Ok(true)
 }
 
-/// Escapes `s` as a double-quoted YAML scalar.
+/// Escapes `s` as a double-quoted YAML scalar. Beyond `\`/`"`, also escapes
+/// every C0 control character (including a raw newline or carriage return)
+/// via YAML's own double-quoted escape syntax, rather than stripping them --
+/// an unescaped control character wouldn't violate YAML's own scalar rules,
+/// but this codebase's frontmatter is re-parsed as flat `\n`-split lines by
+/// `amend_frontmatter_for_duplicate`, so a smuggled newline could inject a
+/// fake `tags:`/`---` line and desync its rewriter.
 pub(crate) fn yaml_quote(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    let mut escaped = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => escaped.push_str("\\r"),
+            '\t' => escaped.push_str("\\t"),
+            c if (c as u32) < 0x20 || c as u32 == 0x7f => {
+                escaped.push_str(&format!("\\x{:02x}", c as u32));
+            }
+            c => escaped.push(c),
+        }
+    }
     format!("\"{escaped}\"")
 }
 
@@ -570,6 +589,33 @@ mod tests {
     fn yaml_quote_escapes_quotes_and_backslashes() {
         assert_eq!(yaml_quote("Hello: World"), "\"Hello: World\"");
         assert_eq!(yaml_quote(r#"She said "hi""#), r#""She said \"hi\"""#);
+    }
+
+    #[test]
+    fn yaml_quote_escapes_embedded_newline_and_carriage_return() {
+        assert_eq!(yaml_quote("line1\nline2"), "\"line1\\nline2\"");
+        assert_eq!(yaml_quote("a\r\nb"), "\"a\\r\\nb\"");
+    }
+
+    #[test]
+    fn yaml_quote_escapes_other_control_characters() {
+        assert_eq!(yaml_quote("a\tb"), "\"a\\tb\"");
+        assert_eq!(yaml_quote("a\x01b"), "\"a\\x01b\"");
+    }
+
+    #[test]
+    fn yaml_quote_leaves_non_ascii_names_unchanged() {
+        assert_eq!(yaml_quote("José García"), "\"José García\"");
+    }
+
+    #[test]
+    fn yaml_quote_prevents_frontmatter_line_injection() {
+        // The concrete attack this fix closes: a sender display name
+        // carrying a raw newline followed by a fake `tags:` line must come
+        // back as a single escaped scalar, not a value that reintroduces a
+        // literal newline once written to the frontmatter.
+        let malicious = "Evil\ntags:\n  - admin";
+        assert!(!yaml_quote(malicious).contains('\n'));
     }
 
     #[test]
