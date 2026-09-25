@@ -2,7 +2,9 @@
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-25.
-- **Status**: Accepted.
+- **Status**: Rejected -- see the amendment below. The `-T` pre-trust
+  hypothesis was disproved by a live implementation attempt; no code
+  from this ADR is in `main`.
 
 ## Context
 
@@ -173,3 +175,100 @@ on every *read* instead of only at write time.
   behavior -- not evidenced as broken.
 
 Implementation is a separate, later task.
+
+## Amendment (2026-09-25): the `-T` hypothesis was disproved live -- rejected
+
+### Context
+
+This ADR's Consequences section named its central open question
+plainly: *"Whether `-T`-granted trust actually suppresses the prompt
+for this specific crate/OS-version combination cannot be confirmed in
+this environment... Concrete verification step for whoever implements
+this: `keyring add` (or `modify`) an identity, then run `job run
+email-sync` twice in a row and confirm the second run doesn't prompt."*
+
+Implementation was attempted on this same machine (a real macOS dev
+environment) exactly per the Decision above:
+`set_secret`/`get_secret`/`delete_secret` were rewritten to shell out
+to `/usr/bin/security`, `-T <current-exe-path>` on write. Before
+opening a PR, a live smoke test round-tripped a disposable alias
+(`__pigeon_adr_0035_smoke_test__`) through the real Keychain: delete
+if present, `set_secret`, `get_secret` (first read), `get_secret`
+again (the read that should *not* prompt if `-T` worked), then
+`delete_secret`. The test's own assertions all passed -- the
+round-tripped value and cleanup were correct -- but it took ~27
+seconds to run, unusually long for a handful of no-UI subprocess
+calls. Asked directly, the person running it confirmed a Keychain
+access-control dialog appeared **more than once** during that single
+test run.
+
+### Finding: `-T` naming `pigeon`'s path doesn't cover `security`'s own requests
+
+The test passing functionally while still prompting repeatedly means
+the `-T` pre-trust grant did not suppress prompts as hypothesized --
+this ADR's core bet is wrong, not merely unverified. The most likely
+explanation, flagged as a risk during planning before implementation
+even started: once `get_secret`/`delete_secret` shell out to
+`/usr/bin/security`, the process actually asking the Keychain for
+access is **`/usr/bin/security`**, not `pigeon`. `-T <path-to-pigeon>`
+only names *pigeon's* binary path as trusted -- it says nothing about
+`/usr/bin/security` itself, which is the process making every read/
+delete request in this design. Today's baseline prompt (before any of
+this ADR's changes) names "pigeon" as the requester specifically
+*because* `pigeon` calls the `keyring` crate's Security.framework
+bindings directly, with no intermediary process. Routing through
+`security` instead replaces one requesting identity (`pigeon`, ad-hoc
+signed, rebuildable) with a different one (`/usr/bin/security`, a
+stable Apple-signed system binary) that this ADR's `-T` grant never
+authorizes.
+
+This explanation is judged most likely, not conclusively isolated --
+no further live experiments were run to confirm it precisely (e.g.
+retrying with `-T` naming `/usr/bin/security`'s own path instead of or
+in addition to `pigeon`'s, or dropping `-T` entirely to test whether
+`security`'s own documented "creator is trusted" default already
+covers its own later reads independent of `-T`). Once the core
+hypothesis failed, further iteration was set aside pending direction
+on whether pre-trust is worth pursuing further at all, rather than
+guessing again live against a real Keychain.
+
+### Decision
+
+Reject this ADR's approach. The implementation attempt (a working
+tree change to `src/core/keyring/credentials.rs`) was discarded before
+being committed -- no code from this ADR ever landed in `main`, and
+`credentials.rs` is unchanged from its pre-ADR-0035 state. Status
+above changed from Accepted to **Rejected**.
+
+### Consequences
+
+- The original problem -- `job run email-sync` prompting for the
+  macOS keychain password 5-10 times per run -- remains unsolved.
+  This ADR's Context/investigation section (why it happens 5-10 times,
+  not once) is still accurate and reusable by a future attempt; only
+  the Decision (the `-T`-via-`security`-CLI fix) is disproved.
+- A future attempt at this problem should either: (a) revisit the
+  consolidation alternative this ADR's own design-review pass already
+  evaluated and set aside in favor of pre-trust (full single-item or
+  partitioned-by-kind, per the "Direction considered and chosen"
+  section above), since it doesn't depend on guessing which process's
+  code identity macOS's Keychain ACL actually checks; or (b) run
+  narrower, isolated live experiments (varying one variable at a time
+  -- which path `-T` names, whether `-T` is needed at all) before
+  committing to a design, rather than implementing the full three-
+  function change and finding out via one combined smoke test.
+- The live-smoke-test methodology itself worked as intended: it caught
+  a wrong hypothesis before it shipped, exactly what it was added for.
+  Worth keeping as the verification pattern for any future keychain-
+  behavior ADR in this repo, even though this specific attempt failed.
+
+### Out of scope (this amendment)
+
+- Isolating the exact mechanism further (testing `-T` variants,
+  testing no-`-T` at all) -- not pursued; left to whichever future
+  attempt picks this problem back up.
+- Implementing the consolidation alternative -- a new decision, not
+  this amendment's to make.
+
+No code changes accompany this amendment -- it is a documentation-only
+correction to the record.
