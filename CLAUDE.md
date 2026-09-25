@@ -37,6 +37,7 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0029-dev-cycle-pipeline.md` — every substantive change lands via branch → PR → local `mise run ci` gate → auto-merge → a `CHANGELOG.md [Unreleased]` entry; see "Dev cycle" below.
 - `docs/adr/0030-fix-attachment-loss-in-dedup.md` — root-causes silent, total attachment loss in `run_dedup_pass`: a staged attachment's `staged_relpath` is final-location-relative, not staging-root-relative like `md_staged_relpath`, so `staging_dir.join(staged_relpath)` never finds the real file and the idempotency guard silently skips it. Fix: reconstruct the real staged path from `md_staged_relpath`'s parent + `uid`, no checkpoint format change, self-healing on re-run.
 - `docs/adr/0031-out-of-scope-issue-tracking.md` — genuinely-deferred `## Out of scope` bullets get filed as GitHub issues, labeled `out-of-scope` plus an `area:*` category, and linked back into the ADR line via `mise run adr-issue`; recurring gaps reuse one issue across ADRs.
+- `docs/adr/0032-manifest-progress-and-attachment-count.md` — `job run email-sync`'s manifest-gathering phase (per-identity IMAP connect/list/search, previously silent) gets a `MultiProgress` connect line plus a per-identity mailbox-scoped progress bar; the wizard's pre-run summary table gains an `ATTACHMENTS` column, an estimate computed from each pending message's IMAP `BODYSTRUCTURE` (no body content transferred), persisted as a 4th `.manifest` column that self-heals on a pre-upgrade file.
 
 ## Dev cycle: how work lands (ADR-0029)
 
