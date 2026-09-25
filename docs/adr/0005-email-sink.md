@@ -62,5 +62,5 @@ Picks up ADR-0001's "progress bar or % for long-running operations," which ADR-0
 ## Out of scope
 
 - `transform` itself.
-- Deleting, expiring, or otherwise mutating local files sink has already written (beyond the documented stale-`UIDVALIDITY` re-fetch case).
+- Deleting, expiring, or otherwise mutating local files sink has already written (beyond the documented stale-`UIDVALIDITY` re-fetch case). ([#7](https://github.com/noisypigeon/pigeon-cli/issues/7))
 - Any server-side mutation whatsoever — enforced structurally via `EXAMINE`/`BODY.PEEK[]`, not just by convention.

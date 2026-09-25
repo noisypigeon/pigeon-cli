@@ -144,7 +144,7 @@ Still fails fast in the same place ADR-0025 did -- before concurrency/proceed pr
 
 ## Out of scope
 
-- Key rotation propagating to already-uploaded ciphertext -- rotating `modify encryption-key`'s secret only affects *future* uploads; old objects stay encrypted under whatever key was active when they were uploaded, so decrypting them later still requires that old key under some alias.
+- Key rotation propagating to already-uploaded ciphertext -- rotating `modify encryption-key`'s secret only affects *future* uploads; old objects stay encrypted under whatever key was active when they were uploaded, so decrypting them later still requires that old key under some alias. ([#31](https://github.com/noisypigeon/pigeon-cli/issues/31))
 - Any command to export or display a stored encryption key after creation -- deliberately never shown, per the user's choice above.
 - Persisting "which encryption-key alias to use" on `BucketConfig` itself -- selection stays a per-job-run choice, not stored on the bucket-config.
 

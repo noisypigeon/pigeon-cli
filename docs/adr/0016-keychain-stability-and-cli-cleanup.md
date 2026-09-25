@@ -52,6 +52,6 @@ A small shared helper (e.g. `crate::commands::print_table`) is added to `src/com
 ## Out of scope
 
 - Any change to `email::credentials`/`remote::credentials` internals — confirmed not the bug's location.
-- Linux/Windows keychain backend behavior — not evidenced as broken; the fix is scoped to macOS's code-signature-tied ACL model.
+- Linux/Windows keychain backend behavior — not evidenced as broken; the fix is scoped to macOS's code-signature-tied ACL model. ([#22](https://github.com/noisypigeon/pigeon-cli/issues/22))
 - Any other CLI renames/consolidations beyond the four listed.
 - Implementation itself — like every ADR before it, this is a decision record only.

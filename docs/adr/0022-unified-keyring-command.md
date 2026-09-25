@@ -109,9 +109,9 @@ This rewiring is real and necessary — Rust's whole-crate compilation means it 
 
 ## Out of scope
 
-- Migrating existing `identities.toml`/`bucket-configs.toml` data or keychain entries into the new unified store — explicitly not built, per the orphaned-data consequence above.
+- Migrating existing `identities.toml`/`bucket-configs.toml` data or keychain entries into the new unified store — explicitly not built, per the orphaned-data consequence above. ([#23](https://github.com/noisypigeon/pigeon-cli/issues/23))
 - Any change to `job run email-sync`'s own CLI surface or wizard flow (ADR-0021, amended for local-output/remote-output prompts) beyond the mechanical store-type rewiring in §5.
-- A flag-driven, non-interactive `modify` or `delete` — both stay interactive-first for both kinds, matching (and, for email, introducing for the first time) `bucket-config edit`'s existing interactive-only precedent.
+- A flag-driven, non-interactive `modify` or `delete` — both stay interactive-first for both kinds, matching (and, for email, introducing for the first time) `bucket-config edit`'s existing interactive-only precedent. ([#26](https://github.com/noisypigeon/pigeon-cli/issues/26))
 - Any change to how `job run email-sync` itself discovers configured bucket-configs to upload to, beyond reading them from the new unified store instead of the old one.
 
 Implementation is a separate, later task.

@@ -73,7 +73,7 @@ Mirrors `src/email/`'s structure exactly: `mod.rs`, `cli.rs`, `commands.rs`, plu
 
 ## Out of scope
 
-- Non-S3 backends (GCS, Azure, local-to-local sync) — S3-compatible only, per the feature request.
-- `sync`, `move`, or `delete`-style operations that can remove data on the remote — `copy` only, deliberately non-destructive on both ends.
-- Multi-bucket-per-remote browsing (rclone's fuller generality) — one remote, one bucket, per the bucket-scoped model above.
-- Remote-to-remote `copy` (two different configured remotes as SOURCE and DEST).
+- Non-S3 backends (GCS, Azure, local-to-local sync) — S3-compatible only, per the feature request. ([#11](https://github.com/noisypigeon/pigeon-cli/issues/11))
+- `sync`, `move`, or `delete`-style operations that can remove data on the remote — `copy` only, deliberately non-destructive on both ends. ([#12](https://github.com/noisypigeon/pigeon-cli/issues/12))
+- Multi-bucket-per-remote browsing (rclone's fuller generality) — one remote, one bucket, per the bucket-scoped model above. ([#13](https://github.com/noisypigeon/pigeon-cli/issues/13))
+- Remote-to-remote `copy` (two different configured remotes as SOURCE and DEST). ([#14](https://github.com/noisypigeon/pigeon-cli/issues/14))

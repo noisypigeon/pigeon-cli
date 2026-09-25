@@ -58,5 +58,5 @@ A third `DebugPhase::Upload` variant: runs only the upload phase against an exis
 
 - Concurrent/parallel uploads within the upload phase — each file's upload is safely parallelizable (distinct S3 keys, idempotent `upload_if_changed`), but this ADR doesn't add a `--concurrency`-style flag for it; sequential stays the default.
 - Any change to `bucket_exists`/content-hash dedup detection logic itself.
-- Retroactively fixing already-uploaded archives from before this ADR whose canonical file was amended by the now-removed reupload mechanism in a prior run.
+- Retroactively fixing already-uploaded archives from before this ADR whose canonical file was amended by the now-removed reupload mechanism in a prior run. ([#25](https://github.com/noisypigeon/pigeon-cli/issues/25))
 - Implementation itself — like every ADR before it, this is a decision record only.
