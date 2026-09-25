@@ -5,7 +5,7 @@ pub mod transform;
 pub mod wizard;
 mod worker;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -17,7 +17,7 @@ use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::email::identity::Identity;
 use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
-use manifest::{Batch, ManifestEntry};
+use manifest::Batch;
 use worker::JobSummary;
 
 /// Everything needed to run one identity through the job: its IMAP
@@ -58,15 +58,18 @@ pub(crate) struct PendingMailbox {
 /// Connects to `ctx`'s identity, lists its mailboxes, and for each one:
 /// resets on a `UIDVALIDITY` change (ADR-0005 precedent, applied to the new
 /// checkpoint per the ADR-0021 addendum), computes pending UIDs (server
-/// minus already-checkpointed), and resolves their sizes -- reusing a
-/// persisted `.manifest` where it already covers every pending UID (no
-/// extra IMAP round-trip beyond the `UID SEARCH ALL` already needed for the
-/// staleness/new-mail check), pulling fresh sizes otherwise (ADR-0021
-/// §3/§4). Returns every mailbox's pending UIDs plus a summary for the
-/// wizard to display, and persists the freshly rebuilt manifest. Reports
-/// progress on `multi_progress` -- a connect status line plus a
-/// mailbox-scoped bar -- since this phase used to run completely silently
-/// (ADR-0032).
+/// minus already-checkpointed), and always pulls a fresh
+/// size/attachment-count manifest for them via `pull_manifest` (ADR-0021
+/// §3/§4; a `BODYSTRUCTURE`/`RFC822.SIZE` fetch, never body content).
+/// Deliberately does *not* reuse a persisted `.manifest` entry for a
+/// still-pending UID, even when one exists -- a prior version did, but that
+/// let a stale `attachments` estimate get cached indefinitely (ADR-0034);
+/// `.manifest` is still persisted every call (`save_manifest` below), but
+/// purely as a write-only snapshot now, never read back as an input here.
+/// Returns every mailbox's pending UIDs plus a summary for the wizard to
+/// display. Reports progress on `multi_progress` -- a connect status line
+/// plus a mailbox-scoped bar -- since this phase used to run completely
+/// silently (ADR-0032).
 pub(crate) async fn gather_pending(
     ctx: &IdentityContext,
     multi_progress: &MultiProgress,
@@ -94,14 +97,6 @@ pub(crate) async fn gather_pending(
 
     let checkpoint_entries = manifest::load_checkpoint(&ctx.staging_dir)?;
     let done = manifest::done_uids(&checkpoint_entries);
-    let persisted_manifest = manifest::load_manifest(&ctx.staging_dir)?;
-    let mut persisted_sizes: HashMap<(String, u32), (u64, u32)> = HashMap::new();
-    for entry in &persisted_manifest {
-        persisted_sizes.insert(
-            (entry.mailbox.clone(), entry.uid),
-            (entry.size, entry.attachments),
-        );
-    }
 
     let mut pending_mailboxes = Vec::new();
     let mut fresh_manifest = Vec::new();
@@ -148,25 +143,8 @@ pub(crate) async fn gather_pending(
             continue;
         }
 
-        let all_known = pending_uids
-            .iter()
-            .all(|uid| persisted_sizes.contains_key(&(mailbox_name.clone(), *uid)));
-        let mailbox_manifest: Vec<ManifestEntry> = if all_known {
-            pending_uids
-                .iter()
-                .map(|uid| {
-                    let (size, attachments) = persisted_sizes[&(mailbox_name.clone(), *uid)];
-                    ManifestEntry {
-                        mailbox: mailbox_name.clone(),
-                        uid: *uid,
-                        size,
-                        attachments,
-                    }
-                })
-                .collect()
-        } else {
-            manifest::pull_manifest(&mut session, mailbox_name, &pending_uids).await?
-        };
+        let mailbox_manifest =
+            manifest::pull_manifest(&mut session, mailbox_name, &pending_uids).await?;
 
         summary.mailboxes += 1;
         summary.pending_messages += mailbox_manifest.len();
