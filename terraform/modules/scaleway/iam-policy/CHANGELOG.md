@@ -4,6 +4,18 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0] - 2026-09-25
+
+### Split scaleway/iam-policy permission grants by scope
+
+**Breaking**: replaces the single `permission_set_names` input with two separate inputs, `org_permission_sets` and `project_permission_sets`, each granted through its own `scaleway_iam_policy` rule block. Scaleway IAM permission sets aren't uniformly project-scoped — grants like `IAMManager` or `ProjectManager` are organization-level, while grants like `InstancesFullAccess` are meant to be scoped to specific projects — and a single rule/`project_ids` pair couldn't represent both. A new `organization_id` input scopes the org-level rule; the existing `project_ids` input continues to scope the project-level rule. All four scoping/grant inputs (`organization_id`, `org_permission_sets`, `project_ids`, `project_permission_sets`) are optional, but since both rule blocks are always created, a consumer generally needs to populate whichever pairing it cares about.
+
+**Breaking**: renames the module's outputs from `scw_access_key`/`scw_secret_key` to `access_key`/`secret_key`, matching `digitalocean/access-key`'s unprefixed naming convention.
+
+See ADR-0010 for the full reasoning, including why this diverges from ADR-0008's "no consumers yet" precedent — this module already has a real consumer (`pigeon-do`'s `terraform-deployer` leaf), which needs a coordinated follow-up update (bumping its pinned `ref` and updating its output references) once this release lands.
+
+[#16](https://github.com/noisypigeon/pigeon-tf/pull/16)
+
 ## [0.1.0] - 2026-09-25
 
 ### Add scaleway/iam-policy module
