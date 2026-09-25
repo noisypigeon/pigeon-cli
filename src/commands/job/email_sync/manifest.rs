@@ -21,6 +21,9 @@ const CHECKPOINT_FILE_NAME: &str = ".job-checkpoint";
 /// against each other without a lossy round-trip through sanitization.
 /// `attachments` is a `BODYSTRUCTURE`-derived estimate (ADR-0032), not the
 /// authoritative count `transform_one`'s `mail_parser` pass produces later.
+/// `gather_pending` pulls this fresh on every call now (ADR-0034) rather
+/// than ever reading a persisted one back in, so this struct only ever
+/// flows one direction: IMAP -> `save_manifest`.
 pub(crate) struct ManifestEntry {
     pub mailbox: String,
     pub uid: u32,
@@ -107,6 +110,9 @@ pub(crate) async fn pull_manifest(
 /// fresh pull wholesale replaces whatever was there before, unlike the
 /// append-only checkpoint/dedup dotfiles elsewhere in this codebase.
 /// Tab-separated, since mailbox names can legitimately contain spaces.
+/// Write-only from `gather_pending`'s perspective (ADR-0034) -- kept for
+/// external inspection/debugging, not read back as an input to any
+/// decision this codebase makes.
 pub(crate) fn save_manifest(staging_dir: &Path, entries: &[ManifestEntry]) -> Result<(), String> {
     let path = staging_dir.join(MANIFEST_FILE_NAME);
     let mut contents = String::new();
@@ -117,37 +123,6 @@ pub(crate) fn save_manifest(staging_dir: &Path, entries: &[ManifestEntry]) -> Re
         ));
     }
     fs::write(&path, contents).map_err(|err| format!("failed to write {}: {err}", path.display()))
-}
-
-/// Loads a previously persisted manifest. A missing file (never pulled, or
-/// cleared by a `.uidvalidity` staleness reset) is an empty manifest.
-/// Malformed lines are skipped leniently, matching every other loader in
-/// this codebase -- including a pre-ADR-0032 3-column line, which now fails
-/// the 4th field and is dropped, self-healing on the next `gather_pending`
-/// call (ADR-0032).
-pub(crate) fn load_manifest(staging_dir: &Path) -> Result<Vec<ManifestEntry>, String> {
-    let path = staging_dir.join(MANIFEST_FILE_NAME);
-    let contents = match fs::read_to_string(&path) {
-        Ok(contents) => contents,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
-    };
-    Ok(contents
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split('\t');
-            let mailbox = parts.next()?.to_string();
-            let uid = parts.next()?.parse().ok()?;
-            let size = parts.next()?.parse().ok()?;
-            let attachments = parts.next()?.parse().ok()?;
-            Some(ManifestEntry {
-                mailbox,
-                uid,
-                size,
-                attachments,
-            })
-        })
-        .collect())
 }
 
 /// One fully fetched, transformed, and verified `(mailbox, UID)`, recorded
@@ -331,13 +306,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn load_missing_manifest_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(load_manifest(dir.path()).unwrap().is_empty());
-    }
-
-    #[test]
-    fn manifest_round_trips_through_save_and_load() {
+    fn save_manifest_writes_tab_separated_four_column_format() {
         let dir = tempfile::tempdir().unwrap();
         let entries = vec![
             ManifestEntry {
@@ -355,17 +324,9 @@ mod tests {
         ];
 
         save_manifest(dir.path(), &entries).unwrap();
-        let loaded = load_manifest(dir.path()).unwrap();
+        let contents = fs::read_to_string(dir.path().join(MANIFEST_FILE_NAME)).unwrap();
 
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].mailbox, "INBOX");
-        assert_eq!(loaded[0].uid, 5);
-        assert_eq!(loaded[0].size, 1024);
-        assert_eq!(loaded[0].attachments, 2);
-        assert_eq!(loaded[1].mailbox, "Sent Items");
-        assert_eq!(loaded[1].uid, 9);
-        assert_eq!(loaded[1].size, 2048);
-        assert_eq!(loaded[1].attachments, 0);
+        assert_eq!(contents, "INBOX\t5\t1024\t2\nSent Items\t9\t2048\t0\n");
     }
 
     #[test]
@@ -392,36 +353,8 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_manifest(dir.path()).unwrap();
-        assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].uid, 2);
-        assert_eq!(loaded[0].attachments, 1);
-    }
-
-    #[test]
-    fn load_manifest_skips_malformed_lines() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join(MANIFEST_FILE_NAME),
-            "INBOX\t5\t1024\t2\nnot-enough-fields\nINBOX\t6\t2048\t0\n",
-        )
-        .unwrap();
-
-        let loaded = load_manifest(dir.path()).unwrap();
-        assert_eq!(loaded.len(), 2);
-        assert_eq!(loaded[0].uid, 5);
-        assert_eq!(loaded[1].uid, 6);
-    }
-
-    #[test]
-    fn load_manifest_drops_pre_adr_0032_three_column_lines() {
-        // Self-healing behavior (ADR-0032): a manifest written before the
-        // attachments column existed has only 3 fields per line, which now
-        // fails the 4th `.next()?` and is dropped rather than misparsed.
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join(MANIFEST_FILE_NAME), "INBOX\t5\t1024\n").unwrap();
-
-        assert!(load_manifest(dir.path()).unwrap().is_empty());
+        let contents = fs::read_to_string(dir.path().join(MANIFEST_FILE_NAME)).unwrap();
+        assert_eq!(contents, "INBOX\t2\t20\t1\n");
     }
 
     #[test]
