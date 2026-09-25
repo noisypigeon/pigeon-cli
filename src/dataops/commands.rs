@@ -8,7 +8,7 @@ use crate::commands::FAILURE_EXIT_CODE;
 use crate::dataops::cli::{BucketConfigCommands, DataopsCommands};
 use crate::dataops::location::{self, Location};
 use crate::dataops::store::{BucketConfig, Store};
-use crate::dataops::{client, credentials};
+use crate::dataops::{client, credentials, transform};
 
 pub fn dispatch(command: DataopsCommands) -> i32 {
     let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -555,30 +555,12 @@ async fn download(store: &Store, bucket_alias: &str, bucket_path: &str, local: &
 /// it's a single file).
 fn collect_local_files(local: &Path) -> Result<Vec<PathBuf>, String> {
     if local.is_dir() {
-        let mut files = Vec::new();
-        visit_dir(local, &mut files)?;
-        files.sort();
-        Ok(files)
+        transform::collect_files(local)
     } else if local.is_file() {
         Ok(vec![local.to_path_buf()])
     } else {
         Err(format!("{} does not exist", local.display()))
     }
-}
-
-fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            visit_dir(&path, files)?;
-        } else {
-            files.push(path);
-        }
-    }
-    Ok(())
 }
 
 /// The S3 key for a single-file upload: `bucket_path` verbatim when it looks

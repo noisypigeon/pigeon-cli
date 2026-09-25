@@ -10,8 +10,8 @@ use futures::stream::{self, StreamExt};
 use indicatif::MultiProgress;
 
 use crate::dataops::client;
+use crate::dataops::dedup::ContentIndex;
 use crate::dataops::store::BucketConfig;
-use crate::email::dedup::ContentIndex;
 use crate::email::identity::{self, Identity};
 use crate::email::imap_client;
 use crate::email::{sink, transform};
@@ -152,11 +152,11 @@ async fn run_local_async(
     // across concurrent workers, so both are lock-guarded.
     let message_index = Arc::new(Mutex::new(ContentIndex::load(
         staging_dir,
-        ContentIndex::MESSAGE_HASHES,
+        transform::MESSAGE_HASHES_FILE,
     )?));
     let attachment_index = Arc::new(Mutex::new(ContentIndex::load(
         staging_dir,
-        ContentIndex::ATTACHMENT_HASHES,
+        transform::ATTACHMENT_HASHES_FILE,
     )?));
     let multi_progress = MultiProgress::new();
 
@@ -474,7 +474,7 @@ async fn run_upload_async(
 ) -> Result<SyncSummary, String> {
     let identity_dir = output_dir.join(identity::sanitize_segment(&identity.email));
     let mut uploaded_index = UploadedIndex::load(staging_dir)?;
-    let files = collect_output_files(&identity_dir)?;
+    let files = crate::dataops::transform::collect_files(&identity_dir)?;
 
     let mut summary = SyncSummary::default();
     for path in files {
@@ -522,33 +522,6 @@ pub fn run_upload(
         remote,
         remote_secret,
     ))
-}
-
-/// Recursively collects every file under `dir` (or an empty list if `dir`
-/// doesn't exist yet -- e.g. `--debug upload` run before anything has ever
-/// been transformed locally). Sorted for deterministic upload order.
-fn collect_output_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    if dir.exists() {
-        visit_dir(dir, &mut files)?;
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            visit_dir(&path, files)?;
-        } else {
-            files.push(path);
-        }
-    }
-    Ok(())
 }
 
 /// Tracks which output files (by their S3 key, per `upload_key`) have
@@ -721,31 +694,5 @@ mod tests {
         // Reloading from disk picks up the committed entry too.
         let reloaded = UploadedIndex::load(dir.path()).unwrap();
         assert!(reloaded.contains("identity/hello.md"));
-    }
-
-    #[test]
-    fn collect_output_files_walks_nested_directories() {
-        let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("attachments")).unwrap();
-        fs::write(dir.path().join("hello.md"), b"hi").unwrap();
-        fs::write(dir.path().join("attachments/a.pdf"), b"pdf").unwrap();
-
-        let mut files = collect_output_files(dir.path()).unwrap();
-        files.sort();
-
-        let mut expected = vec![
-            dir.path().join("attachments/a.pdf"),
-            dir.path().join("hello.md"),
-        ];
-        expected.sort();
-
-        assert_eq!(files, expected);
-    }
-
-    #[test]
-    fn collect_output_files_missing_directory_is_empty() {
-        let dir = tempfile::tempdir().unwrap();
-        let missing = dir.path().join("does-not-exist");
-        assert!(collect_output_files(&missing).unwrap().is_empty());
     }
 }

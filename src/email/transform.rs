@@ -3,8 +3,15 @@ use std::path::{Path, PathBuf};
 
 use mail_parser::{Addr, DateTime, MessageParser, MimeHeaders};
 
-use crate::email::dedup::{self, ContentIndex};
+use crate::dataops::dedup::{self, ContentIndex};
+use crate::dataops::transform::{collect_files, sanitize_filename, unique_path, yaml_quote};
 use crate::email::identity::{self, Identity};
+
+/// The two dedup dotfiles' names (per ADR-0012), anchored here since this
+/// module is their conceptual owner -- the generic `ContentIndex` type
+/// itself (ADR-0020) no longer hardcodes any filename.
+pub(crate) const MESSAGE_HASHES_FILE: &str = ".message-hashes";
+pub(crate) const ATTACHMENT_HASHES_FILE: &str = ".attachment-hashes";
 
 /// Summary of a completed `transform` run.
 #[derive(Debug, Default)]
@@ -55,8 +62,8 @@ pub(crate) struct TransformedMessage {
 pub fn run(identity: &Identity, input: &Path, output: &Path) -> Result<TransformSummary, String> {
     let eml_files = find_eml_files(input)?;
 
-    let mut message_index = ContentIndex::load(input, ContentIndex::MESSAGE_HASHES)?;
-    let mut attachment_index = ContentIndex::load(input, ContentIndex::ATTACHMENT_HASHES)?;
+    let mut message_index = ContentIndex::load(input, MESSAGE_HASHES_FILE)?;
+    let mut attachment_index = ContentIndex::load(input, ATTACHMENT_HASHES_FILE)?;
 
     let mut summary = TransformSummary::default();
 
@@ -227,7 +234,7 @@ pub(crate) fn transform_one(
             }
             None => {
                 let original_name =
-                    sanitize_attachment_name(part.attachment_name().unwrap_or("attachment"));
+                    sanitize_filename(part.attachment_name().unwrap_or("attachment"));
                 let attachment_path =
                     unique_path(&attachments_dir.join(format!("{stem}-{original_name}")));
                 fs::write(&attachment_path, contents).map_err(|err| {
@@ -314,27 +321,23 @@ fn format_address(addr: Option<&Addr>) -> String {
 }
 
 /// Recursively collects every `*.eml` path under `input`, sorted for
-/// deterministic output.
+/// deterministic output. Errors immediately if `input` doesn't exist --
+/// unlike the underlying `dataops::transform::collect_files`, which treats
+/// a missing directory as an empty result, this stays fail-fast: a missing
+/// staging directory here almost always means `--debug sink` was never run,
+/// and that's worth surfacing clearly rather than silently reporting zero
+/// messages transformed.
 fn find_eml_files(input: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut files = Vec::new();
-    visit_dir(input, &mut files)?;
-    files.sort();
-    Ok(files)
-}
-
-fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries =
-        fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-    for entry in entries {
-        let entry = entry.map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
-        let path = entry.path();
-        if path.is_dir() {
-            visit_dir(&path, files)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("eml") {
-            files.push(path);
-        }
+    if !input.is_dir() {
+        return Err(format!(
+            "failed to read {}: not a directory or does not exist",
+            input.display()
+        ));
     }
-    Ok(())
+    Ok(collect_files(input)?
+        .into_iter()
+        .filter(|path| path.extension().and_then(|ext| ext.to_str()) == Some("eml"))
+        .collect())
 }
 
 /// The `.eml` file's parent directory path relative to `input_root`, joined
@@ -365,12 +368,6 @@ fn format_date_prefix(date: &DateTime) -> String {
     format!("{:04}-{:02}-{:02}", date.year, date.month, date.day)
 }
 
-/// Escapes `s` as a double-quoted YAML scalar.
-fn yaml_quote(s: &str) -> String {
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
-
 fn render_frontmatter(
     from: &str,
     to: &str,
@@ -398,82 +395,6 @@ fn render_frontmatter(
     out.push_str(&format!("uid: {uid}\n"));
     out.push_str("---\n");
     out
-}
-
-/// Caps an attachment name's length so it can never blow past a
-/// filesystem's per-component name limit (255 bytes on APFS/most Unix
-/// filesystems) once stacked onto the message stem it's appended to.
-const MAX_ATTACHMENT_NAME_LENGTH: usize = 100;
-
-/// Reduces a sender-controlled MIME attachment name to a safe filename:
-/// keeps only the final path component (so an embedded `/` can't make
-/// `Path::join` create an implicit, never-created subdirectory, per
-/// ADR-0013), caps its length (a sender-controlled name can be arbitrarily
-/// long), and falls back to `"attachment"` if nothing usable remains.
-/// Extension is preserved where reasonable, unlike `identity::sanitize_segment`,
-/// which would corrupt it.
-fn sanitize_attachment_name(name: &str) -> String {
-    let base = match Path::new(name).file_name().and_then(|f| f.to_str()) {
-        Some(base) if !base.is_empty() => base,
-        _ => return "attachment".to_string(),
-    };
-    truncate_preserving_extension(base, MAX_ATTACHMENT_NAME_LENGTH)
-}
-
-/// Truncates `name` to at most `max_len` bytes. If it has a short-enough
-/// extension (text after the last `.`), the stem is truncated and the
-/// extension kept intact rather than risking cutting it off mid-string.
-/// Always cuts on a UTF-8 char boundary (attachment names, unlike
-/// `sanitize_segment`'s output, aren't restricted to ASCII).
-fn truncate_preserving_extension(name: &str, max_len: usize) -> String {
-    if name.len() <= max_len {
-        return name.to_string();
-    }
-    if let Some((stem, ext)) = name.rsplit_once('.')
-        && !ext.is_empty()
-        && ext.len() + 1 < max_len
-    {
-        return format!(
-            "{}.{ext}",
-            truncate_at_char_boundary(stem, max_len - ext.len() - 1)
-        );
-    }
-    truncate_at_char_boundary(name, max_len)
-}
-
-fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> String {
-    let mut end = max_bytes.min(s.len());
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    s[..end].to_string()
-}
-
-/// If `desired` doesn't exist yet, returns it as-is; otherwise appends
-/// `-2`, `-3`, ... before the extension until a free path is found.
-fn unique_path(desired: &Path) -> PathBuf {
-    if !desired.exists() {
-        return desired.to_path_buf();
-    }
-    let stem = desired
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("file");
-    let ext = desired.extension().and_then(|ext| ext.to_str());
-    let parent = desired.parent().unwrap_or_else(|| Path::new(""));
-
-    let mut n = 2;
-    loop {
-        let candidate_name = match ext {
-            Some(ext) => format!("{stem}-{n}.{ext}"),
-            None => format!("{stem}-{n}"),
-        };
-        let candidate = parent.join(candidate_name);
-        if !candidate.exists() {
-            return candidate;
-        }
-        n += 1;
-    }
 }
 
 #[cfg(test)]
@@ -516,29 +437,6 @@ mod tests {
     fn format_date_prefix_pads_single_digits() {
         let date = DateTime::parse_rfc822("Fri, 26 Jan 2024 09:15:00 +0000").unwrap();
         assert_eq!(format_date_prefix(&date), "2024-01-26");
-    }
-
-    #[test]
-    fn yaml_quote_escapes_quotes_and_backslashes() {
-        assert_eq!(yaml_quote("Hello: World"), "\"Hello: World\"");
-        assert_eq!(yaml_quote(r#"She said "hi""#), r#""She said \"hi\"""#);
-    }
-
-    #[test]
-    fn unique_path_returns_original_when_free() {
-        let dir = tempfile::tempdir().unwrap();
-        let desired = dir.path().join("2024-01-26-hello.md");
-        assert_eq!(unique_path(&desired), desired);
-    }
-
-    #[test]
-    fn unique_path_suffixes_on_collision() {
-        let dir = tempfile::tempdir().unwrap();
-        let desired = dir.path().join("2024-01-26-hello.md");
-        fs::write(&desired, b"").unwrap();
-
-        let resolved = unique_path(&desired);
-        assert_eq!(resolved, dir.path().join("2024-01-26-hello-2.md"));
     }
 
     #[test]
@@ -654,10 +552,9 @@ mod tests {
         )
         .unwrap();
 
-        let mut message_index =
-            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let mut message_index = ContentIndex::load(staging.path(), MESSAGE_HASHES_FILE).unwrap();
         let mut attachment_index =
-            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+            ContentIndex::load(staging.path(), ATTACHMENT_HASHES_FILE).unwrap();
 
         let first = transform_one(
             &identity,
@@ -713,10 +610,8 @@ mod tests {
         fs::write(inbox.join("1.eml"), &raw).unwrap();
         fs::write(archive.join("2.eml"), &raw).unwrap();
 
-        let mut message_index =
-            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
-        let attachment_index =
-            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+        let mut message_index = ContentIndex::load(staging.path(), MESSAGE_HASHES_FILE).unwrap();
+        let attachment_index = ContentIndex::load(staging.path(), ATTACHMENT_HASHES_FILE).unwrap();
 
         let first = transform_one(
             &identity,
@@ -780,10 +675,8 @@ mod tests {
         )
         .unwrap();
 
-        let message_index =
-            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
-        let attachment_index =
-            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+        let message_index = ContentIndex::load(staging.path(), MESSAGE_HASHES_FILE).unwrap();
+        let attachment_index = ContentIndex::load(staging.path(), ATTACHMENT_HASHES_FILE).unwrap();
 
         let result = transform_one(
             &identity,
@@ -808,57 +701,6 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_attachment_name_strips_leading_slash() {
-        assert_eq!(sanitize_attachment_name("/img0.png"), "img0.png");
-    }
-
-    #[test]
-    fn sanitize_attachment_name_strips_nested_directories() {
-        assert_eq!(sanitize_attachment_name("a/b/c.pdf"), "c.pdf");
-    }
-
-    #[test]
-    fn sanitize_attachment_name_preserves_normal_name() {
-        assert_eq!(sanitize_attachment_name("report.pdf"), "report.pdf");
-    }
-
-    #[test]
-    fn sanitize_attachment_name_falls_back_for_dot_dot() {
-        assert_eq!(sanitize_attachment_name(".."), "attachment");
-    }
-
-    #[test]
-    fn sanitize_attachment_name_falls_back_for_bare_slash() {
-        assert_eq!(sanitize_attachment_name("/"), "attachment");
-    }
-
-    #[test]
-    fn sanitize_attachment_name_truncates_long_name_preserving_extension() {
-        let long_name = format!("{}.pdf", "a".repeat(300));
-        let sanitized = sanitize_attachment_name(&long_name);
-        assert!(sanitized.len() <= MAX_ATTACHMENT_NAME_LENGTH);
-        assert!(sanitized.ends_with(".pdf"));
-    }
-
-    #[test]
-    fn sanitize_attachment_name_truncates_long_name_with_no_extension() {
-        let long_name = "a".repeat(300);
-        let sanitized = sanitize_attachment_name(&long_name);
-        assert!(sanitized.len() <= MAX_ATTACHMENT_NAME_LENGTH);
-    }
-
-    #[test]
-    fn sanitize_attachment_name_truncates_multibyte_name_at_char_boundary() {
-        // Each "é" is 2 bytes in UTF-8; a naive byte-count truncation could
-        // split one in half and panic.
-        let long_name = format!("{}.png", "é".repeat(200));
-        let sanitized = sanitize_attachment_name(&long_name);
-        assert!(sanitized.len() <= MAX_ATTACHMENT_NAME_LENGTH);
-        assert!(sanitized.ends_with(".png"));
-        assert!(sanitized.is_char_boundary(sanitized.len()));
-    }
-
-    #[test]
     fn transform_one_truncates_a_very_long_subject() {
         let staging = tempfile::tempdir().unwrap();
         let output = tempfile::tempdir().unwrap();
@@ -871,10 +713,8 @@ mod tests {
         let long_subject = "word ".repeat(60);
         fs::write(inbox.join("1.eml"), plain_text_eml(&long_subject)).unwrap();
 
-        let message_index =
-            ContentIndex::load(staging.path(), ContentIndex::MESSAGE_HASHES).unwrap();
-        let attachment_index =
-            ContentIndex::load(staging.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+        let message_index = ContentIndex::load(staging.path(), MESSAGE_HASHES_FILE).unwrap();
+        let attachment_index = ContentIndex::load(staging.path(), ATTACHMENT_HASHES_FILE).unwrap();
 
         let result = transform_one(
             &identity,

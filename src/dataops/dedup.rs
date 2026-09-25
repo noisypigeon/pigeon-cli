@@ -3,23 +3,21 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
-/// One dotfile's worth of `<hex-md5> <relative-path>` entries -- the durable,
-/// cross-mailbox record backing ADR-0012's content dedup. The relative path
-/// stored is relative to the identity's own output directory (the same
-/// convention `attachments:` frontmatter entries already use), not
-/// `staging_dir` (where the index file itself lives).
+/// One dotfile's worth of `<hex-md5> <relative-path>` entries -- a durable,
+/// append-only content-hash index backing byte-identical-content
+/// deduplication (originally ADR-0012, for `pigeon email`'s message/
+/// attachment dedup; genericized by ADR-0020 for reuse by other `dataops`
+/// transforms). The relative path stored is caller-defined -- typically
+/// relative to wherever that caller's own transformed output lives.
 pub(crate) struct ContentIndex {
     file_name: &'static str,
     entries: HashMap<String, String>,
 }
 
 impl ContentIndex {
-    pub(crate) const ATTACHMENT_HASHES: &'static str = ".attachment-hashes";
-    pub(crate) const MESSAGE_HASHES: &'static str = ".message-hashes";
-
     /// Loads `staging_dir/file_name`. A missing file (first run) is an empty
-    /// index, matching `sync::read_processed`'s convention. Lines that don't
-    /// split into `<hash> <path>` are skipped leniently.
+    /// index. Lines that don't split into `<hash> <path>` are skipped
+    /// leniently.
     pub(crate) fn load(
         staging_dir: &Path,
         file_name: &'static str,
@@ -66,31 +64,34 @@ impl ContentIndex {
     }
 }
 
-/// Amends a canonical `.md`'s frontmatter for a newly discovered duplicate
-/// occurrence: ensures `mailbox_tag` is present in `tags:`, and inserts (or,
-/// keyed by mailbox, updates) an `also-in:` entry recording `uid`. A pure
-/// textual edit of the existing `---`-delimited block, matching
-/// `transform::render_frontmatter`'s hand-rolled style -- no YAML crate.
+/// Amends a canonical file's frontmatter for a newly discovered duplicate
+/// occurrence: ensures `tag` is present in `tags:`, and inserts (or, keyed
+/// by `tag`, updates) an `also-in:` entry recording `occurrence`. A pure
+/// textual edit of the existing `---`-delimited block -- no YAML crate.
+/// Originally ADR-0012 (`pigeon email`'s mailbox+uid-keyed message
+/// merging); genericized by ADR-0020 for reuse by other `dataops`
+/// transforms, where `tag`/`occurrence` can mean whatever that caller's own
+/// duplicate-tracking scheme needs them to.
 ///
-/// Returns `Ok(true)` if the file was rewritten (a genuinely new mailbox/uid
-/// pair), `Ok(false)` if this exact mailbox/uid pair was already recorded
+/// Returns `Ok(true)` if the file was rewritten (a genuinely new tag/
+/// occurrence pair), `Ok(false)` if this exact pair was already recorded
 /// (an idempotent resume/crash-recovery replay -- the file is left
-/// byte-for-byte untouched). `Err` if `canonical_md_path` is missing or its
+/// byte-for-byte untouched). `Err` if `canonical_path` is missing or its
 /// frontmatter isn't well-formed; callers treat that as a lenient skip.
 pub(crate) fn amend_frontmatter_for_duplicate(
-    canonical_md_path: &Path,
-    mailbox_tag: &str,
-    uid: u32,
+    canonical_path: &Path,
+    tag: &str,
+    occurrence: u32,
 ) -> Result<bool, String> {
-    let contents = fs::read_to_string(canonical_md_path)
-        .map_err(|err| format!("failed to read {}: {err}", canonical_md_path.display()))?;
+    let contents = fs::read_to_string(canonical_path)
+        .map_err(|err| format!("failed to read {}: {err}", canonical_path.display()))?;
     let had_trailing_newline = contents.ends_with('\n');
     let mut lines: Vec<String> = contents.lines().map(str::to_string).collect();
 
     if lines.first().map(String::as_str) != Some("---") {
         return Err(format!(
             "{} does not start with a frontmatter delimiter",
-            canonical_md_path.display()
+            canonical_path.display()
         ));
     }
     let Some(mut close_idx) = lines
@@ -101,7 +102,7 @@ pub(crate) fn amend_frontmatter_for_duplicate(
     else {
         return Err(format!(
             "{} has no closing frontmatter delimiter",
-            canonical_md_path.display()
+            canonical_path.display()
         ));
     };
 
@@ -110,10 +111,7 @@ pub(crate) fn amend_frontmatter_for_duplicate(
         .position(|line| line == "tags:")
         .map(|i| i + 1)
     else {
-        return Err(format!(
-            "{} has no tags: field",
-            canonical_md_path.display()
-        ));
+        return Err(format!("{} has no tags: field", canonical_path.display()));
     };
     let mut tags_block_end = lines[tags_idx + 1..close_idx]
         .iter()
@@ -123,12 +121,12 @@ pub(crate) fn amend_frontmatter_for_duplicate(
         + 1;
 
     let mut changed = false;
-    let mailbox_line = format!("  - {mailbox_tag}");
-    let has_mailbox_tag = lines[tags_idx + 1..tags_block_end]
+    let tag_line = format!("  - {tag}");
+    let has_tag = lines[tags_idx + 1..tags_block_end]
         .iter()
-        .any(|line| line == &mailbox_line);
-    if !has_mailbox_tag {
-        lines.insert(tags_block_end, mailbox_line);
+        .any(|line| line == &tag_line);
+    if !has_tag {
+        lines.insert(tags_block_end, tag_line);
         tags_block_end += 1;
         close_idx += 1;
         changed = true;
@@ -140,8 +138,8 @@ pub(crate) fn amend_frontmatter_for_duplicate(
         .position(|line| line == also_in_header)
         .map(|i| i + tags_block_end);
 
-    let new_entry_prefix = format!("  - {mailbox_tag}#");
-    let new_entry = format!("  - {mailbox_tag}#{uid}");
+    let new_entry_prefix = format!("  - {tag}#");
+    let new_entry = format!("  - {tag}#{occurrence}");
 
     match existing_also_in_idx {
         Some(also_in_idx) => {
@@ -183,14 +181,17 @@ pub(crate) fn amend_frontmatter_for_duplicate(
     if had_trailing_newline {
         rewritten.push('\n');
     }
-    fs::write(canonical_md_path, rewritten)
-        .map_err(|err| format!("failed to write {}: {err}", canonical_md_path.display()))?;
+    fs::write(canonical_path, rewritten)
+        .map_err(|err| format!("failed to write {}: {err}", canonical_path.display()))?;
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const MESSAGE_HASHES: &str = ".message-hashes";
+    const ATTACHMENT_HASHES: &str = ".attachment-hashes";
 
     const FIXTURE: &str = "---\n\
         from: \"Jane Doe <jane.doe@example.com>\"\n\
@@ -210,14 +211,14 @@ mod tests {
     #[test]
     fn load_missing_file_is_empty() {
         let dir = tempfile::tempdir().unwrap();
-        let index = ContentIndex::load(dir.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let index = ContentIndex::load(dir.path(), MESSAGE_HASHES).unwrap();
         assert!(index.check("abc").is_none());
     }
 
     #[test]
     fn commit_then_check_round_trips() {
         let dir = tempfile::tempdir().unwrap();
-        let mut index = ContentIndex::load(dir.path(), ContentIndex::ATTACHMENT_HASHES).unwrap();
+        let mut index = ContentIndex::load(dir.path(), ATTACHMENT_HASHES).unwrap();
         index
             .commit(dir.path(), "hash1", "identity/attachments/a.pdf")
             .unwrap();
@@ -228,27 +229,23 @@ mod tests {
     #[test]
     fn load_picks_up_entries_committed_by_a_prior_load() {
         let dir = tempfile::tempdir().unwrap();
-        let mut first = ContentIndex::load(dir.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let mut first = ContentIndex::load(dir.path(), MESSAGE_HASHES).unwrap();
         first.commit(dir.path(), "hash1", "identity/a.md").unwrap();
 
-        let second = ContentIndex::load(dir.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        let second = ContentIndex::load(dir.path(), MESSAGE_HASHES).unwrap();
         assert_eq!(second.check("hash1"), Some("identity/a.md"));
     }
 
     #[test]
     fn load_skips_malformed_lines() {
         let dir = tempfile::tempdir().unwrap();
-        fs::write(
-            dir.path().join(ContentIndex::MESSAGE_HASHES),
-            "no-space-here\n",
-        )
-        .unwrap();
-        let index = ContentIndex::load(dir.path(), ContentIndex::MESSAGE_HASHES).unwrap();
+        fs::write(dir.path().join(MESSAGE_HASHES), "no-space-here\n").unwrap();
+        let index = ContentIndex::load(dir.path(), MESSAGE_HASHES).unwrap();
         assert!(index.check("no-space-here").is_none());
     }
 
     #[test]
-    fn amend_adds_new_mailbox_tag_and_also_in_entry() {
+    fn amend_adds_new_tag_and_also_in_entry() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("canonical.md");
         fs::write(&path, FIXTURE).unwrap();
@@ -269,7 +266,7 @@ mod tests {
     }
 
     #[test]
-    fn amend_is_idempotent_for_identical_mailbox_and_uid() {
+    fn amend_is_idempotent_for_identical_tag_and_occurrence() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("canonical.md");
         fs::write(&path, FIXTURE).unwrap();
@@ -283,7 +280,7 @@ mod tests {
     }
 
     #[test]
-    fn amend_updates_uid_in_place_on_uidvalidity_reset() {
+    fn amend_updates_occurrence_in_place() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("canonical.md");
         fs::write(&path, FIXTURE).unwrap();
@@ -305,11 +302,6 @@ mod tests {
         assert!(amend_frontmatter_for_duplicate(&path, "mailbox/archive", 45).is_err());
     }
 
-    /// ADR-0014: `sync`'s concurrent mailbox workers share one `ContentIndex`
-    /// per dedup file behind an `Arc<Mutex<_>>`, each committing a distinct
-    /// hash. This exercises that same lock-guarded `commit()` pattern under
-    /// real thread concurrency, checking neither the in-memory map nor the
-    /// on-disk file loses or corrupts an entry.
     #[test]
     fn commit_survives_concurrent_access_from_multiple_threads() {
         use std::sync::{Arc, Mutex};
@@ -317,7 +309,7 @@ mod tests {
 
         let dir = tempfile::tempdir().unwrap();
         let index = Arc::new(Mutex::new(
-            ContentIndex::load(dir.path(), ContentIndex::ATTACHMENT_HASHES).unwrap(),
+            ContentIndex::load(dir.path(), ATTACHMENT_HASHES).unwrap(),
         ));
 
         let handles: Vec<_> = (0..8)
@@ -349,8 +341,7 @@ mod tests {
             );
         }
 
-        let contents =
-            fs::read_to_string(dir.path().join(ContentIndex::ATTACHMENT_HASHES)).unwrap();
+        let contents = fs::read_to_string(dir.path().join(ATTACHMENT_HASHES)).unwrap();
         assert_eq!(contents.lines().count(), 8);
     }
 }
