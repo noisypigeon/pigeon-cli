@@ -45,6 +45,14 @@ pub enum JobType {
         #[arg(long)]
         remote_output: Option<String>,
 
+        /// Alias of a configured encryption key (see `pigeon keyring add
+        /// encryption-key`) to use, overriding the target bucket-config's
+        /// own default (if any). Interactively selected/confirmed when
+        /// omitted; falls back to the bucket's default non-interactively
+        /// (ADR-0027).
+        #[arg(long)]
+        encryption_key: Option<String>,
+
         /// Maximum number of fetch/transform workers to run concurrently,
         /// spanning every selected identity's every mailbox. Interactively
         /// prompted (with a rough time estimate) when omitted and stdin is
@@ -56,6 +64,38 @@ pub enum JobType {
         /// input (identities, concurrency) still follows its own
         /// independent flag-or-prompt rule -- this only answers the last
         /// prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+
+    /// Decrypts every `*.enc` file under `--input-dir` into `--output-dir`
+    /// (`.enc` suffix stripped, relative structure preserved), using a
+    /// configured encryption key (ADR-0028).
+    DecryptFiles {
+        /// Directory containing `*.enc` files to decrypt. Interactively
+        /// prompted when omitted and stdin is a terminal; required
+        /// otherwise.
+        #[arg(long)]
+        input_dir: Option<PathBuf>,
+
+        /// Directory decrypted files are written under, mirroring
+        /// `--input-dir`'s relative structure. Must not be the same
+        /// directory as `--input-dir`. Interactively prompted when omitted
+        /// and stdin is a terminal; required otherwise.
+        #[arg(long)]
+        output_dir: Option<PathBuf>,
+
+        /// Alias of a configured encryption key (see `pigeon keyring add
+        /// encryption-key`) to decrypt with. Interactively selected when
+        /// omitted and stdin is a terminal; required otherwise.
+        #[arg(long)]
+        encryption_key: Option<String>,
+
+        /// Maximum number of files to decrypt concurrently.
+        #[arg(long)]
+        concurrency: Option<usize>,
+
+        /// Skip the final "proceed?" confirmation.
         #[arg(long)]
         yes: bool,
     },

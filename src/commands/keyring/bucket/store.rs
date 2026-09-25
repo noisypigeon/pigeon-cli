@@ -11,6 +11,11 @@ pub struct BucketConfig {
     pub endpoint: String,
     pub bucket: String,
     pub access_key_id: String,
+    /// Alias of the encryption key this bucket encrypts with by default
+    /// (ADR-0027). `None` means no default -- every job run gets asked
+    /// explicitly with no bucket-level nudge either way.
+    #[serde(default)]
+    pub encryption_key_alias: Option<String>,
 }
 
 impl crate::core::keyring::KeyringEntry for BucketConfig {
@@ -21,6 +26,12 @@ impl crate::core::keyring::KeyringEntry for BucketConfig {
         "bucket"
     }
     fn detail(&self) -> String {
-        format!("{} ({})", self.endpoint, self.bucket)
+        match &self.encryption_key_alias {
+            Some(alias) => format!(
+                "{} ({}), encrypts with '{alias}'",
+                self.endpoint, self.bucket
+            ),
+            None => format!("{} ({})", self.endpoint, self.bucket),
+        }
     }
 }

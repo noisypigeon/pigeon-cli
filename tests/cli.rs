@@ -342,3 +342,79 @@ fn job_run_email_sync_with_unknown_identity_fails_fast() {
             "no identity with alias 'no-such-alias'",
         ));
 }
+
+#[test]
+fn job_run_help_lists_decrypt_files() {
+    pigeon()
+        .args(["job", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("decrypt-files"));
+}
+
+#[test]
+fn job_run_decrypt_files_help_shows_input_output_and_key_flags() {
+    pigeon()
+        .args(["job", "run", "decrypt-files", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--input-dir"))
+        .stdout(predicate::str::contains("--output-dir"))
+        .stdout(predicate::str::contains("--encryption-key"))
+        .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--yes"));
+}
+
+#[test]
+fn job_run_decrypt_files_without_input_dir_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let output_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "decrypt-files",
+            "--output-dir",
+            output_dir.path().to_str().unwrap(),
+            "--encryption-key",
+            "primary",
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--input-dir is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_decrypt_files_rejects_same_input_and_output_dir() {
+    let config_dir = TempDir::new().unwrap();
+    let dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "decrypt-files",
+            "--input-dir",
+            dir.path().to_str().unwrap(),
+            "--output-dir",
+            dir.path().to_str().unwrap(),
+            "--encryption-key",
+            "primary",
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--input-dir and --output-dir must not be the same directory",
+        ));
+}

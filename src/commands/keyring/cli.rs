@@ -10,20 +10,20 @@ pub struct KeyringArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum KeyringCommands {
-    /// Add a new email identity or bucket-config
+    /// Add a new email identity, bucket-config, or encryption key
     Add(AddArgs),
-    /// Edit an existing email identity's or bucket-config's fields
+    /// Edit an existing entry's fields
     Modify {
         /// Alias of the entry to edit. Interactively selected from every
-        /// configured entry (of either kind) when omitted.
+        /// configured entry (of any kind) when omitted.
         alias: Option<String>,
     },
-    /// Remove a configured email identity or bucket-config and its secret
+    /// Remove a configured entry and its secret
     Delete {
         /// Alias of the entry to remove.
         alias: String,
     },
-    /// List every configured email identity and bucket-config
+    /// List every configured entry
     List,
 }
 
@@ -66,6 +66,14 @@ pub enum AddKind {
     Bucket {
         /// Alias to register this bucket-config under (e.g. "backup").
         /// Prompted if omitted.
+        alias: Option<String>,
+    },
+
+    /// Register a new symmetric encryption key, generated or imported
+    /// (ADR-0026)
+    EncryptionKey {
+        /// Alias to register this key under (e.g. "primary"). Prompted if
+        /// omitted.
         alias: Option<String>,
     },
 }

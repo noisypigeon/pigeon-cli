@@ -12,6 +12,7 @@ use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::email::identity;
 use crate::commands::keyring::email::imap_client::{self, ImapSession};
+use crate::core::crypto::{Aes256GcmSivEncryptor, Encryptor};
 use crate::core::data::{ContentIndex, Transform, collect_files};
 
 use super::dedup::{self, EmailDedup};
@@ -306,16 +307,20 @@ impl UploadedIndex {
 /// `output_dir`'s relative tree mirrored directly at the bucket root, per
 /// ADR-0011. Joined component-wise rather than via `to_string_lossy()` on
 /// the whole relative path so the key always uses `/`, regardless of the
-/// host platform's path separator.
-fn upload_key(output_dir: &Path, path: &Path) -> Result<String, String> {
+/// host platform's path separator. When `encrypt` is true, appends `.enc`
+/// so the final key is what actually gets uploaded (ciphertext) and is what
+/// `UploadedIndex`/`client::upload_if_changed` key off of -- computed once,
+/// here, rather than branched again at upload time (ADR-0025).
+fn upload_key(output_dir: &Path, path: &Path, encrypt: bool) -> Result<String, String> {
     let relative = path
         .strip_prefix(output_dir)
         .map_err(|_| format!("{} is not under {}", path.display(), output_dir.display()))?;
-    Ok(relative
+    let key = relative
         .components()
         .map(|component| component.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
-        .join("/"))
+        .join("/");
+    Ok(if encrypt { format!("{key}.enc") } else { key })
 }
 
 /// Outcome of one identity's upload phase.
@@ -334,11 +339,12 @@ struct UploadSummary {
 fn pending_upload_tasks(
     ctx: &IdentityContext,
     identity_dir: &Path,
+    encrypt: bool,
 ) -> Result<(Vec<UploadTask>, UploadedIndex), String> {
     let uploaded_index = UploadedIndex::load(&ctx.staging_dir)?;
     let mut tasks = Vec::new();
     for path in collect_files(identity_dir)? {
-        let key = upload_key(&ctx.output_dir, &path)?;
+        let key = upload_key(&ctx.output_dir, &path, encrypt)?;
         if !uploaded_index.contains(&key) {
             tasks.push(UploadTask {
                 staging_dir: ctx.staging_dir.clone(),
@@ -384,12 +390,20 @@ async fn upload_one(
     uploaded_indexes: &HashMap<PathBuf, Arc<Mutex<UploadedIndex>>>,
     bucket_config: &BucketConfig,
     secret: &str,
+    encryptor: Option<&Aes256GcmSivEncryptor>,
     bar: &ProgressBar,
     multi_progress: &MultiProgress,
 ) -> UploadOutcomeKind {
     let outcome = async {
         let data = fs::read(&task.path)
             .map_err(|err| format!("failed to read {}: {err}", task.path.display()))?;
+        // Deterministic encryption (ADR-0025): identical plaintext always
+        // yields identical ciphertext under the same key, so
+        // `upload_if_changed`'s MD5-vs-ETag dedup below needs no changes.
+        let data = match encryptor {
+            Some(encryptor) => encryptor.encrypt(&data)?,
+            None => data,
+        };
         retry_with_backoff(UPLOAD_RETRIES, UPLOAD_RETRY_BACKOFF, || {
             client::upload_if_changed(bucket_config, secret, &task.key, data.clone())
         })
@@ -431,6 +445,7 @@ async fn run_upload_phase(
     uploaded_indexes: &HashMap<PathBuf, Arc<Mutex<UploadedIndex>>>,
     bucket_config: &BucketConfig,
     secret: &str,
+    encryptor: Option<&Aes256GcmSivEncryptor>,
     concurrency: usize,
     multi_progress: &MultiProgress,
 ) -> UploadSummary {
@@ -446,6 +461,7 @@ async fn run_upload_phase(
                 uploaded_indexes,
                 bucket_config,
                 secret,
+                encryptor,
                 &bar,
                 multi_progress,
             )
@@ -497,7 +513,9 @@ pub(crate) async fn run_email_sync_job(
     pending_by_identity: Vec<Vec<PendingMailbox>>,
     concurrency: usize,
     remote: Option<(&BucketConfig, &str)>,
+    encryptor: Option<&Aes256GcmSivEncryptor>,
 ) -> Result<JobSummary, String> {
+    let encrypt = encryptor.is_some();
     let mut all_batches: VecDeque<(usize, Batch)> = VecDeque::new();
     for (index, pending) in pending_by_identity.iter().enumerate() {
         let batches = super::batches_from_pending(pending, concurrency);
@@ -568,7 +586,7 @@ pub(crate) async fn run_email_sync_job(
         summary.deduped_attachments += dedup_summary.deduped_attachments;
 
         if remote.is_some() {
-            let (tasks, uploaded_index) = pending_upload_tasks(ctx, &identity_dir)?;
+            let (tasks, uploaded_index) = pending_upload_tasks(ctx, &identity_dir, encrypt)?;
             all_upload_tasks.extend(tasks);
             uploaded_indexes.insert(
                 ctx.staging_dir.clone(),
@@ -583,6 +601,7 @@ pub(crate) async fn run_email_sync_job(
             &uploaded_indexes,
             bucket_config,
             secret,
+            encryptor,
             concurrency,
             &multi_progress,
         )
@@ -674,7 +693,7 @@ mod tests {
         fs::write(identity_dir.join("b.md"), b"b").unwrap();
 
         let ctx = test_ctx(staging.path(), output.path());
-        let (tasks, index) = pending_upload_tasks(&ctx, &identity_dir).unwrap();
+        let (tasks, index) = pending_upload_tasks(&ctx, &identity_dir, false).unwrap();
 
         let mut keys: Vec<String> = tasks.iter().map(|task| task.key.clone()).collect();
         keys.sort();
@@ -695,20 +714,50 @@ mod tests {
         fs::write(identity_dir.join("b.md"), b"b").unwrap();
 
         let ctx = test_ctx(staging.path(), output.path());
-        let key_a = upload_key(&ctx.output_dir, &identity_dir.join("a.md")).unwrap();
+        let key_a = upload_key(&ctx.output_dir, &identity_dir.join("a.md"), false).unwrap();
         fs::write(
             staging.path().join(UPLOADED_FILE_NAME),
             format!("{key_a}\n"),
         )
         .unwrap();
 
-        let (tasks, index) = pending_upload_tasks(&ctx, &identity_dir).unwrap();
+        let (tasks, index) = pending_upload_tasks(&ctx, &identity_dir, false).unwrap();
 
         assert_eq!(tasks.len(), 1);
         assert_eq!(
             tasks[0].key,
-            upload_key(&ctx.output_dir, &identity_dir.join("b.md")).unwrap()
+            upload_key(&ctx.output_dir, &identity_dir.join("b.md"), false).unwrap()
         );
         assert!(index.contains(&key_a));
+    }
+
+    #[test]
+    fn upload_key_appends_enc_suffix_when_encryption_enabled() {
+        let output = tempfile::tempdir().unwrap();
+        let path = output.path().join("alias-out").join("a.md");
+
+        assert_eq!(
+            upload_key(output.path(), &path, false).unwrap(),
+            "alias-out/a.md"
+        );
+        assert_eq!(
+            upload_key(output.path(), &path, true).unwrap(),
+            "alias-out/a.md.enc"
+        );
+    }
+
+    #[test]
+    fn pending_upload_tasks_uses_enc_suffixed_keys_when_encryption_enabled() {
+        let staging = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let identity_dir = output.path().join("alias-out");
+        fs::create_dir_all(&identity_dir).unwrap();
+        fs::write(identity_dir.join("a.md"), b"a").unwrap();
+
+        let ctx = test_ctx(staging.path(), output.path());
+        let (tasks, _index) = pending_upload_tasks(&ctx, &identity_dir, true).unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].key, "alias-out/a.md.enc");
     }
 }

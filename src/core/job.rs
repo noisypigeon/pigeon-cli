@@ -1,9 +1,10 @@
-/// Behavior shared by every job type this CLI can run. Exactly one
-/// implementor exists today (`commands::job::email_sync::EmailSyncJob`) --
-/// introduced now per explicit direction, understood as a consistency/
-/// extensibility choice rather than a response to a second job type
-/// actually existing (ADR-0021 deliberately scoped that out; ADR-0023
-/// Consequences names this cost plainly).
+/// Behavior shared by every job type this CLI can run. Two implementors
+/// exist today: `commands::job::email_sync::EmailSyncJob` (introduced per
+/// explicit direction, initially understood as a consistency/extensibility
+/// choice rather than a response to a second job type actually existing --
+/// ADR-0021 deliberately scoped that out; ADR-0023 Consequences names this
+/// cost plainly) and `commands::job::decrypt_files::DecryptFilesJob`
+/// (ADR-0028), the first real validation of that choice.
 ///
 /// `gather`/`run` use native async fn in traits (stable since Rust 1.75,
 /// no `async-trait` dependency needed) -- safe here because `Job` is only

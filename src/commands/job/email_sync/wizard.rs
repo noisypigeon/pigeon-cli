@@ -5,6 +5,7 @@ use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
+use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
@@ -162,6 +163,76 @@ impl WizardInput for RemoteOutputInput<'_> {
     }
 }
 
+/// Resolves which encryption key to use (ADR-0027, amended): `--encryption-key`
+/// always wins outright. Otherwise, only when `uploading` (there's an upload
+/// target at all -- nothing to encrypt otherwise): if the target bucket has
+/// a `bucket_default` key, asks to use it (default yes) or pick a different
+/// one instead (declining both skips encryption for this run); if it has no
+/// default, asks "Encrypt this upload?" from scratch, mirroring
+/// `RemoteOutputInput`'s own confirm-then-select shape. Non-interactively,
+/// falls back to the bucket's default (if any) rather than always skipping
+/// encryption -- the fix this amendment exists for: a scripted/cron run
+/// against a bucket configured with a default key now gets encrypted
+/// uploads without repeating `--encryption-key` every time.
+struct EncryptionKeyInput<'a> {
+    flag: Option<String>,
+    store: &'a Store,
+    uploading: bool,
+    bucket_default: Option<String>,
+}
+
+impl WizardInput for EncryptionKeyInput<'_> {
+    type Value = Option<String>;
+
+    fn flag_value(&self) -> Option<Result<Option<String>, String>> {
+        self.flag.clone().map(|alias| Ok(Some(alias)))
+    }
+
+    fn prompt(&self) -> Result<Option<String>, String> {
+        if !self.uploading {
+            return Ok(None);
+        }
+        if let Some(default_alias) = &self.bucket_default {
+            let use_default = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt(format!("Encrypt this upload using '{default_alias}'?"))
+                .default(true)
+                .interact()
+                .map_err(|err| format!("failed to read confirmation: {err}"))?;
+            if use_default {
+                return Ok(Some(default_alias.clone()));
+            }
+            let use_different = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Use a different encryption key instead?")
+                .default(false)
+                .interact()
+                .map_err(|err| format!("failed to read confirmation: {err}"))?;
+            if !use_different {
+                return Ok(None);
+            }
+        } else {
+            let encrypt = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Encrypt this upload?")
+                .default(false)
+                .interact()
+                .map_err(|err| format!("failed to read confirmation: {err}"))?;
+            if !encrypt {
+                return Ok(None);
+            }
+        }
+        match self.store.prompt_select_encryption_key() {
+            Ok(key) => Ok(Some(key.alias.clone())),
+            Err(message) => {
+                println!("{message}");
+                Ok(None)
+            }
+        }
+    }
+
+    fn non_interactive_fallback(&self) -> Result<Option<String>, String> {
+        Ok(self.bucket_default.clone())
+    }
+}
+
 /// Prints a per-identity manifest summary table (ADR-0021 §5).
 pub(crate) fn print_manifest_summary(summaries: &[IdentityManifestSummary]) {
     let rows: Vec<Vec<String>> = summaries
@@ -308,6 +379,7 @@ pub fn dispatch(
     identities: Option<Vec<String>>,
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
+    encryption_key: Option<String>,
     concurrency: Option<usize>,
     yes: bool,
 ) -> i32 {
@@ -322,6 +394,7 @@ pub fn dispatch(
         identities,
         local_output,
         remote_output,
+        encryption_key,
         concurrency,
         yes,
     ))
@@ -331,6 +404,7 @@ async fn dispatch_async(
     identities: Option<Vec<String>>,
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
+    encryption_key: Option<String>,
     concurrency: Option<usize>,
     yes: bool,
 ) -> i32 {
@@ -375,6 +449,7 @@ async fn dispatch_async(
     let mut job = EmailSyncJob {
         contexts,
         remote: None,
+        encryptor: None,
     };
     let plan = match job.gather().await {
         Ok(plan) => plan,
@@ -412,6 +487,37 @@ async fn dispatch_async(
                 Err(err) => return fail(err),
             };
             Some((bucket_config, secret))
+        }
+        None => None,
+    };
+
+    // Resolved here, before the concurrency/proceed prompts and any
+    // fetch/transform work -- the target bucket-config's own default key (if
+    // any) is used unless overridden by flag or interactively (ADR-0027).
+    let resolved_encryption_key_alias = match (EncryptionKeyInput {
+        flag: encryption_key,
+        store: &keyring_store,
+        uploading: job.remote.is_some(),
+        bucket_default: job
+            .remote
+            .as_ref()
+            .and_then(|(bc, _)| bc.encryption_key_alias.clone()),
+    })
+    .resolve()
+    {
+        Ok(alias) => alias,
+        Err(err) => return fail(err),
+    };
+    job.encryptor = match resolved_encryption_key_alias {
+        Some(alias) => {
+            let key_hex = match credentials::get_secret(&alias) {
+                Ok(secret) => secret,
+                Err(err) => return fail(err),
+            };
+            match Aes256GcmSivEncryptor::from_hex_key(&key_hex) {
+                Ok(encryptor) => Some(encryptor),
+                Err(err) => return fail(err),
+            }
         }
         None => None,
     };

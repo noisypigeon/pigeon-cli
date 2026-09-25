@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::email::identity::Identity;
+use crate::commands::keyring::encryption_key::EncryptionKey;
 use crate::core::keyring::KeyringEntry as _;
 
 /// Both `email::identity`'s and `dataops::store`'s former stores read this
@@ -30,6 +31,7 @@ const KEYRING_FILE_NAME: &str = "keyring.toml";
 pub enum Entry {
     Email(Identity),
     Bucket(BucketConfig),
+    EncryptionKey(EncryptionKey),
 }
 
 impl crate::core::keyring::KeyringEntry for Entry {
@@ -37,6 +39,7 @@ impl crate::core::keyring::KeyringEntry for Entry {
         match self {
             Entry::Email(identity) => identity.alias(),
             Entry::Bucket(bucket_config) => bucket_config.alias(),
+            Entry::EncryptionKey(key) => key.alias(),
         }
     }
 
@@ -44,6 +47,7 @@ impl crate::core::keyring::KeyringEntry for Entry {
         match self {
             Entry::Email(identity) => identity.kind(),
             Entry::Bucket(bucket_config) => bucket_config.kind(),
+            Entry::EncryptionKey(key) => key.kind(),
         }
     }
 
@@ -51,6 +55,7 @@ impl crate::core::keyring::KeyringEntry for Entry {
         match self {
             Entry::Email(identity) => identity.detail(),
             Entry::Bucket(bucket_config) => bucket_config.detail(),
+            Entry::EncryptionKey(key) => key.detail(),
         }
     }
 }
@@ -153,21 +158,30 @@ impl Store {
         self.entries.iter()
     }
 
-    /// Every configured email identity, ignoring bucket-configs -- for
+    /// Every configured email identity, ignoring the other kinds -- for
     /// `job::wizard`'s identity resolution.
     pub fn email_identities(&self) -> impl Iterator<Item = &Identity> {
         self.entries.iter().filter_map(|entry| match entry {
             Entry::Email(identity) => Some(identity),
-            Entry::Bucket(_) => None,
+            Entry::Bucket(_) | Entry::EncryptionKey(_) => None,
         })
     }
 
-    /// Every configured bucket-config, ignoring email identities -- for
+    /// Every configured bucket-config, ignoring the other kinds -- for
     /// `job::email_sync`'s upload-target lookup.
     pub fn bucket_configs(&self) -> impl Iterator<Item = &BucketConfig> {
         self.entries.iter().filter_map(|entry| match entry {
             Entry::Bucket(bucket_config) => Some(bucket_config),
-            Entry::Email(_) => None,
+            Entry::Email(_) | Entry::EncryptionKey(_) => None,
+        })
+    }
+
+    /// Every configured encryption key, ignoring the other kinds -- for
+    /// `job::email_sync`'s `--encryption-key` resolution.
+    pub fn encryption_keys(&self) -> impl Iterator<Item = &EncryptionKey> {
+        self.entries.iter().filter_map(|entry| match entry {
+            Entry::EncryptionKey(key) => Some(key),
+            Entry::Email(_) | Entry::Bucket(_) => None,
         })
     }
 
@@ -222,6 +236,33 @@ impl Store {
             }
         }
     }
+
+    /// Same as `prompt_select_bucket`, scoped to encryption keys only --
+    /// used by `job::email_sync::wizard::EncryptionKeyInput` when the
+    /// target bucket-config requires one.
+    pub fn prompt_select_encryption_key(&self) -> Result<&EncryptionKey, String> {
+        let keys: Vec<&EncryptionKey> = self.encryption_keys().collect();
+        match keys.as_slice() {
+            [] => Err(
+                "no encryption-keys configured; run 'pigeon keyring add encryption-key' first"
+                    .to_string(),
+            ),
+            [only] => Ok(only),
+            keys => {
+                let labels: Vec<String> = keys
+                    .iter()
+                    .map(|key| format!("{} (created {})", key.alias, key.created_at))
+                    .collect();
+                let selection = Select::with_theme(&ColorfulTheme::default())
+                    .with_prompt("Select an encryption key")
+                    .items(&labels)
+                    .default(0)
+                    .interact()
+                    .map_err(|err| format!("failed to read encryption-key selection: {err}"))?;
+                Ok(keys[selection])
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +286,14 @@ mod tests {
             endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
             bucket: "my-bucket".to_string(),
             access_key_id: "AKID".to_string(),
+            encryption_key_alias: None,
+        }
+    }
+
+    fn sample_encryption_key(alias: &str) -> EncryptionKey {
+        EncryptionKey {
+            alias: alias.to_string(),
+            created_at: "2026-09-24T00:00:00Z".to_string(),
         }
     }
 
@@ -256,14 +305,41 @@ mod tests {
         let mut store = Store::default();
         store.push(Entry::Email(sample_identity("willow")));
         store.push(Entry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::EncryptionKey(sample_encryption_key("primary")));
         store.save(&path).unwrap();
 
         let loaded = Store::load(&path).unwrap();
-        assert_eq!(loaded.iter().count(), 2);
+        assert_eq!(loaded.iter().count(), 3);
         assert!(loaded.contains_alias("willow"));
         assert!(loaded.contains_alias("backup"));
+        assert!(loaded.contains_alias("primary"));
         assert_eq!(loaded.email_identities().count(), 1);
         assert_eq!(loaded.bucket_configs().count(), 1);
+        assert_eq!(loaded.encryption_keys().count(), 1);
+    }
+
+    #[test]
+    fn bucket_config_encryption_key_alias_round_trips_through_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyring.toml");
+
+        let mut bucket = sample_bucket_config("backup");
+        bucket.encryption_key_alias = Some("primary".to_string());
+
+        let mut store = Store::default();
+        store.push(Entry::Bucket(bucket));
+        store.save(&path).unwrap();
+
+        let loaded = Store::load(&path).unwrap();
+        let loaded_bucket = loaded.bucket_configs().next().unwrap();
+        assert_eq!(
+            loaded_bucket.encryption_key_alias,
+            Some("primary".to_string())
+        );
+        assert_eq!(
+            loaded_bucket.detail(),
+            "https://nyc3.digitaloceanspaces.com (my-bucket), encrypts with 'primary'"
+        );
     }
 
     #[test]
@@ -304,6 +380,17 @@ mod tests {
 
         let aliases: Vec<&str> = store.bucket_configs().map(|b| b.alias.as_str()).collect();
         assert_eq!(aliases, vec!["backup"]);
+    }
+
+    #[test]
+    fn encryption_keys_ignores_other_kinds() {
+        let mut store = Store::default();
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::EncryptionKey(sample_encryption_key("primary")));
+
+        let aliases: Vec<&str> = store.encryption_keys().map(|k| k.alias.as_str()).collect();
+        assert_eq!(aliases, vec!["primary"]);
     }
 
     #[test]
@@ -375,5 +462,24 @@ mod tests {
         let mut store = Store::default();
         store.push(Entry::Email(sample_identity("willow")));
         assert!(store.prompt_select_bucket().is_err());
+    }
+
+    #[test]
+    fn prompt_select_encryption_key_ignores_other_kinds_when_auto_selecting() {
+        let mut store = Store::default();
+        store.push(Entry::Email(sample_identity("willow")));
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
+        store.push(Entry::EncryptionKey(sample_encryption_key("primary")));
+        assert_eq!(
+            store.prompt_select_encryption_key().unwrap().alias,
+            "primary"
+        );
+    }
+
+    #[test]
+    fn prompt_select_encryption_key_errors_when_none_configured() {
+        let mut store = Store::default();
+        store.push(Entry::Email(sample_identity("willow")));
+        assert!(store.prompt_select_encryption_key().is_err());
     }
 }

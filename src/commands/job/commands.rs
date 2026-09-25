@@ -1,5 +1,5 @@
 use crate::commands::job::cli::{JobCommands, JobType};
-use crate::commands::job::email_sync;
+use crate::commands::job::{decrypt_files, email_sync};
 
 pub fn dispatch(command: JobCommands) -> i32 {
     match command {
@@ -8,12 +8,27 @@ pub fn dispatch(command: JobCommands) -> i32 {
                 identities,
                 local_output,
                 remote_output,
+                encryption_key,
                 concurrency,
                 yes,
             } => email_sync::wizard::dispatch(
                 identities,
                 local_output,
                 remote_output,
+                encryption_key,
+                concurrency,
+                yes,
+            ),
+            JobType::DecryptFiles {
+                input_dir,
+                output_dir,
+                encryption_key,
+                concurrency,
+                yes,
+            } => decrypt_files::wizard::dispatch(
+                input_dir,
+                output_dir,
+                encryption_key,
                 concurrency,
                 yes,
             ),

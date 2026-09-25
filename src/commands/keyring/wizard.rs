@@ -6,8 +6,10 @@ use crate::commands::keyring::cli::AddKind;
 use crate::commands::keyring::email::identity::{self, Identity};
 use crate::commands::keyring::email::imap_client;
 use crate::commands::keyring::email::provider::Provider;
+use crate::commands::keyring::encryption_key::EncryptionKey;
 use crate::commands::keyring::store::{Entry, Store};
 use crate::commands::{FAILURE_EXIT_CODE, print_table};
+use crate::core::crypto::{Aes256GcmSivEncryptor, generate_hex_key};
 use crate::core::keyring::KeyringEntry as _;
 use crate::core::keyring::credentials;
 use crate::core::wizard::{confirm, read_secret};
@@ -48,9 +50,9 @@ fn check_bucket_exists(bucket_config: &BucketConfig, secret: &str) -> Result<boo
     runtime.block_on(client::bucket_exists(bucket_config, secret))
 }
 
-/// `pigeon keyring add [email|bucket]`: dispatches on the given subcommand,
-/// or -- for a bare `pigeon keyring add` -- prompts `Select` "Email or
-/// Bucket?" first and runs the same branch with every field unset.
+/// `pigeon keyring add [email|bucket|encryption-key]`: dispatches on the
+/// given subcommand, or -- for a bare `pigeon keyring add` -- prompts
+/// `Select` first and runs the same branch with every field unset.
 pub fn add(kind: Option<AddKind>) -> i32 {
     match kind {
         Some(AddKind::Email {
@@ -61,14 +63,16 @@ pub fn add(kind: Option<AddKind>) -> i32 {
             port,
         }) => add_email(Some(email), alias, provider, host, port),
         Some(AddKind::Bucket { alias }) => add_bucket(alias),
+        Some(AddKind::EncryptionKey { alias }) => add_encryption_key(alias),
         None => match Select::with_theme(&ColorfulTheme::default())
             .with_prompt("What would you like to add?")
-            .items(["Email identity", "Bucket-config"])
+            .items(["Email identity", "Bucket-config", "Encryption key"])
             .default(0)
             .interact()
         {
             Ok(0) => add_email(None, None, None, None, None),
-            Ok(_) => add_bucket(None),
+            Ok(1) => add_bucket(None),
+            Ok(_) => add_encryption_key(None),
             Err(err) => fail(format!("failed to read selection: {err}")),
         },
     }
@@ -206,11 +210,24 @@ fn add_bucket(alias: Option<String>) -> i32 {
         Err(err) => return fail(err),
     };
 
+    let encryption_key_alias = match confirm("Encrypt uploads to this bucket by default?", false) {
+        Ok(true) => match store.prompt_select_encryption_key() {
+            Ok(key) => Some(key.alias.clone()),
+            Err(message) => {
+                println!("{message}");
+                None
+            }
+        },
+        Ok(false) => None,
+        Err(err) => return fail(err),
+    };
+
     let candidate = BucketConfig {
         alias: alias.clone(),
         endpoint,
         bucket,
         access_key_id,
+        encryption_key_alias,
     };
 
     match check_bucket_exists(&candidate, &secret_key) {
@@ -230,6 +247,65 @@ fn add_bucket(alias: Option<String>) -> i32 {
     }
 
     println!("Added bucket-config '{alias}'.");
+    0
+}
+
+/// `pigeon keyring add encryption-key [ALIAS]` (ADR-0026): registers a new
+/// symmetric encryption key. Leaving the key prompt blank generates a fresh
+/// one via `core::crypto::generate_hex_key`; pasting a value in both
+/// imports an externally-managed key (e.g. one used under ADR-0025's old
+/// `PIGEON_ENCRYPTION_KEY` workflow) and validates it up front via
+/// `from_hex_key`. The generated/entered key is never printed -- the OS
+/// keychain is its only storage, exactly like every other secret this
+/// wizard collects.
+fn add_encryption_key(alias: Option<String>) -> i32 {
+    let path = match Store::default_path() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let mut store = match Store::load(&path) {
+        Ok(store) => store,
+        Err(err) => return fail(err),
+    };
+
+    let alias = match alias {
+        Some(alias) => alias,
+        None => match Input::<String>::new().with_prompt("Alias").interact_text() {
+            Ok(alias) => alias,
+            Err(err) => return fail(format!("failed to read alias: {err}")),
+        },
+    };
+    if store.contains_alias(&alias) {
+        return fail(format!("an entry named '{alias}' already exists"));
+    }
+
+    let key_hex = match read_secret("Key (press enter to use a freshly generated one)") {
+        Ok(value) if value.is_empty() => generate_hex_key(),
+        Ok(value) => match Aes256GcmSivEncryptor::from_hex_key(&value) {
+            Ok(_) => value,
+            Err(err) => return fail(err),
+        },
+        Err(err) => return fail(err),
+    };
+
+    let created_at = time::OffsetDateTime::now_utc()
+        .format(&time::format_description::well_known::Rfc3339)
+        .unwrap_or_else(|_| String::new());
+
+    if let Err(err) = credentials::set_secret(&alias, &key_hex) {
+        return fail(err);
+    }
+
+    store.push(Entry::EncryptionKey(EncryptionKey {
+        alias: alias.clone(),
+        created_at,
+    }));
+    if let Err(err) = store.save(&path) {
+        let _ = credentials::delete_secret(&alias);
+        return fail(err);
+    }
+
+    println!("Added encryption key '{alias}'.");
     0
 }
 
@@ -257,6 +333,7 @@ pub fn modify(alias: Option<String>) -> i32 {
     match entry {
         Entry::Email(identity) => modify_email(&mut store, &path, &identity),
         Entry::Bucket(bucket_config) => modify_bucket(&mut store, &path, &bucket_config),
+        Entry::EncryptionKey(key) => modify_encryption_key(&mut store, &path, &key),
     }
 }
 
@@ -390,11 +467,27 @@ fn modify_bucket(store: &mut Store, path: &std::path::Path, current: &BucketConf
         },
     };
 
+    let encryption_key_alias = match confirm(
+        "Encrypt uploads to this bucket by default?",
+        current.encryption_key_alias.is_some(),
+    ) {
+        Ok(true) => match store.prompt_select_encryption_key() {
+            Ok(key) => Some(key.alias.clone()),
+            Err(message) => {
+                println!("{message}");
+                None
+            }
+        },
+        Ok(false) => None,
+        Err(err) => return fail(err),
+    };
+
     let candidate = BucketConfig {
         alias: current.alias.clone(),
         endpoint,
         bucket,
         access_key_id,
+        encryption_key_alias,
     };
 
     match check_bucket_exists(&candidate, &secret_key) {
@@ -411,6 +504,40 @@ fn modify_bucket(store: &mut Store, path: &std::path::Path, current: &BucketConf
 
     store.remove(&current.alias);
     store.push(Entry::Bucket(candidate));
+    if let Err(err) = store.save(path) {
+        return fail(err);
+    }
+
+    println!("Updated '{}'.", current.alias);
+    0
+}
+
+/// `pigeon keyring modify` for an encryption-key entry (ADR-0026): only the
+/// secret itself can be rotated (`created_at` is immutable, per
+/// `EncryptionKey`'s own doc comment) -- same "press enter to keep current"
+/// shape `modify_bucket` uses for its own secret rotation.
+fn modify_encryption_key(
+    store: &mut Store,
+    path: &std::path::Path,
+    current: &EncryptionKey,
+) -> i32 {
+    let new_key = match read_secret("Key (press enter to keep current)") {
+        Ok(value) if value.is_empty() => None,
+        Ok(value) => match Aes256GcmSivEncryptor::from_hex_key(&value) {
+            Ok(_) => Some(value),
+            Err(err) => return fail(err),
+        },
+        Err(err) => return fail(err),
+    };
+
+    if let Some(key_hex) = &new_key
+        && let Err(err) = credentials::set_secret(&current.alias, key_hex)
+    {
+        return fail(err);
+    }
+
+    store.remove(&current.alias);
+    store.push(Entry::EncryptionKey(current.clone()));
     if let Err(err) = store.save(path) {
         return fail(err);
     }

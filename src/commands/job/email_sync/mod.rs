@@ -14,6 +14,7 @@ use futures::TryStreamExt;
 
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::email::identity::Identity;
+use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
 use manifest::{Batch, ManifestEntry};
 use worker::JobSummary;
@@ -191,10 +192,14 @@ pub(crate) fn batches_from_pending(pending: &[PendingMailbox], concurrency: usiz
 /// `remote` is resolved by the wizard before the final construction, once
 /// every other input (including the pre-run manifest summary from
 /// `gather()`) is known -- a job-specific concern, not something `Job`
-/// itself needs to know about.
+/// itself needs to know about. `encryptor` is resolved right after
+/// `remote`, from the target bucket-config's default key, an explicit
+/// `--encryption-key` override, or an interactive choice (ADR-0027) --
+/// `None` when uploading unencrypted or not uploading at all.
 pub(crate) struct EmailSyncJob {
     pub contexts: Vec<IdentityContext>,
     pub remote: Option<(BucketConfig, String)>,
+    pub encryptor: Option<Aes256GcmSivEncryptor>,
 }
 
 pub(crate) struct EmailSyncPlan {
@@ -221,11 +226,21 @@ impl Job for EmailSyncJob {
     }
 
     async fn run(self, plan: EmailSyncPlan, concurrency: usize) -> Result<JobSummary, String> {
-        let EmailSyncJob { contexts, remote } = self;
+        let EmailSyncJob {
+            contexts,
+            remote,
+            encryptor,
+        } = self;
         let remote_ref = remote
             .as_ref()
             .map(|(bucket_config, secret)| (bucket_config, secret.as_str()));
-        worker::run_email_sync_job(contexts, plan.pending_by_identity, concurrency, remote_ref)
-            .await
+        worker::run_email_sync_job(
+            contexts,
+            plan.pending_by_identity,
+            concurrency,
+            remote_ref,
+            encryptor.as_ref(),
+        )
+        .await
     }
 }
