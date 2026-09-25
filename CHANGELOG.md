@@ -9,6 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ADR-0029: Every substantive change now lands via branch → PR → local `mise run ci` gate → auto-merge, with a changelog entry per PR ([#1](https://github.com/noisypigeon/pigeon-cli/pull/1)).
 - ADR-0030: Root-causes silent, total attachment-upload loss to a wrong path reconstruction in `run_dedup_pass` (documents investigation and fix; fix not yet implemented) ([#2](https://github.com/noisypigeon/pigeon-cli/pull/2)).
 - ADR-0030: Implements the attachment-placement fix -- `email-sync` attachments are now correctly found, deduped, and uploaded instead of silently lost ([#3](https://github.com/noisypigeon/pigeon-cli/pull/3)).
+- ADR-0030: Amends the investigation -- real post-fix runs still lost attachments due to a second, deeper bug (attachment placement only runs for messages canonicalized in the same call), plus a separate malformed-source-message finding (documents both; fix not yet implemented) ([#4](https://github.com/noisypigeon/pigeon-cli/pull/4)).
 
 ## [0.2.0] - 2026-09-25
 

@@ -91,3 +91,77 @@ An integration-level test is added alongside the fix: real `EmailTransform::tran
 - Any change to the dedup/placement algorithm's actual logic beyond the path-reconstruction fix -- the two-pass structure, idempotency guard, and canonical-selection order are all correct as designed.
 
 Implementation is a separate, later task.
+
+## Amendment (2026-09-25): attachments still lost after the fix
+
+### Context
+
+The fix above (the `staged_attachment_path` helper) merged and was rebuilt. Two real `pigeon job run email-sync` runs against real mailboxes afterward still reported zero attachments:
+
+- `Synced 30711 message(s), 11 failed, 26505 message(s) merged, 0 attachment(s) deduped, 4157 uploaded, ...`
+- `Synced 49 message(s), 11 failed, 40 message(s) merged, 0 attachment(s) deduped, 9 uploaded, ...` (a resumed run against the same `--local-output`)
+
+The exact same 11 UIDs (by mailbox+UID) failed "verification failed" in both runs, unchanged. Rather than speculate further, this amendment's investigation inspected the real on-disk staging state directly: the `.eml` files a failed verification deliberately keeps (at the exact paths the warning prints, for debugging), and the `.job-checkpoint`/output-tree state for an identity with zero pending messages in both runs (meaning its checkpoint predates both, so it exercises the fix's "re-run against already-canonical messages" path).
+
+This surfaced two distinct, independently-confirmed bugs. The original fix above is correct as far as it goes, but does not fix the reported symptom -- a second, deeper bug does almost all of the damage.
+
+### Finding 1: the persistently-failing 11 messages -- a real, pre-existing, unrelated bug
+
+All 11 kept `.eml` files share the same shape (confirmed by grepping headers and boundary lines across all 11): `Content-Type: multipart/mixed; boundary=SKPSMTPMessage--Separator--Delimiter` -- the boundary signature of the SKPSMTPMessage iOS SMTP-sending library, here wrapping Revel Systems point-of-sale receipt emails. Each contains exactly one real `text/html` part, followed by a *second* opening boundary line (`--SKPSMTPMessage--Separator--Delimiter`) with no headers, no content, and no closing `--...--` terminator. The raw message is genuinely truncated/malformed at the source -- confirmed via `tail`, each file ends immediately after that second boundary line.
+
+`mail_parser`'s `message.attachments()` picks up this trailing, header-less, content-less part as a phantom "attachment" (no filename, empty body). `EmailTransform::transform` writes it to disk as a real, 0-byte file, exactly as it would any other attachment. `verify_transformed`'s all-or-nothing check --
+
+```rust
+outcome
+    .attachments
+    .iter()
+    .all(|attachment| fs::metadata(&attachment.staged_path).is_ok_and(|meta| meta.len() > 0))
+```
+
+-- correctly rejects the phantom 0-byte part, but that rejects the *entire* message, not just the phantom part. The message (real HTML body and all) never gets checkpointed, is counted as "failed," and -- since its `.eml` is kept, not deleted, on a failed verification -- is re-fetched and re-fails identically on every subsequent run. Deterministic, not flaky: same malformed source bytes every time.
+
+### Finding 2 (the dominant cause of the reported symptom): attachment placement only runs for messages canonicalized *in the same call*
+
+The identity with zero pending messages in both runs had, in its `.job-checkpoint`, several legitimately-verified messages with real attachments (photos, several hundred KB each -- no malformed-MIME issue at all). Their canonical `.md` files were correctly placed and merged in the output tree. But the output tree's `attachments/` directory didn't exist at all -- the real staged image files were still sitting, untouched, exactly where `transform.rs` originally wrote them.
+
+The cause is in `run_dedup_pass` (`dedup.rs`). Its message-placement pass (loop 1) records each canonical message's final path only in `placed_md_paths[index]`, a `Vec` local to that one call. Its idempotency guard --
+
+```rust
+if !staging_dir.join(&entry.md_staged_relpath).exists() {
+    continue;
+}
+```
+
+-- correctly recognizes "this message was already canonicalized by a prior run" and skips re-placing it, but leaves `placed_md_paths[index]` as `None` -- nothing re-derives that this entry *is* canonical from an earlier run. The attachment-placement pass (loop 2) then does:
+
+```rust
+for (index, entry) in entries.iter().enumerate() {
+    let Some(md_path) = &placed_md_paths[index] else {
+        continue;
+    };
+    ...
+```
+
+So any entry whose message was placed in an *earlier* run is silently skipped here too, even though its attachments may still be sitting, unplaced, in staging. This directly contradicts this ADR's original "self-healing" claim: re-running `job run email-sync` does **not** recover orphaned attachments for a message that was already canonical before the run started -- which, in ordinary incremental usage (the entire point of this pipeline's UID-based resumability, spanning many runs over time as new mail arrives), is the common case, not the edge case. Once a message is canonicalized, its attachments become permanently stuck unless that exact same call also happens to place the message.
+
+This also explains why the fix's own new integration test passed without exposing the gap: it transforms, checkpoints, and dedups all in one call, so `placed_md_paths` is always populated -- exactly the one case that isn't broken. The break only shows up across *separate* invocations (real-world incremental usage), which no existing test exercised.
+
+### Decision
+
+Finding 2's fix decouples "does this entry's message have a canonical final path" from "was that placement decided in this exact call." Loop 2 should resolve each entry's target `.md` path via `message_index.check(&entry.message_hash)` instead of trusting `placed_md_paths`. `message_index` is reliably populated for every hash by the time loop 2 runs, whether committed just now (loop 1, this call) or in a prior run (`ContentIndex::load` reads the full persisted index file at the top of every call). The existing per-attachment `staged_path.exists()` check already safely no-ops for a merged duplicate's attachments (deleted by `remove_staged_files` whenever the merge happened, this run or an earlier one), so switching the source of the target path doesn't risk double-processing a duplicate's attachments. `placed_md_paths` becomes unnecessary once loop 2 no longer depends on it.
+
+Finding 1 is a separate, real, confirmed bug with its own fix direction: `verify_transformed` (or `transform()` itself) should not let a single phantom (nameless, zero-byte) attachment part reject an otherwise-valid message wholesale -- e.g. skip zero-byte, nameless attachment parts during `transform()` rather than staging them at all, since a truncated trailing MIME part with no headers and no content is not a real attachment to begin with.
+
+### Consequences
+
+- The original fix's "self-healing" claim was wrong for the common case: any message canonicalized before this fix existed (or before any given future fix lands) needs more than a re-run to recover its attachments, under today's code -- it needs the Finding 2 fix specifically.
+- Both findings are confirmed with direct evidence from real on-disk state, not inference from summary counters alone -- the kept `.eml` files and the multi-run checkpoint/output-tree state were essential to distinguishing them from each other.
+- Finding 1's malformed messages are likely to recur for any mail sent through the same buggy client; today's behavior (permanent per-run failure, `.eml` preserved for inspection) is at least safe, if noisy.
+
+### Out of scope (this amendment)
+
+- Implementing either fix -- both are a separate, later task, pending direction on whether to land them together or separately.
+- Any other change to the dedup/placement algorithm beyond what Finding 2 requires.
+- Structured/aggregated failure-reason reporting (still a distinct, existing gap, unchanged since the original ADR).
+
+Implementation is a separate, later task.
