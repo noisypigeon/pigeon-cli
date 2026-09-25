@@ -1,5 +1,13 @@
+resource "random_string" "suffix" {
+  length  = 6
+  lower   = true
+  upper   = false
+  numeric = true
+  special = false
+}
+
 resource "scaleway_object_bucket" "bucket" {
-  name = var.name
+  name = "${var.namespace}-${random_string.suffix.result}-${var.name}"
 
   versioning {
     enabled = var.enable_versioning

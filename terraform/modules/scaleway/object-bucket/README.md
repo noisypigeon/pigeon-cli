@@ -1,6 +1,6 @@
 # object-bucket
 
-A Scaleway Object Storage bucket (`scaleway_object_bucket`), with versioning and a standard/glacier storage-class toggle implemented via an immediate lifecycle transition.
+A Scaleway Object Storage bucket (`scaleway_object_bucket`) with a randomized name suffix, versioning, and a standard/glacier storage-class toggle implemented via an immediate lifecycle transition.
 
 <!-- BEGIN_TF_DOCS -->
 ## Inputs

@@ -4,7 +4,7 @@ output "id" {
 }
 
 output "name" {
-  description = "Bucket name"
+  description = "Computed bucket name"
   value       = scaleway_object_bucket.bucket.name
 }
 

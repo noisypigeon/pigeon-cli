@@ -1,6 +1,16 @@
+#
+# Buckets follow a consistent naming scheme.
+# Format: {namespace}-{random_code}-{name}
+# I.e. example-com-q82q17-sample
+#
+variable "namespace" {
+  type        = string
+  description = "Bucket name prefix"
+}
+
 variable "name" {
   type        = string
-  description = "Bucket name"
+  description = "Bucket name suffix"
 }
 
 variable "enable_versioning" {
