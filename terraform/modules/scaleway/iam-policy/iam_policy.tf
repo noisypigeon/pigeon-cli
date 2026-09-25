@@ -9,8 +9,13 @@ resource "scaleway_iam_policy" "policy" {
   application_id = scaleway_iam_application.application.id
 
   rule {
+    organization_id       = var.organization_id
+    permission_set_names  = var.org_permission_sets
+  }
+
+  rule {
     project_ids           = var.project_ids
-    permission_set_names  = var.permission_set_names
+    permission_set_names  = var.project_permission_sets
   }
 }
 

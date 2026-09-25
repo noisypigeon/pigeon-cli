@@ -9,13 +9,26 @@ variable "description" {
   default     = null
 }
 
+variable "organization_id" {
+  type        = string
+  description = "Organization id"
+  default     = null
+}
+
+variable "org_permission_sets" {
+  type        = list(string)
+  description = "Organization permission set grants"
+  default     = null
+}
+
 variable "project_ids" {
   type        = list(string)
   description = "Project ids"
   default     = null
 }
 
-variable "permission_set_names" {
+variable "project_permission_sets" {
   type        = list(string)
-  description = "Grant access to permission set names"
+  description = "Project permission set grants"
+  default     = null
 }
