@@ -79,7 +79,7 @@ A review found no secrets or personal data in tracked files (test fixtures use `
 
 ## Out of scope
 
-- GitHub Actions or any other CI/CD automation for publishing — explicitly not introduced, matching this project's existing all-`mise`, no-CI pattern.
-- Automated version-bumping tooling (`cargo-release` or similar).
-- A full dependency license audit — flagged as a pre-publish verification step, not performed by this ADR.
+- GitHub Actions or any other CI/CD automation for publishing — explicitly not introduced, matching this project's existing all-`mise`, no-CI pattern. ([#34](https://github.com/noisypigeon/pigeon-cli/issues/34))
+- Automated version-bumping tooling (`cargo-release` or similar). ([#35](https://github.com/noisypigeon/pigeon-cli/issues/35))
+- A full dependency license audit — flagged as a pre-publish verification step, not performed by this ADR. ([#36](https://github.com/noisypigeon/pigeon-cli/issues/36))
 - Implementation itself — like every ADR before it, this is a decision record only.

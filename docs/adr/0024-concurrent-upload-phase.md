@@ -101,7 +101,7 @@ Each upload attempt (`client::upload_if_changed`) is wrapped in the same `retry_
 ## Out of scope
 
 - Any change to dedup's sequential, single-pass design.
-- A new CLI flag or separate concurrency knob for uploads specifically.
+- A new CLI flag or separate concurrency knob for uploads specifically. ([#30](https://github.com/noisypigeon/pigeon-cli/issues/30))
 - Any on-disk format change to `.uploaded`, `keyring.toml`, or any other existing dotfile.
 
 Implementation is a separate, later task.

@@ -51,8 +51,8 @@ This is why the changelog update happens *after* PR creation, not before — the
 
 ## Out of scope
 
-- Real GitHub Actions CI and GitHub's native auto-merge (viable later upgrade if a second contributor or a desire for a visible status check ever arrives).
-- Automating the release-cutting step itself.
+- Real GitHub Actions CI and GitHub's native auto-merge (viable later upgrade if a second contributor or a desire for a visible status check ever arrives). ([#34](https://github.com/noisypigeon/pigeon-cli/issues/34))
+- Automating the release-cutting step itself. ([#35](https://github.com/noisypigeon/pigeon-cli/issues/35))
 - Any form of code review from a second person — there isn't one.
 
 Implementation is part of this same task (small enough not to defer, and this ADR's own landing is the first real exercise of the pipeline it defines).

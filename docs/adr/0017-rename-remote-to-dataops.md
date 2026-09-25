@@ -67,7 +67,7 @@ No retroactive edits to ADR-0009, ADR-0010, or ADR-0016 — they remain accurate
 
 ## Out of scope
 
-- Re-exposing `list`/`ls`/`lsd`/`copy`/`list-buckets` as CLI commands anywhere else — not decided here.
-- Any migration/import path for an existing `remotes.toml` or its keychain entries — explicitly not provided.
+- Re-exposing `list`/`ls`/`lsd`/`copy`/`list-buckets` as CLI commands anywhere else — not decided here. ([#24](https://github.com/noisypigeon/pigeon-cli/issues/24))
+- Any migration/import path for an existing `remotes.toml` or its keychain entries — explicitly not provided. ([#23](https://github.com/noisypigeon/pigeon-cli/issues/23))
 - Any change to the actual S3/MinIO client logic (`client.rs`'s API calls themselves) — this is a naming/surface reorganization only.
 - Implementation itself — like every ADR before it, this is a decision record only.

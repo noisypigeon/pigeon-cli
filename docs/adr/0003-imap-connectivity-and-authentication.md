@@ -78,4 +78,4 @@ This implies a **future CLI amendment** beyond ADR-0002's current `authenticate`
 ## Out of scope
 
 - `sink`/`transform` implementation.
-- the OAuth2 implementation itself (deferred).
+- the OAuth2 implementation itself (deferred). ([#6](https://github.com/noisypigeon/pigeon-cli/issues/6))

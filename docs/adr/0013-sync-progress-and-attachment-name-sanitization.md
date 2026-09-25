@@ -52,5 +52,5 @@ This fixes the input rather than adding a new lenient-skip branch to `transform_
 
 - Adopting `indicatif::MultiProgress` for concurrent or interleaved mailbox processing — `sync` stays sequential per ADR-0007.
 - Any change to `unique_path`'s existing same-name-different-content collision suffixing.
-- Sanitizing other untrusted MIME-derived strings not implicated in this bug (sender display name, subject) — those already flow through the existing `sanitize_segment`/`yaml_quote` paths and aren't affected by this class of failure.
+- Sanitizing other untrusted MIME-derived strings not implicated in this bug (sender display name, subject) — those already flow through the existing `sanitize_segment`/`yaml_quote` paths and aren't affected by this class of failure. ([#19](https://github.com/noisypigeon/pigeon-cli/issues/19))
 - Implementation itself — like every ADR before it, this is a decision record only.

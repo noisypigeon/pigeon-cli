@@ -112,8 +112,8 @@ This also means §2's description of `transform_one` as "reused unchanged" needs
 ## Out of scope
 
 - Concurrent dedup or concurrent upload phases — both stay sequential, matching the user's own literal phrasing and ADR-0019's existing scoping decision.
-- A generic job-type plugin/registry CLI (e.g. `pigeon job list-types`) — only `email-sync` is implemented; the module boundary allows more, but no second job type is built now.
-- Historical-throughput-based estimate refinement — the estimate stays a static heuristic in this ADR.
+- A generic job-type plugin/registry CLI (e.g. `pigeon job list-types`) — only `email-sync` is implemented; the module boundary allows more, but no second job type is built now. ([#28](https://github.com/noisypigeon/pigeon-cli/issues/28))
+- Historical-throughput-based estimate refinement — the estimate stays a static heuristic in this ADR. ([#29](https://github.com/noisypigeon/pigeon-cli/issues/29))
 - Any change to `dataops`'s own `bucket-config` commands.
 
 Implementation is a separate, later task.
