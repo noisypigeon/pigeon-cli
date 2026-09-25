@@ -13,6 +13,7 @@ This repo holds only module source — it has no root provider/backend configura
 | `digitalocean/cold-storage-bucket` | A data-source wrapper for a DigitalOcean Spaces Cold Storage bucket (not yet supported as a Terraform resource by the DO provider — the bucket is created click-ops and managed as a data source), optionally attached to a project. |
 | `digitalocean/project` | A thin wrapper around `digitalocean_project`. |
 | `digitalocean/droplet` | A DigitalOcean droplet (`digitalocean_droplet`) with cloud-init provisioning (rclone, an LVM auto-combine script for attached volumes, a sudo user) and a Cloudflare DNS alias. |
+| `digitalocean/block-storage-volume` | One or more DigitalOcean Block Storage volumes (`digitalocean_volume`), attached to a droplet (`digitalocean_volume_attachment`). |
 
 ## Versioning
 

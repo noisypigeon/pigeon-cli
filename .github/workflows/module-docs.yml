@@ -25,7 +25,7 @@ jobs:
       - name: Generate module docs
         uses: terraform-docs/gh-actions@v1.4.1
         with:
-          working-dir: digitalocean/access-key,digitalocean/standard-storage-bucket,digitalocean/cold-storage-bucket,digitalocean/project,digitalocean/droplet
+          working-dir: digitalocean/access-key,digitalocean/standard-storage-bucket,digitalocean/cold-storage-bucket,digitalocean/project,digitalocean/droplet,digitalocean/block-storage-volume
           output-file: README.md
           output-method: inject
           output-format: markdown table
