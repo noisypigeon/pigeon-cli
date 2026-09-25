@@ -3,6 +3,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use async_imap::imap_proto::types::BodyStructure;
 use futures::TryStreamExt;
 
 use crate::commands::keyring::email::imap_client::ImapSession;
@@ -18,17 +19,40 @@ const CHECKPOINT_FILE_NAME: &str = ".job-checkpoint";
 /// conversion (`email::sink::sanitize_mailbox_path`) happens only where a
 /// path is actually needed, so manifest/checkpoint entries can be matched
 /// against each other without a lossy round-trip through sanitization.
+/// `attachments` is a `BODYSTRUCTURE`-derived estimate (ADR-0032), not the
+/// authoritative count `transform_one`'s `mail_parser` pass produces later.
 pub(crate) struct ManifestEntry {
     pub mailbox: String,
     pub uid: u32,
     pub size: u64,
+    pub attachments: u32,
 }
 
-/// Pulls size metadata for every UID in `pending` from `mailbox_name`
-/// (already `EXAMINE`d on `session`), via `UID FETCH ... (UID RFC822.SIZE)`
-/// -- the same `uid_fetch` mechanism `email::sink::fetch_uids` uses, with a
-/// different data-item list that never transfers message content (per
-/// ADR-0021 §3).
+/// Counts attachment leaf parts in a `BODYSTRUCTURE` tree (ADR-0032): a
+/// non-multipart part counts if its `Content-Disposition` is `attachment`
+/// (case-insensitive); a `Multipart` recurses into its children and sums.
+/// An estimate only -- a different code path from `transform_one`'s real
+/// `mail_parser`-based count, not guaranteed to agree with it.
+fn count_attachments(structure: &BodyStructure) -> u32 {
+    match structure {
+        BodyStructure::Multipart { bodies, .. } => bodies.iter().map(count_attachments).sum(),
+        BodyStructure::Basic { common, .. }
+        | BodyStructure::Text { common, .. }
+        | BodyStructure::Message { common, .. } => u32::from(
+            common
+                .disposition
+                .as_ref()
+                .is_some_and(|d| d.ty.eq_ignore_ascii_case("attachment")),
+        ),
+    }
+}
+
+/// Pulls size and attachment-count metadata for every UID in `pending` from
+/// `mailbox_name` (already `EXAMINE`d on `session`), via
+/// `UID FETCH ... (UID RFC822.SIZE BODYSTRUCTURE)` -- the same `uid_fetch`
+/// mechanism `email::sink::fetch_uids` uses, with a different data-item
+/// list that never transfers message content (per ADR-0021 §3;
+/// `BODYSTRUCTURE` is MIME structure metadata, not `BODY.PEEK[]`).
 pub(crate) async fn pull_manifest(
     session: &mut ImapSession,
     mailbox_name: &str,
@@ -45,7 +69,7 @@ pub(crate) async fn pull_manifest(
         .join(",");
 
     let mut fetches = session
-        .uid_fetch(&uid_set, "(UID RFC822.SIZE)")
+        .uid_fetch(&uid_set, "(UID RFC822.SIZE BODYSTRUCTURE)")
         .await
         .map_err(|err| format!("failed to fetch message sizes in '{mailbox_name}': {err}"))?;
 
@@ -58,10 +82,12 @@ pub(crate) async fn pull_manifest(
         let (Some(uid), Some(size)) = (fetch.uid, fetch.size) else {
             continue;
         };
+        let attachments = fetch.bodystructure().map_or(0, count_attachments);
         entries.push(ManifestEntry {
             mailbox: mailbox_name.to_string(),
             uid,
             size: u64::from(size),
+            attachments,
         });
     }
 
@@ -77,8 +103,8 @@ pub(crate) fn save_manifest(staging_dir: &Path, entries: &[ManifestEntry]) -> Re
     let mut contents = String::new();
     for entry in entries {
         contents.push_str(&format!(
-            "{}\t{}\t{}\n",
-            entry.mailbox, entry.uid, entry.size
+            "{}\t{}\t{}\t{}\n",
+            entry.mailbox, entry.uid, entry.size, entry.attachments
         ));
     }
     fs::write(&path, contents).map_err(|err| format!("failed to write {}: {err}", path.display()))
@@ -87,7 +113,9 @@ pub(crate) fn save_manifest(staging_dir: &Path, entries: &[ManifestEntry]) -> Re
 /// Loads a previously persisted manifest. A missing file (never pulled, or
 /// cleared by a `.uidvalidity` staleness reset) is an empty manifest.
 /// Malformed lines are skipped leniently, matching every other loader in
-/// this codebase.
+/// this codebase -- including a pre-ADR-0032 3-column line, which now fails
+/// the 4th field and is dropped, self-healing on the next `gather_pending`
+/// call (ADR-0032).
 pub(crate) fn load_manifest(staging_dir: &Path) -> Result<Vec<ManifestEntry>, String> {
     let path = staging_dir.join(MANIFEST_FILE_NAME);
     let contents = match fs::read_to_string(&path) {
@@ -102,7 +130,13 @@ pub(crate) fn load_manifest(staging_dir: &Path) -> Result<Vec<ManifestEntry>, St
             let mailbox = parts.next()?.to_string();
             let uid = parts.next()?.parse().ok()?;
             let size = parts.next()?.parse().ok()?;
-            Some(ManifestEntry { mailbox, uid, size })
+            let attachments = parts.next()?.parse().ok()?;
+            Some(ManifestEntry {
+                mailbox,
+                uid,
+                size,
+                attachments,
+            })
         })
         .collect())
 }
@@ -281,6 +315,10 @@ pub(crate) fn split_into_batches(uids: &[u32], concurrency: usize) -> Vec<Vec<u3
 
 #[cfg(test)]
 mod tests {
+    use async_imap::imap_proto::types::{
+        BodyContentCommon, BodyContentSinglePart, ContentDisposition, ContentEncoding, ContentType,
+    };
+
     use super::*;
 
     #[test]
@@ -297,11 +335,13 @@ mod tests {
                 mailbox: "INBOX".to_string(),
                 uid: 5,
                 size: 1024,
+                attachments: 2,
             },
             ManifestEntry {
                 mailbox: "Sent Items".to_string(),
                 uid: 9,
                 size: 2048,
+                attachments: 0,
             },
         ];
 
@@ -312,9 +352,11 @@ mod tests {
         assert_eq!(loaded[0].mailbox, "INBOX");
         assert_eq!(loaded[0].uid, 5);
         assert_eq!(loaded[0].size, 1024);
+        assert_eq!(loaded[0].attachments, 2);
         assert_eq!(loaded[1].mailbox, "Sent Items");
         assert_eq!(loaded[1].uid, 9);
         assert_eq!(loaded[1].size, 2048);
+        assert_eq!(loaded[1].attachments, 0);
     }
 
     #[test]
@@ -326,6 +368,7 @@ mod tests {
                 mailbox: "INBOX".to_string(),
                 uid: 1,
                 size: 10,
+                attachments: 0,
             }],
         )
         .unwrap();
@@ -335,6 +378,7 @@ mod tests {
                 mailbox: "INBOX".to_string(),
                 uid: 2,
                 size: 20,
+                attachments: 1,
             }],
         )
         .unwrap();
@@ -342,6 +386,7 @@ mod tests {
         let loaded = load_manifest(dir.path()).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].uid, 2);
+        assert_eq!(loaded[0].attachments, 1);
     }
 
     #[test]
@@ -349,7 +394,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join(MANIFEST_FILE_NAME),
-            "INBOX\t5\t1024\nnot-enough-fields\nINBOX\t6\t2048\n",
+            "INBOX\t5\t1024\t2\nnot-enough-fields\nINBOX\t6\t2048\t0\n",
         )
         .unwrap();
 
@@ -357,6 +402,109 @@ mod tests {
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0].uid, 5);
         assert_eq!(loaded[1].uid, 6);
+    }
+
+    #[test]
+    fn load_manifest_drops_pre_adr_0032_three_column_lines() {
+        // Self-healing behavior (ADR-0032): a manifest written before the
+        // attachments column existed has only 3 fields per line, which now
+        // fails the 4th `.next()?` and is dropped rather than misparsed.
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(MANIFEST_FILE_NAME), "INBOX\t5\t1024\n").unwrap();
+
+        assert!(load_manifest(dir.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn count_attachments_bare_part_with_no_disposition_is_zero() {
+        let structure = BodyStructure::Text {
+            common: BodyContentCommon {
+                ty: ContentType {
+                    ty: "text".into(),
+                    subtype: "plain".into(),
+                    params: None,
+                },
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            other: BodyContentSinglePart {
+                id: None,
+                md5: None,
+                description: None,
+                transfer_encoding: ContentEncoding::SevenBit,
+                octets: 100,
+            },
+            lines: 5,
+            extension: None,
+        };
+
+        assert_eq!(count_attachments(&structure), 0);
+    }
+
+    #[test]
+    fn count_attachments_multipart_sums_attachment_dispositions_recursively() {
+        fn basic_part(disposition: Option<&'static str>) -> BodyStructure<'static> {
+            BodyStructure::Basic {
+                common: BodyContentCommon {
+                    ty: ContentType {
+                        ty: "application".into(),
+                        subtype: "octet-stream".into(),
+                        params: None,
+                    },
+                    disposition: disposition.map(|ty| ContentDisposition {
+                        ty: ty.into(),
+                        params: None,
+                    }),
+                    language: None,
+                    location: None,
+                },
+                other: BodyContentSinglePart {
+                    id: None,
+                    md5: None,
+                    description: None,
+                    transfer_encoding: ContentEncoding::SevenBit,
+                    octets: 100,
+                },
+                extension: None,
+            }
+        }
+
+        let nested = BodyStructure::Multipart {
+            common: BodyContentCommon {
+                ty: ContentType {
+                    ty: "multipart".into(),
+                    subtype: "mixed".into(),
+                    params: None,
+                },
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            bodies: vec![
+                basic_part(None),
+                basic_part(Some("Attachment")),
+                basic_part(Some("attachment")),
+            ],
+            extension: None,
+        };
+
+        let top = BodyStructure::Multipart {
+            common: BodyContentCommon {
+                ty: ContentType {
+                    ty: "multipart".into(),
+                    subtype: "mixed".into(),
+                    params: None,
+                },
+                disposition: None,
+                language: None,
+                location: None,
+            },
+            bodies: vec![basic_part(Some("inline")), nested],
+            extension: None,
+        };
+
+        assert_eq!(count_attachments(&top), 2);
     }
 
     #[test]

@@ -233,7 +233,8 @@ impl WizardInput for EncryptionKeyInput<'_> {
     }
 }
 
-/// Prints a per-identity manifest summary table (ADR-0021 §5).
+/// Prints a per-identity manifest summary table (ADR-0021 §5). `ATTACHMENTS`
+/// is a `BODYSTRUCTURE`-derived estimate, not authoritative (ADR-0032).
 pub(crate) fn print_manifest_summary(summaries: &[IdentityManifestSummary]) {
     let rows: Vec<Vec<String>> = summaries
         .iter()
@@ -242,11 +243,15 @@ pub(crate) fn print_manifest_summary(summaries: &[IdentityManifestSummary]) {
                 summary.alias.clone(),
                 summary.mailboxes.to_string(),
                 summary.pending_messages.to_string(),
+                summary.pending_attachments.to_string(),
                 format_bytes(summary.pending_bytes),
             ]
         })
         .collect();
-    crate::commands::print_table(&["IDENTITY", "MAILBOXES", "PENDING", "SIZE"], &rows);
+    crate::commands::print_table(
+        &["IDENTITY", "MAILBOXES", "PENDING", "ATTACHMENTS", "SIZE"],
+        &rows,
+    );
 }
 
 fn format_bytes(bytes: u64) -> String {
