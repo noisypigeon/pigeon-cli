@@ -8,6 +8,7 @@ A Scaleway `scaleway_iam_application` and `scaleway_iam_policy` wrapper to produ
 | Name | Description | Type | Default | Required |
 |------|-------------|------|---------|:--------:|
 | <a name="input_description"></a> [description](#input\_description) | IAM application/policy description | `string` | `null` | no |
+| <a name="input_expires_at"></a> [expires\_at](#input\_expires\_at) | API key expiration timestamp (i.e. 2027-09-25T22:32:12Z) | `string` | `null` | no |
 | <a name="input_name"></a> [name](#input\_name) | IAM application/policy name | `string` | n/a | yes |
 | <a name="input_org_permission_sets"></a> [org\_permission\_sets](#input\_org\_permission\_sets) | Organization permission set grants | `list(string)` | `null` | no |
 | <a name="input_organization_id"></a> [organization\_id](#input\_organization\_id) | Organization id | `string` | `null` | no |
