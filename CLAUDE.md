@@ -35,6 +35,7 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0027-encryption-is-a-per-run-choice.md` — an encryption key can default to a bucket-config (chosen by alias) but is always overridable per run via `--encryption-key` or interactively; non-interactive runs fall back to the bucket's default instead of always skipping encryption.
 - `docs/adr/0028-decrypt-files-job.md` — `pigeon job run decrypt-files` decrypts `*.enc` files from a local input directory into an output directory using a configured encryption key.
 - `docs/adr/0029-dev-cycle-pipeline.md` — every substantive change lands via branch → PR → local `mise run ci` gate → auto-merge → a `CHANGELOG.md [Unreleased]` entry; see "Dev cycle" below.
+- `docs/adr/0030-fix-attachment-loss-in-dedup.md` — root-causes silent, total attachment loss in `run_dedup_pass`: a staged attachment's `staged_relpath` is final-location-relative, not staging-root-relative like `md_staged_relpath`, so `staging_dir.join(staged_relpath)` never finds the real file and the idempotency guard silently skips it. Fix: reconstruct the real staged path from `md_staged_relpath`'s parent + `uid`, no checkpoint format change, self-healing on re-run.
 
 ## Dev cycle: how work lands (ADR-0029)
 
