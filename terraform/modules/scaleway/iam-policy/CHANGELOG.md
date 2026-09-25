@@ -4,6 +4,14 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-09-25
+
+### Add expires_at input to scaleway/iam-policy
+
+Adds an optional `expires_at` input, wired into the `scaleway_iam_api_key` resource's own `expires_at` argument, letting a consumer set an expiration timestamp (e.g. `2027-09-25T22:32:12Z`) on the minted API key. Defaults to `null` (no expiration), so existing consumers are unaffected.
+
+[#17](https://github.com/noisypigeon/pigeon-tf/pull/17)
+
 ## [1.0.0] - 2026-09-25
 
 ### Split scaleway/iam-policy permission grants by scope
