@@ -38,3 +38,6 @@ run = "cargo publish --dry-run"
 
 [tasks.publish]
 run = "cargo publish"
+
+[tasks.adr-issue]
+run = "scripts/adr-issue.sh \"$@\""

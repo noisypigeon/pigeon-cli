@@ -36,6 +36,7 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0028-decrypt-files-job.md` — `pigeon job run decrypt-files` decrypts `*.enc` files from a local input directory into an output directory using a configured encryption key.
 - `docs/adr/0029-dev-cycle-pipeline.md` — every substantive change lands via branch → PR → local `mise run ci` gate → auto-merge → a `CHANGELOG.md [Unreleased]` entry; see "Dev cycle" below.
 - `docs/adr/0030-fix-attachment-loss-in-dedup.md` — root-causes silent, total attachment loss in `run_dedup_pass`: a staged attachment's `staged_relpath` is final-location-relative, not staging-root-relative like `md_staged_relpath`, so `staging_dir.join(staged_relpath)` never finds the real file and the idempotency guard silently skips it. Fix: reconstruct the real staged path from `md_staged_relpath`'s parent + `uid`, no checkpoint format change, self-healing on re-run.
+- `docs/adr/0031-out-of-scope-issue-tracking.md` — genuinely-deferred `## Out of scope` bullets get filed as GitHub issues, labeled `out-of-scope` plus an `area:*` category, and linked back into the ADR line via `mise run adr-issue`; recurring gaps reuse one issue across ADRs.
 
 ## Dev cycle: how work lands (ADR-0029)
 
@@ -50,6 +51,8 @@ Single-contributor repo, but every substantive change goes through a real PR. Wh
 
 Releases stay manual: cutting one means hand-retitling `[Unreleased]` to `[x.y.z] - date` and starting a fresh empty `[Unreleased]` section — not part of this pipeline.
 
+When an ADR's `## Out of scope` section has a genuinely-deferred item (not a permanent design boundary), file it via `mise run adr-issue` while landing that ADR — reuse an existing `out-of-scope`-labeled issue with `--issue N` if the same gap was already raised elsewhere. See ADR-0031.
+
 ## Commands
 
 - `mise run build` — build the `pigeon` binary.
@@ -58,3 +61,4 @@ Releases stay manual: cutting one means hand-retitling `[Unreleased]` to `[x.y.z
 - `mise run fmt` / `mise run fmt-check` — format / check formatting.
 - `mise run lint` — clippy, warnings denied.
 - `mise run ci` — fmt-check + lint + test, the full local gate.
+- `mise run adr-issue -- <args>` — file (or reuse) a GitHub issue for an ADR's Out of scope bullet and link it back into the ADR; see ADR-0031.
