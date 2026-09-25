@@ -11,6 +11,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ADR-0030: Implements the attachment-placement fix -- `email-sync` attachments are now correctly found, deduped, and uploaded instead of silently lost ([#3](https://github.com/noisypigeon/pigeon-cli/pull/3)).
 - ADR-0030: Amends the investigation -- real post-fix runs still lost attachments due to a second, deeper bug (attachment placement only runs for messages canonicalized in the same call), plus a separate malformed-source-message finding (documents both; fix not yet implemented) ([#4](https://github.com/noisypigeon/pigeon-cli/pull/4)).
 - ADR-0030: Implements both amendment fixes -- attachment placement now resolves each message's canonical path across runs (a re-run genuinely recovers previously-orphaned attachments), and a malformed source message's phantom zero-byte attachment part no longer rejects the whole message ([#5](https://github.com/noisypigeon/pigeon-cli/pull/5)).
+- ADR-0031: Adds `mise run adr-issue` and category labels to file/link GitHub issues for genuinely-deferred ADR Out of scope items, and backfills 33 issues across ADR-0003–0030's still-open items ([#39](https://github.com/noisypigeon/pigeon-cli/pull/39)).
 
 ## [0.2.0] - 2026-09-25
 
