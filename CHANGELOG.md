@@ -16,3 +16,4 @@ backfill of prior history.
 ## 2026-09-25
 
 - [repo] ADR-0051: rename GitHub repo references `pigeon-cli` → `pigeon`, correct `Cargo.toml`'s `repository` field, and bump to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).
+- [repo] ADR-0052: decide how to merge the separate `pigeon-do` repo's full history into this repo as `terraform/infrastructure/*`, a new sibling to `terraform/modules/` (documents the decision; the user performs the actual merge manually) ([#62](https://github.com/noisypigeon/pigeon/pull/62)).
