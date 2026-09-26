@@ -40,4 +40,4 @@ run = "cargo publish --dry-run"
 run = "cargo publish"
 
 [tasks.adr-issue]
-run = "scripts/adr-issue.sh \"$@\""
+run = ".github/scripts/adr-issue.sh \"$@\""
