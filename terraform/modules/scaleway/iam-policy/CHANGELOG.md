@@ -4,6 +4,20 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.0] - 2026-09-26
+
+### Make scaleway/iam-policy scoping mechanisms independently optional
+
+**Breaking**: changes `bucket_names` from `list(string)` to `map(string)` (caller supplies a static logical key per bucket, e.g. `{ email = module.data_email.name }`). This fixes a real `plan`-time crash: `bucket_names` fed straight into a `for_each = toset(var.bucket_names)` failed whenever a bucket name contained an apply-time-only value (e.g. a `random_string` suffix from `scaleway/object-bucket`), because `for_each` over a set requires every element to be known at plan time. With a map, only the caller-chosen key needs to be known up front — the bucket name value itself can remain unknown until apply.
+
+Makes the underlying `scaleway_iam_policy` resource and its `rule` blocks conditional: a `rule` (and the policy resource itself) is only created when its corresponding scope is *fully* populated (both the id/list field and a non-empty permission-set list). Previously both rule blocks were created unconditionally, which meant a consumer wanting only bucket-scoped access — leaving `organization_id`/`project_ids` unset — would fail at apply time, since Scaleway requires each `rule` to set one or the other. A `moved` block preserves already-applied state for existing consumers that fully populate both org and project scopes.
+
+Adds a cross-variable `validation` requiring at least one of `organization_id`+`organization_permission_sets`, `project_ids`+`project_permission_sets`, or `bucket_names`+`bucket_actions` be fully set — so a config granting nothing now fails fast with a clear message. This depends on Terraform/OpenTofu 1.9+ variable-validation cross-references, so `versions.tf` now pins `required_version = ">= 1.9.0"`.
+
+See ADR-0012 for the full reasoning, including why an org/project rule with a set id but an empty permission-set list no longer produces a rule at all (superseding an untested assumption from ADR-0010).
+
+[#19](https://github.com/noisypigeon/pigeon-tf/pull/19)
+
 ## [2.0.0] - 2026-09-26
 
 ### Add bucket resource-scoping to scaleway/iam-policy
