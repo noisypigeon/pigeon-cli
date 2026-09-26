@@ -83,3 +83,21 @@ A review found no secrets or personal data in tracked files (test fixtures use `
 - Automated version-bumping tooling (`cargo-release` or similar). ([#35](https://github.com/noisypigeon/pigeon-cli/issues/35))
 - A full dependency license audit — flagged as a pre-publish verification step, not performed by this ADR. ([#36](https://github.com/noisypigeon/pigeon-cli/issues/36))
 - Implementation itself — like every ADR before it, this is a decision record only.
+
+## Amendment (2026-09-26): manifest relocation (ADR-0050)
+
+ADR-0050 moves `Cargo.toml` (and `LICENSE`, renamed to `LICENSE.md`) out of
+the repo root into `service/pigeon-cli/`. Two things stated above shift as
+a direct result, both superseded rather than contradicted:
+
+- `readme = "README.md"` is unchanged as a literal string, but now resolves
+  to the new `service/pigeon-cli/README.md` (crates.io-facing) instead of
+  the repo-root one (now a whole-repo orientation doc, not packaged).
+- "No `exclude`/`include` list needed" was correct in a single-crate repo;
+  it stays correct after ADR-0050 for a different reason — packaging now
+  naturally scopes to `service/pigeon-cli/` because that's where the
+  manifest lives, not because the whole (now much larger, monorepo-shaped)
+  tree was ever safe to bundle. Confirmed via `cargo package --list`
+  before and after the move: before, it included all 49 ADRs, every
+  Terraform module, and `.github/`/`.claude/`; after, only
+  `service/pigeon-cli/`'s own files.
