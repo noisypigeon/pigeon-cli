@@ -4,6 +4,20 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [2.0.0] - 2026-09-26
+
+### Add bucket resource-scoping to scaleway/iam-policy
+
+**Breaking**: renames the `org_permission_sets` input to `organization_permission_sets`, for consistency with this module's other already-full-length names (`organization_id`, `project_permission_sets`, `project_ids`).
+
+Adds new `bucket_names` and `bucket_actions` inputs, wired into a new `scaleway_object_bucket_policy` resource created once per name in `bucket_names`, granting the module's IAM application access to exactly those Object Storage buckets. Both inputs default to an empty list, so no bucket access is granted unless a consumer explicitly lists both which buckets and which actions it wants — this module never derives a default action bundle just because a bucket name was supplied. `bucket_actions` is validated against a known set of S3 actions (`s3:ListBucket`, `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`) to catch typos.
+
+Note for anyone reaching for "wildcard" bucket access (e.g. "all buckets prefixed `data-`"): Scaleway has no bucket-listing data source and no cross-bucket wildcard in its bucket-policy `Resource` field, so this module only accepts exact bucket names — resolve any prefix-matching in your own Terraform (e.g. `[for b in local.known_buckets : b if startswith(b, "data-")]`) before passing the list in. Also note that granting a blanket `ObjectStorage*` permission set via `organization_permission_sets`/`project_permission_sets` already grants access to every bucket in scope, since Scaleway policy rules are allow-only — `bucket_names` can't narrow that back down, so real per-bucket least privilege means not also granting a blanket Object Storage permission set in the same policy.
+
+See ADR-0011 for the full reasoning, including the Scaleway API constraints that ruled out an IAM-native resource-condition approach.
+
+[#18](https://github.com/noisypigeon/pigeon-tf/pull/18)
+
 ## [1.1.0] - 2026-09-25
 
 ### Add expires_at input to scaleway/iam-policy
