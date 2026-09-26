@@ -12,15 +12,15 @@ categories = ["command-line-utilities", "email"]
 
 [lib]
 name = "pigeon"
-path = "service/pigeon-cli/src/lib.rs"
+path = "src/lib.rs"
 
 [[bin]]
 name = "pigeon"
-path = "service/pigeon-cli/src/main.rs"
+path = "src/main.rs"
 
 [[test]]
 name = "cli"
-path = "service/pigeon-cli/tests/cli.rs"
+path = "tests/cli.rs"
 
 [dependencies]
 aes-gcm-siv = "0.11"

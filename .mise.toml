@@ -3,41 +3,41 @@ rust = "1.92.0"
 
 [tasks.build]
 run = """
-cargo build
+cargo build --manifest-path service/pigeon-cli/Cargo.toml
 if [ "$(uname)" = "Darwin" ]; then
-  codesign --force -s - --identifier "dev.pigeon.cli" target/debug/pigeon
+  codesign --force -s - --identifier "dev.pigeon.cli" service/pigeon-cli/target/debug/pigeon
 fi
 """
 
 [tasks.pigeon]
 run = """
-cargo build
+cargo build --manifest-path service/pigeon-cli/Cargo.toml
 if [ "$(uname)" = "Darwin" ]; then
-  codesign --force -s - --identifier "dev.pigeon.cli" target/debug/pigeon
+  codesign --force -s - --identifier "dev.pigeon.cli" service/pigeon-cli/target/debug/pigeon
 fi
-exec target/debug/pigeon "$@"
+exec service/pigeon-cli/target/debug/pigeon "$@"
 """
 
 [tasks.test]
-run = "cargo test"
+run = "cargo test --manifest-path service/pigeon-cli/Cargo.toml"
 
 [tasks.fmt]
-run = "cargo fmt --all"
+run = "cargo fmt --manifest-path service/pigeon-cli/Cargo.toml --all"
 
 [tasks.fmt-check]
-run = "cargo fmt --all -- --check"
+run = "cargo fmt --manifest-path service/pigeon-cli/Cargo.toml --all -- --check"
 
 [tasks.lint]
-run = "cargo clippy --all-targets --all-features -- -D warnings"
+run = "cargo clippy --manifest-path service/pigeon-cli/Cargo.toml --all-targets --all-features -- -D warnings"
 
 [tasks.ci]
 depends = ["fmt-check", "lint", "test"]
 
 [tasks.publish-dry-run]
-run = "cargo publish --dry-run"
+run = "cargo publish --manifest-path service/pigeon-cli/Cargo.toml --dry-run"
 
 [tasks.publish]
-run = "cargo publish"
+run = "cargo publish --manifest-path service/pigeon-cli/Cargo.toml"
 
 [tasks.adr-issue]
 run = ".github/scripts/adr-issue.sh \"$@\""
