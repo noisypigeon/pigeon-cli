@@ -154,3 +154,56 @@ conceptually still exists, just nested now).
 
 Implementation (the actual `git mv`s, `Cargo.toml`/`.mise.toml` edits,
 and the historical-citation rewrite) is a separate, later task.
+
+## Amendment (2026-09-25): also relocate `CHANGELOG.md`
+
+### Context
+
+While planning implementation, a further requirement came in:
+`CHANGELOG.md` should move to `service/pigeon-cli/CHANGELOG.md` too.
+This directly contradicts the Out of scope bullet above ("Any change
+to `docs/`, `CHANGELOG.md`, `LICENSE`, or `.gitignore`'s own locations
+-- all stay at repo root, unaffected"), so per this repo's own rule
+(CLAUDE.md: flag a contradiction rather than silently diverging) this
+amendment supersedes that bullet rather than editing it away silently.
+
+Checked what actually references `CHANGELOG.md`'s location before
+deciding this was safe to fold into the same restructure:
+- `CLAUDE.md`'s "Dev cycle" section is the only *living* doc
+  instructing where to write changelog entries (both its intro
+  mention and the "Changelog" step's explicit path) -- both need
+  updating to stay accurate.
+- `docs/adr/0029-dev-cycle-pipeline.md` (the ADR that introduced
+  `CHANGELOG.md`) cites it twice, historically -- falls under this
+  ADR's already-established "rewrite historical citations" policy,
+  just for a path pattern outside the original `src/`/`tests/`/
+  `scripts/` grep.
+- `Cargo.toml` has no `changelog` field (no such standard Cargo key
+  exists; only `readme = "README.md"`, which isn't moving) and no
+  `.mise.toml` task references `CHANGELOG.md`'s path -- confirmed
+  nothing else touches this.
+
+### Decision
+
+`CHANGELOG.md` moves to `service/pigeon-cli/CHANGELOG.md` alongside
+`src/`/`tests/`/`scripts/`, via `git mv`, in the same implementation
+pass. The Out of scope bullet naming `CHANGELOG.md` above is
+superseded by this amendment -- `docs/`, `LICENSE`, and `.gitignore`
+remain unaffected and stay at repo root, as originally decided.
+`CLAUDE.md`'s Dev cycle section and ADR-0029's historical citations of
+`CHANGELOG.md` get updated to match, alongside the already-planned
+`src/`/`tests/`/`scripts/` rewrite.
+
+### Consequences
+
+- Every future PR's changelog step writes to
+  `service/pigeon-cli/CHANGELOG.md`, not the repo root -- CLAUDE.md's
+  Dev cycle instructions are the load-bearing reference for this going
+  forward.
+- No other tooling or Cargo metadata depends on `CHANGELOG.md`'s path,
+  so this addition doesn't expand the mechanical-move risk surface
+  meaningfully beyond what was already planned for `src/`/`tests/`/
+  `scripts/`.
+
+Implementation of this amendment lands together with the rest of this
+ADR's implementation, not as a separate task.
