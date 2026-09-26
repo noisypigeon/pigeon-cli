@@ -11,6 +11,8 @@ backfill of prior history.
 
 ## 2026-09-26
 
+- [terraform/digitalocean/droplet] Fix droplet module's access-key dependency source ([#63](https://github.com/noisypigeon/pigeon/pull/63))
+
 - [repo] ADR-0050: relocate `Cargo.toml`/`Cargo.lock` into `service/pigeon-cli/`, add this repo-wide dated changelog, rename `LICENSE` to `LICENSE.md`, and rewrite both READMEs ([#59](https://github.com/noisypigeon/pigeon/pull/59)).
 
 ## 2026-09-25
