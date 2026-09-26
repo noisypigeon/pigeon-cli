@@ -55,7 +55,7 @@ Single-contributor repo, but every substantive change goes through a real PR. Wh
 2. **Build.** Commit the ADR file and/or implementation on that branch, using this repo's existing commit convention (`type(adr-XXXX): summary`).
 3. **Gate.** `mise run ci` must be clean before opening a PR.
 4. **PR.** `gh pr create` — title matches the commit convention; body is a condensed ADR (short Context, condensed Decision bullets, a relative link to the full ADR file), never the full text.
-5. **Changelog.** Once the PR exists, append one bullet to `service/pigeon-cli/CHANGELOG.md`'s `[Unreleased]` section (top of file; create it if missing): `- ADR-XXXX: <one-line description> ([#N](PR URL))`. Push as a follow-up commit on the same branch.
+5. **Changelog.** Once the PR exists, append **two** bullets in the same follow-up commit: one to `service/pigeon-cli/CHANGELOG.md`'s `[Unreleased]` section (top of file; create it if missing): `- ADR-XXXX: <one-line description> ([#N](PR URL))`; and one to the root `/CHANGELOG.md`'s current-date section (`## YYYY-MM-DD`, newest first — create the section if today doesn't have one yet): `- [pigeon-cli] <one-line summary> ([#N](PR URL))` (use `[repo]` instead of `[pigeon-cli]` for cross-cutting/structural ADRs that aren't scoped to the Rust crate specifically, per ADR-0050). Terraform module PRs get their root-changelog line automatically from `module-release.yml` — no manual step there.
 6. **Merge.** `gh pr merge --squash --delete-branch` once CI is clean — no further confirmation needed.
 
 Releases stay manual: cutting one means hand-retitling `[Unreleased]` to `[x.y.z] - date` and starting a fresh empty `[Unreleased]` section — not part of this pipeline.
