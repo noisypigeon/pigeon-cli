@@ -4,6 +4,16 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [3.0.1] - 2026-09-26
+
+### Fix invalid variable validation in scaleway/iam-policy
+
+The v3.0.0 cross-variable `validation` block on `variable "name"` (added in ADR-0012) never referenced `var.name` itself — it only checked `organization_id`/`project_ids`/`bucket_names`. OpenTofu requires a variable's validation condition to genuinely reference that variable's own value, and rejects one that doesn't at `init`/`plan` time with `Invalid variable validation condition`, breaking every consumer of the module.
+
+Fixes this by adding a real `var.name != ""` check alongside the existing cross-variable logic, preserving the intended behavior (at least one of `organization_id`+`organization_permission_sets`, `project_ids`+`project_permission_sets`, or `bucket_names`+`bucket_actions` must be fully set) while satisfying OpenTofu's requirement. No interface change.
+
+[#20](https://github.com/noisypigeon/pigeon-tf/pull/20)
+
 ## [3.0.0] - 2026-09-26
 
 ### Make scaleway/iam-policy scoping mechanisms independently optional
