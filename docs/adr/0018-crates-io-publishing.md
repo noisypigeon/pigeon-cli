@@ -13,7 +13,7 @@
 - `git remote -v` confirms the canonical repo is `github.com/noisypigeon/pigeon-cli`.
 - **No CI/CD automation exists** — no `.github/workflows/` directory anywhere in this project's history. Every existing task (`build`, `pigeon`, `test`, `fmt`, `lint`, `ci`) is a local `mise run <task>` per ADR-0004. Publishing should follow that same established pattern rather than introducing CI/CD as an unrequested side effect.
 - All current dependencies (`async-imap`, `tokio`, `clap`, `serde`, `minio`, `keyring`, etc.) are ordinary crates.io dependencies with version requirements — none are git/path deps, which would block publishing.
-- The crate is already a lib+bin layout (`src/lib.rs` + `src/main.rs`), which crates.io/`cargo install` fully supports without restructuring.
+- The crate is already a lib+bin layout (`service/pigeon-cli/src/lib.rs` + `service/pigeon-cli/src/main.rs`), which crates.io/`cargo install` fully supports without restructuring.
 
 Three decisions were confirmed directly with the project owner before writing this ADR:
 - **Package name**: `pigeon-cli`, matching the existing GitHub repo name exactly. The installed **binary** stays named `pigeon`, decoupled from the package name via an explicit `[[bin]]` section — preserving ADR-0002/ADR-0004's established `pigeon` command surface.
@@ -29,7 +29,7 @@ Three decisions were confirmed directly with the project owner before writing th
 ```toml
 [[bin]]
 name = "pigeon"
-path = "src/main.rs"
+path = "service/pigeon-cli/src/main.rs"
 ```
 
 keeps `cargo install pigeon-cli` installing a binary still invoked as `pigeon`, so `mise run pigeon -- <args>` and every other ADR-0002/ADR-0004-established convention is unaffected.

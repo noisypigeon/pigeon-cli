@@ -6,7 +6,7 @@
 
 ## Context
 
-`pigeon job run email-sync`'s upload phase (`run_upload_phase`, `src/commands/job/email_sync/worker.rs`) was explicitly scoped as sequential-only by ADR-0021 §7/"Out of scope": each identity is fully deduped and then fully uploaded, one identity at a time, and within an identity, files upload one at a time in a plain `for path in files` loop. Two problems, observed from real use and named directly by the user:
+`pigeon job run email-sync`'s upload phase (`run_upload_phase`, `service/pigeon-cli/src/commands/job/email_sync/worker.rs`) was explicitly scoped as sequential-only by ADR-0021 §7/"Out of scope": each identity is fully deduped and then fully uploaded, one identity at a time, and within an identity, files upload one at a time in a plain `for path in files` loop. Two problems, observed from real use and named directly by the user:
 
 1. **No concurrency for uploads at all**, even though fetch/transform already established a real concurrency model (ADR-0021 §6/§7: a worker pool sized by `--concurrency`) and the wizard already asks for a concurrency value that upload never uses. A real run (209 MB across 568 messages, `--concurrency 16`) showed fetch/transform finishing quickly while upload — invisible and single-threaded — became the run's actual bottleneck.
 2. **No progress bar for uploads.** Fetch has one per mailbox (`sink::new_progress_bar`, ADR-0013, kept redraw-safe by ADR-0015); upload has none — the same run above produced no visible feedback at all during its upload phase.
@@ -48,7 +48,7 @@ for path in collect_files(&identity_dir)? {
 uploaded_indexes.insert(ctx.staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
 ```
 
-This is the same `UploadedIndex`/`upload_key`/`collect_files` machinery the upload phase already uses today (`src/commands/job/email_sync/worker.rs`, `core::data::collect_files`) — only *when* it runs and *what it produces* changes: a task list handed to one shared phase, instead of an upload done inline per identity.
+This is the same `UploadedIndex`/`upload_key`/`collect_files` machinery the upload phase already uses today (`service/pigeon-cli/src/commands/job/email_sync/worker.rs`, `core::data::collect_files`) — only *when* it runs and *what it produces* changes: a task list handed to one shared phase, instead of an upload done inline per identity.
 
 ### 2. Exclusivity: each file is uploaded by exactly one worker, by construction
 
@@ -70,7 +70,7 @@ let summary = stream::iter(tasks)
 
 ### 3. Safe, deterministic `.uploaded` persistence under concurrency
 
-The only genuinely shared mutable state is each identity's `.uploaded` index (`UploadedIndex`, `src/commands/job/email_sync/worker.rs`) — multiple in-flight uploads can belong to the *same* identity and would otherwise race on its in-memory set and its on-disk file. Fix: each identity gets one `Arc<Mutex<UploadedIndex>>` (built once, alongside its task list, in §1), looked up by `task.staging_dir` inside each upload future before committing a success. This mirrors this codebase's existing `Arc<Mutex<T>>` idiom for cross-task shared state (`core::data::ContentIndex` already documents and tests concurrent-commit safety the same way). Locking is scoped per identity, not job-wide, so uploads for different identities never contend on each other's lock.
+The only genuinely shared mutable state is each identity's `.uploaded` index (`UploadedIndex`, `service/pigeon-cli/src/commands/job/email_sync/worker.rs`) — multiple in-flight uploads can belong to the *same* identity and would otherwise race on its in-memory set and its on-disk file. Fix: each identity gets one `Arc<Mutex<UploadedIndex>>` (built once, alongside its task list, in §1), looked up by `task.staging_dir` inside each upload future before committing a success. This mirrors this codebase's existing `Arc<Mutex<T>>` idiom for cross-task shared state (`core::data::ContentIndex` already documents and tests concurrent-commit safety the same way). Locking is scoped per identity, not job-wide, so uploads for different identities never contend on each other's lock.
 
 Determinism here means: regardless of which worker finishes which file first, the final durable state — the *set* of keys recorded in each identity's `.uploaded` file, and the job's aggregate `uploaded`/`unchanged`/`upload_failed` counts — is identical. Timing only affects the order lines are appended to `.uploaded`, never which files end up recorded or double-recorded. A failed upload is not committed (unchanged from today), so a partial or interrupted run remains safely resumable on re-invocation.
 
@@ -82,11 +82,11 @@ Per ADR-0015's precedent — `MultiProgress` corrupts every live bar's redraw if
 
 ### 5. Concurrency reuse, no new flag
 
-The upload phase's `buffer_unordered(concurrency)` uses the exact same `concurrency: usize` value already resolved by the wizard for fetch/transform (`ConcurrencyInput`, `src/commands/job/email_sync/wizard.rs`) — no new CLI flag, no second concurrency prompt. This is the literal sense in which upload "builds on the same concurrency model": one number, chosen once, governs how much is in flight at every concurrent phase of the job.
+The upload phase's `buffer_unordered(concurrency)` uses the exact same `concurrency: usize` value already resolved by the wizard for fetch/transform (`ConcurrencyInput`, `service/pigeon-cli/src/commands/job/email_sync/wizard.rs`) — no new CLI flag, no second concurrency prompt. This is the literal sense in which upload "builds on the same concurrency model": one number, chosen once, governs how much is in flight at every concurrent phase of the job.
 
 ### 6. Individual upload failures retry with backoff
 
-Each upload attempt (`client::upload_if_changed`) is wrapped in the same `retry_with_backoff` helper `connect_with_retry` already uses for IMAP connects (`src/commands/job/email_sync/worker.rs`) — generic over any `Result`-returning async closure, so reusing it here needs no new abstraction, just a second call site with its own attempt count/backoff duration tuned for HTTP rather than IMAP. A file that still fails after exhausting retries is counted toward `upload_failed` exactly as before (not committed to `.uploaded`, safely retried again on the job's next invocation) — this changes *how many times* a transient failure is given a chance to succeed within one run, not the failure-accounting model itself.
+Each upload attempt (`client::upload_if_changed`) is wrapped in the same `retry_with_backoff` helper `connect_with_retry` already uses for IMAP connects (`service/pigeon-cli/src/commands/job/email_sync/worker.rs`) — generic over any `Result`-returning async closure, so reusing it here needs no new abstraction, just a second call site with its own attempt count/backoff duration tuned for HTTP rather than IMAP. A file that still fails after exhausting retries is counted toward `upload_failed` exactly as before (not committed to `.uploaded`, safely retried again on the job's next invocation) — this changes *how many times* a transient failure is given a chance to succeed within one run, not the failure-accounting model itself.
 
 ## Consequences
 

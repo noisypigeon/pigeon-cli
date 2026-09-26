@@ -6,15 +6,15 @@
 
 ## Context
 
-`pigeon remote` (`src/remote/`) was introduced by ADR-0009 and refined by ADR-0010; ADR-0016 most recently touched its keychain code and `list` output. This ADR renames the module and its CLI surface to `dataops`, and restructures its commands: `configure`/`edit`/`remove` move under a new `bucket-config` subgroup, `list-buckets` is removed entirely, and `list`/`ls`/`lsd`/`copy` are removed as CLI subcommands but kept as internal, reusable functions rather than deleted.
+`pigeon remote` (`service/pigeon-cli/src/remote/`) was introduced by ADR-0009 and refined by ADR-0010; ADR-0016 most recently touched its keychain code and `list` output. This ADR renames the module and its CLI surface to `dataops`, and restructures its commands: `configure`/`edit`/`remove` move under a new `bucket-config` subgroup, `list-buckets` is removed entirely, and `list`/`ls`/`lsd`/`copy` are removed as CLI subcommands but kept as internal, reusable functions rather than deleted.
 
 Two scope questions were resolved directly with the user before writing this ADR:
 - **`list`/`ls`/`lsd`/`copy`**: removed as CLI subcommands; their implementations stay in the `dataops` module as plain functions available to other code — e.g. `email`'s existing `--remote-output` upload path (ADR-0011), which already calls client-level functions directly rather than through CLI dispatch, and any future command that wants them.
 - **Rename depth**: full — not just the module path and CLI group, but every internal `Remote`-rooted identifier, the on-disk config filename, and the OS-keychain service name too, accepting the resulting breaking changes. No migration shim, consistent with this project's established preference (e.g. ADR-0016's renames).
 
 Full inventory of what "remote" touches today, confirmed by reading the current code:
-- `src/remote/{cli,client,commands,credentials,location,mod,store}.rs`.
-- Cross-module references: `src/cli.rs` (`Commands::Remote(RemoteArgs)`), `src/commands/mod.rs` (dispatch), `src/email/commands.rs` (`crate::remote::credentials as remote_credentials`, `crate::remote::store::{Remote, Store as RemoteStore}`), `src/email/sync.rs` (`crate::remote::client`, `crate::remote::store::Remote`).
+- `service/pigeon-cli/src/remote/{cli,client,commands,credentials,location,mod,store}.rs`.
+- Cross-module references: `service/pigeon-cli/src/cli.rs` (`Commands::Remote(RemoteArgs)`), `service/pigeon-cli/src/commands/mod.rs` (dispatch), `service/pigeon-cli/src/email/commands.rs` (`crate::remote::credentials as remote_credentials`, `crate::remote::store::{Remote, Store as RemoteStore}`), `service/pigeon-cli/src/email/sync.rs` (`crate::remote::client`, `crate::remote::store::Remote`).
 - Internal naming: the `Remote` struct (`store.rs`), `remotes.toml`/`REMOTES_FILE_NAME`, `StoreFile.remotes: Vec<Remote>`, `Location::Remote { alias, path }` (`location.rs`), the keychain `SERVICE_NAME = "pigeon-remote"` (`credentials.rs`), and numerous "remote"-worded user-facing strings (`"no remote named '...'"`, `"a remote named '...' already exists"`, `"Select a remote"`, `prompt_select`'s `"run 'pigeon remote configure' first"`, etc.).
 - `docs/adr/0009-remote-storage.md`, `0010-remote-storage-improvements.md`, and `0016-keychain-stability-and-cli-cleanup.md` all describe `pigeon remote`/`Remote` as they existed when written. Per this project's established convention, prior ADRs are not retroactively edited — they remain accurate historical records, and this ADR supersedes them going forward as a new, additive decision.
 
@@ -22,11 +22,11 @@ Full inventory of what "remote" touches today, confirmed by reading the current 
 
 ### Module rename
 
-`src/remote/` → `src/dataops/`, same internal file layout (`cli.rs`, `client.rs`, `commands.rs`, `credentials.rs`, `location.rs`, `mod.rs`, `store.rs`). Every `crate::remote::*` reference across the crate updates to `crate::dataops::*`.
+`service/pigeon-cli/src/remote/` → `service/pigeon-cli/src/dataops/`, same internal file layout (`cli.rs`, `client.rs`, `commands.rs`, `credentials.rs`, `location.rs`, `mod.rs`, `store.rs`). Every `crate::remote::*` reference across the crate updates to `crate::dataops::*`.
 
 ### CLI group rename
 
-`src/cli.rs`'s `Commands::Remote(RemoteArgs)` → `Commands::Dataops(DataopsArgs)`; `RemoteArgs` → `DataopsArgs`, `RemoteCommands` → `DataopsCommands` in `dataops/cli.rs`.
+`service/pigeon-cli/src/cli.rs`'s `Commands::Remote(RemoteArgs)` → `Commands::Dataops(DataopsArgs)`; `RemoteArgs` → `DataopsArgs`, `RemoteCommands` → `DataopsCommands` in `dataops/cli.rs`.
 
 ### New `bucket-config` subgroup
 

@@ -24,7 +24,7 @@ Seven labels, one tracking label plus one per subsystem, matching the module bou
 - `area:security` -- encryption, key management, and related crypto.
 - `area:tooling` -- dev-cycle, CI, release, and publishing tooling.
 
-### 2. `scripts/adr-issue.sh` + `mise run adr-issue`
+### 2. `.github/scripts/adr-issue.sh` + `mise run adr-issue`
 
 New machinery, kept as repo-local dev tooling rather than a `pigeon` subcommand -- this is process bookkeeping for the maintainer, not part of the shipped email/dataops product, the same reasoning ADR-0029 used to keep its dev-cycle pipeline as pure process plus mise tasks instead of new CLI surface.
 
@@ -55,7 +55,7 @@ Every ADR from 0003 through 0030 was audited against the current codebase for Ou
 ## Consequences
 
 - Every still-open Out of scope bullet across ADR-0003-0030 gains an inline issue link, e.g. `- Support non-S3 dataops backends (GCS, Azure, local-to-local). ([#17](https://github.com/noisypigeon/pigeon-cli/issues/17))`.
-- The repo gains its first `scripts/` directory and its first non-cargo mise task.
+- The repo gains its first `scripts/` directory (relocated to `.github/scripts/` by ADR-0036) and its first non-cargo mise task.
 - Deferred work becomes a real, labeled, prioritizable backlog instead of prose that's easy to forget.
 - Landing a future ADR gains one small extra step, offset by how cheap it is (one script call per deferred item).
 

@@ -8,7 +8,7 @@
 
 `transform` and `dedup` move from `email` into `dataops`, genuinely genericized rather than bare-relocated, so future non-email `dataops` transforms can reuse the same machinery — realizing the intent `dataops`'s own name already signaled when ADR-0017 renamed it from `remote`.
 
-A precise, line-by-line inventory of `src/email/transform.rs` and `src/email/dedup.rs` splits cleanly into two categories.
+A precise, line-by-line inventory of `service/pigeon-cli/src/email/transform.rs` and `service/pigeon-cli/src/email/dedup.rs` splits cleanly into two categories.
 
 **Genuinely generic — no email concept baked in, or only in naming/docs:**
 - `dedup::ContentIndex` (load/check/commit against a hash→relative-path file) — the struct and its methods are already 100% generic; only its two associated consts (`MESSAGE_HASHES`, `ATTACHMENT_HASHES`) are email-specific, and callers already pass an arbitrary filename to `load()` regardless.
@@ -23,11 +23,11 @@ A precise, line-by-line inventory of `src/email/transform.rs` and `src/email/ded
 
 ## Decision
 
-### New `src/dataops/dedup.rs`
+### New `service/pigeon-cli/src/dataops/dedup.rs`
 
 `ContentIndex` moves as-is, minus its two email-specific associated consts (`MESSAGE_HASHES`/`ATTACHMENT_HASHES`) — callers now supply their own filename to `load()`, which the API already supported. `amend_frontmatter_for_duplicate` moves with its parameters renamed to domain-neutral terms (`mailbox_tag: &str, uid: u32` → `tag: &str, occurrence: u32`) and its doc comments generalized; the algorithm and on-disk `<tag>#<occurrence>` format are unchanged byte-for-byte.
 
-### New `src/dataops/transform.rs`
+### New `service/pigeon-cli/src/dataops/transform.rs`
 
 `unique_path`, a renamed `sanitize_filename` (was `sanitize_attachment_name`, generalized doc comment) with its truncation helpers and a renamed `MAX_FILENAME_LENGTH`, `yaml_quote`, and a new canonical `collect_files(dir: &Path) -> Result<Vec<PathBuf>, String>` (recursive walk, sorted, missing directory treated as empty — matching `email/sync.rs`'s more lenient existing contract) backed by one `visit_dir`.
 
@@ -43,7 +43,7 @@ Now consuming `dataops::dedup::{ContentIndex, amend_frontmatter_for_duplicate}` 
 
 Updates its `ContentIndex` import path to `dataops::dedup`, and references `transform::MESSAGE_HASHES_FILE`/`ATTACHMENT_HASHES_FILE` in place of the old `ContentIndex::MESSAGE_HASHES`/`ATTACHMENT_HASHES` associated consts.
 
-### `src/dataops/mod.rs`
+### `service/pigeon-cli/src/dataops/mod.rs`
 
 Gains `pub mod dedup;` and `pub mod transform;`.
 

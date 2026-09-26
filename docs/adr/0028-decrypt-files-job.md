@@ -6,15 +6,15 @@
 
 ## Context
 
-ADR-0025 added `Encryptor::decrypt` "for symmetry, testability, and so a future download/restore command has it ready," explicitly scoping out any CLI caller: "no CLI command calls this yet... surfacing it is a separate ADR when download/restore tooling exists." It's carried an `#[allow(dead_code)]` (`src/core/crypto.rs`) ever since -- nothing in this codebase has ever called it outside its own round-trip unit tests. ADR-0026 and ADR-0027 built out full encryption-key management (`pigeon keyring add/modify/delete encryption-key`) and per-run key selection, but only for the upload direction.
+ADR-0025 added `Encryptor::decrypt` "for symmetry, testability, and so a future download/restore command has it ready," explicitly scoping out any CLI caller: "no CLI command calls this yet... surfacing it is a separate ADR when download/restore tooling exists." It's carried an `#[allow(dead_code)]` (`service/pigeon-cli/src/core/crypto.rs`) ever since -- nothing in this codebase has ever called it outside its own round-trip unit tests. ADR-0026 and ADR-0027 built out full encryption-key management (`pigeon keyring add/modify/delete encryption-key`) and per-run key selection, but only for the upload direction.
 
-This ADR is that deferred follow-up: a new job, `pigeon job run decrypt-files`, mirroring `email-sync`'s wizard-driven, `core::job::Job`-trait-based shape (`src/core/job.rs`), to reverse encryption applied at upload time. Given a local directory of already-downloaded `*.enc` files and an encryption-key alias, it decrypts every one back to plaintext under an output directory, mirroring the input tree with the `.enc` suffix stripped. This is a purely local, one-way "get my plaintext back" operation -- it does not talk to any bucket itself.
+This ADR is that deferred follow-up: a new job, `pigeon job run decrypt-files`, mirroring `email-sync`'s wizard-driven, `core::job::Job`-trait-based shape (`service/pigeon-cli/src/core/job.rs`), to reverse encryption applied at upload time. Given a local directory of already-downloaded `*.enc` files and an encryption-key alias, it decrypts every one back to plaintext under an output directory, mirroring the input tree with the `.enc` suffix stripped. This is a purely local, one-way "get my plaintext back" operation -- it does not talk to any bucket itself.
 
 ## Decision
 
 ### 1. `pigeon job run decrypt-files --input-dir <path> --output-dir <path> --encryption-key <alias> [--concurrency N] [--yes]`
 
-New `JobType::DecryptFiles` variant (`src/commands/job/cli.rs`), alongside the existing `EmailSync`:
+New `JobType::DecryptFiles` variant (`service/pigeon-cli/src/commands/job/cli.rs`), alongside the existing `EmailSync`:
 
 ```rust
 DecryptFiles {
@@ -37,9 +37,9 @@ DecryptFiles {
 
 `--input-dir`/`--output-dir` are required flags (unlike `email-sync`'s optional, defaulted ones) -- there's no sane default location for either side of a decrypt operation the way there is for `email-sync`'s temp-dir-backed staging tree. Before any work starts, the job fails fast if the two paths canonicalize to the same directory -- decrypting into the tree it reads from risks data loss if the run fails partway through.
 
-### 2. New module `src/commands/job/decrypt_files/`
+### 2. New module `service/pigeon-cli/src/commands/job/decrypt_files/`
 
-Mirrors `email_sync`'s three-way split (`src/commands/job/email_sync/{mod,wizard,worker}.rs`):
+Mirrors `email_sync`'s three-way split (`service/pigeon-cli/src/commands/job/email_sync/{mod,wizard,worker}.rs`):
 
 - **`mod.rs`**: `DecryptFilesJob: Job` (the second real implementor of `core::job::Job` -- today it has exactly one, `EmailSyncJob`, per that trait's own doc comment describing its single-implementor status as a deliberate consistency/extensibility choice; this ADR is the first time that choice actually pays off) and the shared `DecryptTask`/`DecryptSummary` types.
 - **`wizard.rs`**: CLI dispatch (`pub fn dispatch(...)`, spinning up its own `tokio` runtime exactly like `email_sync::wizard::dispatch` does) plus the `WizardInput` impls below.
@@ -75,7 +75,7 @@ impl Job for DecryptFilesJob {
 }
 ```
 
-`gather()` prints a short "N encrypted file(s) found" summary (mirroring `print_manifest_summary`'s role for `email-sync`) before the concurrency/proceed prompts. `run()` decrypts every task concurrently via `stream::buffer_unordered(concurrency)`, mirroring `run_upload_phase`'s exact shape (`src/commands/job/email_sync/worker.rs`): read the ciphertext, `encryptor.decrypt(&data)`, create the output file's parent directory if needed, write the plaintext. Progress bar via the existing `email_sync::sink::new_progress_bar` (`pub(crate)`, already reusable cross-module within the crate -- no relocation needed for a second caller).
+`gather()` prints a short "N encrypted file(s) found" summary (mirroring `print_manifest_summary`'s role for `email-sync`) before the concurrency/proceed prompts. `run()` decrypts every task concurrently via `stream::buffer_unordered(concurrency)`, mirroring `run_upload_phase`'s exact shape (`service/pigeon-cli/src/commands/job/email_sync/worker.rs`): read the ciphertext, `encryptor.decrypt(&data)`, create the output file's parent directory if needed, write the plaintext. Progress bar via the existing `email_sync::sink::new_progress_bar` (`pub(crate)`, already reusable cross-module within the crate -- no relocation needed for a second caller).
 
 ### 4. Wizard inputs (`decrypt_files::wizard`)
 
@@ -89,7 +89,7 @@ A file that fails to decrypt -- wrong key, truncated, tampered (AEAD tag mismatc
 
 ### 6. `Encryptor::decrypt`'s `#[allow(dead_code)]` is removed
 
-`src/core/crypto.rs`'s trait method (added in ADR-0025, annotated since nothing called it) gets its first real, non-test caller here.
+`service/pigeon-cli/src/core/crypto.rs`'s trait method (added in ADR-0025, annotated since nothing called it) gets its first real, non-test caller here.
 
 ## Consequences
 

@@ -6,7 +6,7 @@
 
 ## Context
 
-`pigeon` gains its first command group beyond `email`: `pigeon remote`, for pushing/pulling data to and from S3-compatible object storage (DigitalOcean Spaces is the motivating example, explicitly S3-compliant), behaving like rclone. This is exactly the second command group ADR-0008 restructured `src/` to accommodate. This ADR decides the S3 client crate, the command surface (`configure`, `list-buckets`, `ls`, `lsd`, `copy`), the remote-addressing model, and config/secret storage.
+`pigeon` gains its first command group beyond `email`: `pigeon remote`, for pushing/pulling data to and from S3-compatible object storage (DigitalOcean Spaces is the motivating example, explicitly S3-compliant), behaving like rclone. This is exactly the second command group ADR-0008 restructured `service/pigeon-cli/src/` to accommodate. This ADR decides the S3 client crate, the command surface (`configure`, `list-buckets`, `ls`, `lsd`, `copy`), the remote-addressing model, and config/secret storage.
 
 ## Decision
 
@@ -61,15 +61,15 @@ pigeon remote copy SOURCE DEST
 
 The secret access key goes in the OS keychain via `keyring`, matching ADR-0003's precedent for IMAP app passwords exactly — never written to the TOML file. Consistent security posture across the whole CLI, not a special case for this feature.
 
-### `src/remote/` — reusing ADR-0008's shape
+### `service/pigeon-cli/src/remote/` — reusing ADR-0008's shape
 
-Mirrors `src/email/`'s structure exactly: `mod.rs`, `cli.rs`, `commands.rs`, plus logic modules (an S3 client wrapper, a `Remote`/`Store` pair analogous to `email::identity::Identity`/`Store`, a `remote:path` parser). One new `Commands::Remote(RemoteArgs)` variant in `src/cli.rs`, one new match arm in `src/commands/mod.rs` — exactly the extension path ADR-0008's Consequences described.
+Mirrors `service/pigeon-cli/src/email/`'s structure exactly: `mod.rs`, `cli.rs`, `commands.rs`, plus logic modules (an S3 client wrapper, a `Remote`/`Store` pair analogous to `email::identity::Identity`/`Store`, a `remote:path` parser). One new `Commands::Remote(RemoteArgs)` variant in `service/pigeon-cli/src/cli.rs`, one new match arm in `service/pigeon-cli/src/commands/mod.rs` — exactly the extension path ADR-0008's Consequences described.
 
 ## Consequences
 
 - `pigeon remote` becomes implementable: configure, discover buckets, list, and copy against any S3-compatible endpoint, with the CLI's existing config/secret-storage conventions reused rather than reinvented.
 - This is deliberately a *subset* of rclone's generality — bucket-scoped remotes, S3-compatible storage only, no `sync`/`move`/`delete`-style destructive remote operations, no remote-to-remote copy. Anyone expecting full rclone parity should know that going in; the scope boundary is intentional, not an oversight, and each item is a plausible future ADR rather than a closed door.
-- `src/remote/` becomes the second proof point (after `src/email/`) that ADR-0008's per-command-group folder shape actually scales to a genuinely different domain, not just a hypothetical.
+- `service/pigeon-cli/src/remote/` becomes the second proof point (after `service/pigeon-cli/src/email/`) that ADR-0008's per-command-group folder shape actually scales to a genuinely different domain, not just a hypothetical.
 
 ## Out of scope
 

@@ -10,7 +10,7 @@
 per-identity manifest -- connecting to each identity's IMAP server, listing
 its mailboxes, and figuring out what's pending -- before showing the user
 anything at all. Confirmed directly in code: `EmailSyncJob::gather()`
-(`src/commands/job/email_sync/mod.rs:214-226`) calls `gather_pending`
+(`service/pigeon-cli/src/commands/job/email_sync/mod.rs:214-226`) calls `gather_pending`
 (`mod.rs:65-170`) once per selected identity, which connects
 (`worker::connect_with_retry`, itself capable of up to 3 silent retries with
 5/10/15s linear backoff -- `worker.rs:24-25,59-70`), runs `LIST *`, then for
@@ -159,7 +159,7 @@ jane-doe          7          568      42           209.0 MB
 
 - Fixing `transform.rs`'s/`dedup.rs`'s `eprintln!` warning sites, which
   never adopted ADR-0015's `MultiProgress::suspend` wrapping after the
-  ADR-0021 restructure moved them into `src/commands/job/email_sync/` --
+  ADR-0021 restructure moved them into `service/pigeon-cli/src/commands/job/email_sync/` --
   confirmed still raw `eprintln!` today, reachable while other workers'
   bars are live. A real, pre-existing gap, but unrelated to the silent
   manifest phase this ADR addresses. ([#40](https://github.com/noisypigeon/pigeon-cli/issues/40))

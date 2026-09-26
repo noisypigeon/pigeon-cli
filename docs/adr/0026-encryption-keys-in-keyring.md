@@ -18,11 +18,11 @@ Three design points were resolved directly with the user before writing this dec
 
 Prior research into this codebase established the exact extension points this decision uses:
 
-- `Entry` (`src/commands/keyring/store.rs`) is `#[serde(tag = "kind", rename_all = "kebab-case")]` over `Email(Identity)`/`Bucket(BucketConfig)` -- a third variant serializes with no further serde work.
+- `Entry` (`service/pigeon-cli/src/commands/keyring/store.rs`) is `#[serde(tag = "kind", rename_all = "kebab-case")]` over `Email(Identity)`/`Bucket(BucketConfig)` -- a third variant serializes with no further serde work.
 - `Store::bucket_configs()`/`prompt_select_bucket()` (empty/single-auto-select/many-`Select` logic, and its own "no bucket-configs configured..." error message) are the exact pattern a third kind's iterator/selector mirrors.
-- `core::keyring::credentials::set_secret`/`get_secret`/`delete_secret` (`src/core/keyring/credentials.rs`) are already generic over any alias under one shared `"pigeon"` OS-keychain service -- reusable with zero new plumbing.
-- `AddKind`/`wizard::add`'s dispatch (`src/commands/keyring/wizard.rs`) and `wizard::modify`'s `match entry { Entry::Email(..) => .., Entry::Bucket(..) => .. }` both already route generically per kind -- each needs one new arm.
-- `RemoteOutputInput` (`src/commands/job/email_sync/wizard.rs`) is the exact `WizardInput` shape to mirror; the `Aes256GcmSivEncryptor::from_env()` fail-fast block it replaces sits right after `job.remote` is resolved, before the concurrency/proceed prompts.
+- `core::keyring::credentials::set_secret`/`get_secret`/`delete_secret` (`service/pigeon-cli/src/core/keyring/credentials.rs`) are already generic over any alias under one shared `"pigeon"` OS-keychain service -- reusable with zero new plumbing.
+- `AddKind`/`wizard::add`'s dispatch (`service/pigeon-cli/src/commands/keyring/wizard.rs`) and `wizard::modify`'s `match entry { Entry::Email(..) => .., Entry::Bucket(..) => .. }` both already route generically per kind -- each needs one new arm.
+- `RemoteOutputInput` (`service/pigeon-cli/src/commands/job/email_sync/wizard.rs`) is the exact `WizardInput` shape to mirror; the `Aes256GcmSivEncryptor::from_env()` fail-fast block it replaces sits right after `job.remote` is resolved, before the concurrency/proceed prompts.
 - No date/timestamp crate or pattern exists anywhere in this codebase today -- `created_at` is a genuinely new precedent needing a new dependency.
 - `Aes256GcmSivEncryptor::from_hex_key` is already a standalone constructor independent of `from_env` -- it becomes the only way an encryptor gets built once `from_env` is deleted.
 - `aes_gcm_siv::aead::OsRng` + `Aes256GcmSiv::generate_key` are already available through the existing `aes-gcm-siv` dependency -- key generation needs no new crate for randomness.
@@ -31,7 +31,7 @@ Prior research into this codebase established the exact extension points this de
 
 ### 1. New keyring entry kind: `EncryptionKey`
 
-New file `src/commands/keyring/encryption_key.rs`:
+New file `service/pigeon-cli/src/commands/keyring/encryption_key.rs`:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,7 +72,7 @@ serializing as `kind = "encryption-key"` automatically. `impl KeyringEntry for E
 
 ### 2. `pigeon keyring add encryption-key [ALIAS]`
 
-New `AddKind::EncryptionKey { alias: Option<String> }` (`src/commands/keyring/cli.rs`) and a new `wizard::add_encryption_key`, following `add_bucket`'s shape:
+New `AddKind::EncryptionKey { alias: Option<String> }` (`service/pigeon-cli/src/commands/keyring/cli.rs`) and a new `wizard::add_encryption_key`, following `add_bucket`'s shape:
 
 - Prompts `Alias` if not given on the command line (same `store.contains_alias` global-uniqueness check every other kind already uses).
 - Prompts `read_secret("Key (press enter to use a freshly generated one)")`. Empty input generates a key; non-empty input is validated via `Aes256GcmSivEncryptor::from_hex_key` before saving -- this both catches a malformed pasted key immediately and doubles as the import path for an existing ADR-0025-era key.
@@ -85,9 +85,9 @@ New `AddKind::EncryptionKey { alias: Option<String> }` (`src/commands/keyring/cl
 
 ### 3. `pigeon job run email-sync --encryption-key <alias>`, resolved interactively otherwise
 
-New `encryption_key: Option<String>` flag on `JobType::EmailSync` (`src/commands/job/cli.rs`), threaded through `commands.rs` and `email_sync::wizard::dispatch`/`dispatch_async` exactly like `remote_output` already is.
+New `encryption_key: Option<String>` flag on `JobType::EmailSync` (`service/pigeon-cli/src/commands/job/cli.rs`), threaded through `commands.rs` and `email_sync::wizard::dispatch`/`dispatch_async` exactly like `remote_output` already is.
 
-New `EncryptionKeyInput<'a>` (`src/commands/job/email_sync/wizard.rs`), a `WizardInput` impl mirroring `RemoteOutputInput`:
+New `EncryptionKeyInput<'a>` (`service/pigeon-cli/src/commands/job/email_sync/wizard.rs`), a `WizardInput` impl mirroring `RemoteOutputInput`:
 
 ```rust
 struct EncryptionKeyInput<'a> {
@@ -131,7 +131,7 @@ Still fails fast in the same place ADR-0025 did -- before concurrency/proceed pr
 
 ### 4. Retire the env-var path
 
-`Aes256GcmSivEncryptor::from_env()` and `ENCRYPTION_KEY_ENV` are deleted from `src/core/crypto.rs`. `from_hex_key` is untouched and becomes the only way an `Aes256GcmSivEncryptor` gets built, called from both `wizard::add_encryption_key`'s validate-before-save check (§2) and the job wizard's resolution (§3).
+`Aes256GcmSivEncryptor::from_env()` and `ENCRYPTION_KEY_ENV` are deleted from `service/pigeon-cli/src/core/crypto.rs`. `from_hex_key` is untouched and becomes the only way an `Aes256GcmSivEncryptor` gets built, called from both `wizard::add_encryption_key`'s validate-before-save check (§2) and the job wizard's resolution (§3).
 
 ## Consequences
 

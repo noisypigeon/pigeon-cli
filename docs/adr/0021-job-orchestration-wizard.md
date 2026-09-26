@@ -40,21 +40,21 @@ This ADR supersedes ADR-0007's `--debug`-flag phase-isolation model, ADR-0012's 
 
 `pigeon email authenticate`/`list-identities` are unaffected — only `sync` moves.
 
-### 2. `src/job/` is job-type-agnostic infrastructure; email is its first consumer
+### 2. `service/pigeon-cli/src/job/` is job-type-agnostic infrastructure; email is its first consumer
 
-Per ADR-0008's per-command-group module convention, add `src/job/` as a sibling to `src/email/` and `src/dataops/`:
+Per ADR-0008's per-command-group module convention, add `service/pigeon-cli/src/job/` as a sibling to `service/pigeon-cli/src/email/` and `service/pigeon-cli/src/dataops/`:
 
-- `src/job/cli.rs` — `JobArgs { command: JobCommands }`, `JobCommands::Run(RunArgs)`, `RunArgs { #[command(subcommand)] job_type: JobType }`, `JobType::EmailSync { identities, local_output, remote_output, concurrency, yes }` (matching the nested-subcommand shape already used by `DataopsCommands::BucketConfig`).
-- `src/job/commands.rs` — dispatch, delegating to the job-type implementation.
-- `src/job/wizard.rs` — the interactive flow (§5): identity selection, manifest summary, concurrency + estimate prompt, confirm. Operates over a job-type-agnostic summary/plan structure, even though only email populates it today.
-- `src/job/manifest.rs` — manifest and checkpoint types and persistence (§3, §4), and the batch scheduler/worker pool (§6).
-- `src/job/email_sync.rs` — the email-specific job implementation: builds an email manifest, and plugs `email::sink`, `email::transform`, `dataops::dedup`, and `dataops::client` into the generic scheduler.
+- `service/pigeon-cli/src/job/cli.rs` — `JobArgs { command: JobCommands }`, `JobCommands::Run(RunArgs)`, `RunArgs { #[command(subcommand)] job_type: JobType }`, `JobType::EmailSync { identities, local_output, remote_output, concurrency, yes }` (matching the nested-subcommand shape already used by `DataopsCommands::BucketConfig`).
+- `service/pigeon-cli/src/job/commands.rs` — dispatch, delegating to the job-type implementation.
+- `service/pigeon-cli/src/job/wizard.rs` — the interactive flow (§5): identity selection, manifest summary, concurrency + estimate prompt, confirm. Operates over a job-type-agnostic summary/plan structure, even though only email populates it today.
+- `service/pigeon-cli/src/job/manifest.rs` — manifest and checkpoint types and persistence (§3, §4), and the batch scheduler/worker pool (§6).
+- `service/pigeon-cli/src/job/email_sync.rs` — the email-specific job implementation: builds an email manifest, and plugs `email::sink`, `email::transform`, `dataops::dedup`, and `dataops::client` into the generic scheduler.
 
-`src/cli.rs`'s `Commands` enum gains `Job(JobArgs)` alongside `Email`/`Dataops`; `src/commands/mod.rs::dispatch` gains a matching arm.
+`service/pigeon-cli/src/cli.rs`'s `Commands` enum gains `Job(JobArgs)` alongside `Email`/`Dataops`; `service/pigeon-cli/src/commands/mod.rs::dispatch` gains a matching arm.
 
 `email::sync`'s current *orchestration* — `run`, `run_local_async`, `sync_mailbox`, `run_upload_async`, `UploadedIndex` — is removed; that scheduling model is exactly what's being replaced. The lower-level functions it called are reused unchanged from the new orchestration layer: `email::sink::fetch_uids` (or its message-fetching equivalent), `email::transform::transform_one`, `dataops::dedup::ContentIndex`/`amend_frontmatter_for_duplicate`, `dataops::client::upload_if_changed`.
 
-No second job type is implemented in this ADR; the module boundary is shaped to admit one without restructuring `src/job/`'s infrastructure pieces.
+No second job type is implemented in this ADR; the module boundary is shaped to admit one without restructuring `service/pigeon-cli/src/job/`'s infrastructure pieces.
 
 ### 3. The manifest: what work exists
 
@@ -106,7 +106,7 @@ This also means §2's description of `transform_one` as "reused unchanged" needs
 - A new on-disk manifest/checkpoint format is introduced under the staging dir, distinct from and replacing `.processed`/`.uidvalidity` for jobs run through the new system.
 - Transform becomes lock-free and embarrassingly parallel across workers — a direct, positive side effect of moving dedup out of the transform path. Per §10, this required introducing a UID-keyed staging tree so removing the lock doesn't reopen the `unique_path` TOCTOU race that lock also happened to prevent.
 - The confirmed concurrency under-utilization (capped by mailbox count) is fixed by scheduling batches instead of whole mailboxes.
-- `email::sync`'s current file effectively disappears as an orchestration layer; its lower-level callees survive with a new caller in `src/job/email_sync.rs`.
+- `email::sync`'s current file effectively disappears as an orchestration layer; its lower-level callees survive with a new caller in `service/pigeon-cli/src/job/email_sync.rs`.
 - The concurrency-estimate feature sets only rough expectations; it is explicitly not backed by measured data yet, and should be described to users as such.
 
 ## Out of scope

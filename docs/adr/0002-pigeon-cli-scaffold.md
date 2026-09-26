@@ -22,7 +22,7 @@ ADR-0001 specifies the `pigeon email` interface (authenticate, sink, transform) 
 
 ### CLI argument surface
 
-- [`clap`](https://docs.rs/clap) v4, derive API, is the single source of truth for commands, arguments, and `--help` text, living entirely in `src/cli.rs`:
+- [`clap`](https://docs.rs/clap) v4, derive API, is the single source of truth for commands, arguments, and `--help` text, living entirely in `service/pigeon-cli/src/cli.rs`:
   - `Cli` (top-level) → `Commands::Email(EmailArgs)` → `EmailCommands::{Authenticate, ListIdentities, Sink, Transform}`.
   - Each variant/field carries a doc comment, which clap renders directly as `--help` output — so help text and parsing behavior can never drift from a separately hand-maintained description.
 - The four `EmailCommands` variants and their arguments mirror ADR-0001's interface examples verbatim:
@@ -38,7 +38,7 @@ ADR-0001 specifies the `pigeon email` interface (authenticate, sink, transform) 
 
 ### Command dispatch structure
 
-- `src/commands/mod.rs` exposes `dispatch(Commands) -> i32`, matching on the top-level `Commands` enum and delegating into one module per command group (currently just `src/commands/email.rs`). Adding a new top-level command group later means adding a new module and match arm, without touching `email.rs`.
+- `service/pigeon-cli/src/commands/mod.rs` exposes `dispatch(Commands) -> i32`, matching on the top-level `Commands` enum and delegating into one module per command group (currently just `service/pigeon-cli/src/commands/email.rs`). Adding a new top-level command group later means adding a new module and match arm, without touching `email.rs`.
 - Each leaf handler function already takes the fully-typed, parsed arguments for its subcommand (e.g. `sink(alias: String, directory: PathBuf)`), even though the stub bodies ignore them. Swapping in real logic later is a body-only change — no signature or dispatch restructuring.
 
 ### Stub behavior
@@ -51,7 +51,7 @@ ADR-0001 specifies the `pigeon email` interface (authenticate, sink, transform) 
 
 ### Testing approach
 
-- `tests/cli.rs` uses [`assert_cmd`](https://docs.rs/assert_cmd) + [`predicates`](https://docs.rs/predicates) to black-box test the CLI by spawning the actual compiled `pigeon` binary (`Command::cargo_bin("pigeon")`), rather than calling library functions in-process.
+- `service/pigeon-cli/tests/cli.rs` uses [`assert_cmd`](https://docs.rs/assert_cmd) + [`predicates`](https://docs.rs/predicates) to black-box test the CLI by spawning the actual compiled `pigeon` binary (`Command::cargo_bin("pigeon")`), rather than calling library functions in-process.
 - This exercises real clap-rendered `--help` output and real process exit codes, not just argument-parsing shape.
 - Test cases reuse ADR-0001's example invocations verbatim, so a passing suite doubles as an executable check that the CLI matches the ADR's documented interface.
 
