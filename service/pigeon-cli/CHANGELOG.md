@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0051: GitHub repo renamed `pigeon-cli` → `pigeon`; corrects `Cargo.toml`'s `repository` field and every in-repo GitHub link, bumps to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).
+
 - ADR-0029: Every substantive change now lands via branch → PR → local `mise run ci` gate → auto-merge, with a changelog entry per PR ([#1](https://github.com/noisypigeon/pigeon/pull/1)).
 - ADR-0030: Root-causes silent, total attachment-upload loss to a wrong path reconstruction in `run_dedup_pass` (documents investigation and fix; fix not yet implemented) ([#2](https://github.com/noisypigeon/pigeon/pull/2)).
 - ADR-0030: Implements the attachment-placement fix -- `email-sync` attachments are now correctly found, deduped, and uploaded instead of silently lost ([#3](https://github.com/noisypigeon/pigeon/pull/3)).
