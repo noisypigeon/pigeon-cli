@@ -1,16 +1,17 @@
-# ADR-0007: add scaleway/object-bucket module
+# ADR-0044: add scaleway/object-bucket module
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-25.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0007, merged into this repo by ADR-0037.
 
 ## Context
 
-`pigeon-tf`'s second Scaleway module (after `scaleway/project`, ADR-0006), wrapping `scaleway_object_bucket` with a required `name`, a versioning toggle, and a `storage_class` input accepting `standard` or `glacier`. Two design questions had to be resolved before this could be built.
+`pigeon-tf`'s second Scaleway module (after `scaleway/project`, ADR-0043), wrapping `scaleway_object_bucket` with a required `name`, a versioning toggle, and a `storage_class` input accepting `standard` or `glacier`. Two design questions had to be resolved before this could be built.
 
 **`storage_class` has no direct home on the resource.** `scaleway_object_bucket` has no bucket-level `storage_class` argument — storage class only exists inside a `lifecycle_rule`'s `transition` block, which moves objects to a class after N days. Resolved with the user: `storage_class = "glacier"` emits a single `lifecycle_rule` doing an immediate (`days = 0`) transition to `GLACIER`; `storage_class = "standard"` emits no `lifecycle_rule` at all (new objects simply stay Standard, the resource's own default).
 
-**Naming tension with ADR-0003.** ADR-0003 renamed `digitalocean/object-bucket` → `standard-storage-bucket` specifically because "object-bucket" named the module after a Terraform implementation detail (resource vs. data source) rather than the consumer's actual choice between standard and Cold Storage. This module covers both the standard and glacier tiers in a single resource via `storage_class`, so there's no resource/data-source split to hide behind an implementation-detail name — the situation ADR-0003 was correcting doesn't apply here. Resolved with the user: keep `scaleway/object-bucket`, matching the resource name and Scaleway's own "Object Storage" product branding.
+**Naming tension with ADR-0040.** ADR-0040 renamed `terraform/modules/digitalocean/object-bucket` → `terraform/modules/digitalocean/standard-storage-bucket` specifically because "object-bucket" named the module after a Terraform implementation detail (resource vs. data source) rather than the consumer's actual choice between standard and Cold Storage. This module covers both the standard and glacier tiers in a single resource via `storage_class`, so there's no resource/data-source split to hide behind an implementation-detail name — the situation ADR-0040 was correcting doesn't apply here. Resolved with the user: keep `scaleway/object-bucket`, matching the resource name and Scaleway's own "Object Storage" product branding.
 
 ## Decision
 

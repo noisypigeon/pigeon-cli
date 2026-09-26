@@ -1,8 +1,9 @@
-# ADR-0012: make scaleway/iam-policy's scoping mechanisms independently optional
+# ADR-0049: make scaleway/iam-policy's scoping mechanisms independently optional
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-26.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0012, merged into this repo by ADR-0037.
 
 ## Context
 
@@ -12,7 +13,7 @@
 
 > it's better to use a map value where the keys are defined statically in your configuration and where only the values contain apply-time results.
 
-**Unconditional `rule` blocks block bucket-only access.** `iam_policy.tf` always created both `rule` blocks (org-scoped and project-scoped) regardless of whether `organization_id`/`project_ids` were populated. Scaleway's `scaleway_iam_policy` requires each `rule` to set either `organization_id` or `project_ids` — so a consumer wanting *only* bucket-scoped access (leaving org/project fields at their `null` defaults) would have both rule blocks fail that requirement at apply time. This is exactly the gap ADR-0010 flagged and deferred:
+**Unconditional `rule` blocks block bucket-only access.** `iam_policy.tf` always created both `rule` blocks (org-scoped and project-scoped) regardless of whether `organization_id`/`project_ids` were populated. Scaleway's `scaleway_iam_policy` requires each `rule` to set either `organization_id` or `project_ids` — so a consumer wanting *only* bucket-scoped access (leaving org/project fields at their `null` defaults) would have both rule blocks fail that requirement at apply time. This is exactly the gap ADR-0047 flagged and deferred:
 
 > Conditionally omitting a `rule` block (e.g. via `dynamic "rule"`) when its corresponding permission-set list is empty or unset — the module currently always emits both blocks. Revisit if a consumer needs org-only or project-only grants.
 >
@@ -59,7 +60,7 @@ resource "scaleway_iam_policy" "policy" {
 }
 ```
 
-Each pair only produces a `rule` when it's *fully* populated (id/list set **and** the permission-set list non-empty) — superseding ADR-0010's untested assumption that a `rule` with a set `organization_id`/`project_ids` but an empty `permission_set_names` was an acceptable "deliberate empty-but-valid" no-op; instead, an incomplete pair now simply produces no rule at all. If neither pair is fully populated, the whole `scaleway_iam_policy` resource isn't created (`count = 0`) — a bucket-only application doesn't need an IAM policy at all, since `scaleway_object_bucket_policy` grants access independently by naming the application as `Principal`.
+Each pair only produces a `rule` when it's *fully* populated (id/list set **and** the permission-set list non-empty) — superseding ADR-0047's untested assumption that a `rule` with a set `organization_id`/`project_ids` but an empty `permission_set_names` was an acceptable "deliberate empty-but-valid" no-op; instead, an incomplete pair now simply produces no rule at all. If neither pair is fully populated, the whole `scaleway_iam_policy` resource isn't created (`count = 0`) — a bucket-only application doesn't need an IAM policy at all, since `scaleway_object_bucket_policy` grants access independently by naming the application as `Principal`.
 
 A `moved` block preserves `terraform_deployer`'s already-applied state across the new `count`:
 
@@ -106,9 +107,9 @@ No `pigeon-tf` module currently pins a `required_version`. Since the cross-varia
 - Breaking release (`release:major`): `bucket_names`' type change, and a config that previously applied with all three scoping mechanisms empty will now fail validation.
 - `data_email_iam` must change its `bucket_names` argument from a list to a map (never having successfully applied, this is free).
 - `terraform_deployer` needs no call-site change beyond the version bump; the `moved` block protects its already-applied `scaleway_iam_policy.policy` state.
-- Bucket-only configurations (no org/project grants at all) now actually work, closing the gap ADR-0010 deferred.
+- Bucket-only configurations (no org/project grants at all) now actually work, closing the gap ADR-0047 deferred.
 
 ## Out of scope
 
 - Further generalizing the "fully populated pair" concept beyond these three scoping mechanisms.
-- A repo-wide `required_version` convention — this ADR pins it only on this module, consistent with ADR-0001's per-module self-containment.
+- A repo-wide `required_version` convention — this ADR pins it only on this module, consistent with ADR-0038's per-module self-containment.

@@ -1,16 +1,17 @@
-# ADR-0010: split scaleway/iam-policy permission grants by scope
+# ADR-0047: split scaleway/iam-policy permission grants by scope
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-25.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0010, merged into this repo by ADR-0037.
 
 ## Context
 
-`scaleway/iam-policy` (ADR-0009, released as `v0.1.0`) took a single `permission_set_names` input applied to one `rule` block scoped by `project_ids`. In practice, Scaleway IAM permission sets aren't uniformly project-scoped — grants like `IAMManager`, `ProjectManager`, and `IAMApplicationManager` are organization-level and don't make sense restricted to a `project_ids` list, while grants like `InstancesFullAccess` or `ObjectStorageFullAccess` are meant to be scoped to specific projects. A single `rule`/`project_ids` pair can't represent both at once.
+`scaleway/iam-policy` (ADR-0046, released as `v0.1.0`) took a single `permission_set_names` input applied to one `rule` block scoped by `project_ids`. In practice, Scaleway IAM permission sets aren't uniformly project-scoped — grants like `IAMManager`, `ProjectManager`, and `IAMApplicationManager` are organization-level and don't make sense restricted to a `project_ids` list, while grants like `InstancesFullAccess` or `ObjectStorageFullAccess` are meant to be scoped to specific projects. A single `rule`/`project_ids` pair can't represent both at once.
 
 This module is no longer hypothetical: `pigeon-do`'s `scaleway/global/noisypigeon.com/management/terraform-deployer/` leaf already consumes it, pinned to `ref=scaleway/iam-policy/v0.1.0`, to mint the automation identity for Scaleway Terraform runs. That leaf's own module call has already been updated (uncommitted, in `pigeon-do`) to pass `org_permission_sets`/`project_permission_sets` in anticipation of this change — granting `ProjectManager`/`IAMManager`/`IAMApplicationManager` at the organization level and `InstancesFullAccess`/`ObjectStorageFullAccess`/`VPCFullAccess` scoped to two specific projects. Its outputs, however, still read the old `scw_access_key`/`scw_secret_key` names, and its `ref` is still pinned to `v0.1.0` — so `pigeon-do` is currently in a half-migrated state this release needs to unblock.
 
-Separately, ADR-0009 deferred renaming `scw_access_key`/`scw_secret_key` to `access_key`/`secret_key` (matching `digitalocean/access-key`'s unprefixed naming) specifically because there was no consumer yet to coordinate with. Since this release already requires a coordinated `pigeon-do` update for the permission-scoping change, the output rename is folded in now rather than deferred a second time.
+Separately, ADR-0046 deferred renaming `scw_access_key`/`scw_secret_key` to `access_key`/`secret_key` (matching `terraform/modules/digitalocean/access-key`'s unprefixed naming) specifically because there was no consumer yet to coordinate with. Since this release already requires a coordinated `pigeon-do` update for the permission-scoping change, the output rename is folded in now rather than deferred a second time.
 
 ## Decision
 
@@ -24,7 +25,7 @@ All four of `organization_id`, `org_permission_sets`, `project_ids`, and `projec
 
 ### Rename outputs: `scw_access_key`/`scw_secret_key` → `access_key`/`secret_key`
 
-Matches `digitalocean/access-key`'s unprefixed output naming, completing the rename ADR-0009 deferred.
+Matches `terraform/modules/digitalocean/access-key`'s unprefixed output naming, completing the rename ADR-0046 deferred.
 
 ### Required `pigeon-do` follow-up
 
@@ -33,7 +34,7 @@ Matches `digitalocean/access-key`'s unprefixed output naming, completing the ren
 ## Consequences
 
 - Breaking change to an already-released module: `permission_set_names` no longer exists, and both output names changed. Labeled `release:major`.
-- Unlike ADR-0008's `object-bucket` change, this one has a real, already-pinned consumer (`pigeon-do`'s `terraform-deployer` leaf) that must be updated in lockstep, not a zero-blast-radius change.
+- Unlike ADR-0045's `object-bucket` change, this one has a real, already-pinned consumer (`pigeon-do`'s `terraform-deployer` leaf) that must be updated in lockstep, not a zero-blast-radius change.
 - Consumers wanting only organization-scoped or only project-scoped grants still get two `rule` blocks created; the unused one needs a deliberate empty-but-valid value rather than being omitted (see Out of scope).
 
 ## Out of scope

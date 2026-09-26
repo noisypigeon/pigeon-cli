@@ -1,12 +1,13 @@
-# ADR-0011: scope scaleway/iam-policy access to specific Object Storage buckets
+# ADR-0048: scope scaleway/iam-policy access to specific Object Storage buckets
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-25.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0011, merged into this repo by ADR-0037.
 
 ## Context
 
-`scaleway/iam-policy` (ADR-0009, ADR-0010; currently `v1.1.0`) grants access purely at organization or project scope, via `scaleway_iam_policy` rule blocks (`organization_id`/`organization_permission_sets`, `project_ids`/`project_permission_sets`). There was no way to restrict an application to a specific, named set of Object Storage buckets while denying access to everything else in the project.
+`scaleway/iam-policy` (ADR-0046, ADR-0047; currently `v1.1.0`) grants access purely at organization or project scope, via `scaleway_iam_policy` rule blocks (`organization_id`/`organization_permission_sets`, `project_ids`/`project_permission_sets`). There was no way to restrict an application to a specific, named set of Object Storage buckets while denying access to everything else in the project.
 
 Before designing this, the actual Scaleway provider/API capabilities were checked directly against official docs, which ruled out several plausible-sounding approaches:
 - `scaleway_iam_policy`'s `rule` block has no resource-name/bucket field at all — only `organization_id`, `project_ids`, `permission_set_names`, and an optional CEL `condition`.
@@ -15,7 +16,7 @@ Before designing this, the actual Scaleway provider/API capabilities were checke
 - No Scaleway data source enumerates or lists buckets by name/prefix (confirmed against the provider's `docs/data-sources` directory) — so a module cannot itself resolve "all buckets prefixed `data-`" into a concrete list; only a caller who already knows the candidate bucket names can filter them.
 - Scaleway IAM's real default is zero permissions until a policy grants otherwise, and policy rules are pure allow-lists — there is no explicit deny. This means a blanket `ObjectStorageFullAccess`-style permission set granted via `organization_permission_sets`/`project_permission_sets` already grants access to **every** bucket in that scope, regardless of any bucket policy; the two mechanisms compose additively, and the broadest grant wins.
 
-Given this, real bucket-level least-privilege has to be built on `scaleway_object_bucket_policy`, with the module resolving exact bucket names — wildcard/prefix matching is not a capability Scaleway (or this module) can provide, since the caller already possesses the literal bucket names from their own `scaleway/object-bucket` module calls and can filter them with plain Terraform (`startswith()`) before calling this module.
+Given this, real bucket-level least-privilege has to be built on `scaleway_object_bucket_policy`, with the module resolving exact bucket names — wildcard/prefix matching is not a capability Scaleway (or this module) can provide, since the caller already possesses the literal bucket names from their own `terraform/modules/scaleway/object-bucket` module calls and can filter them with plain Terraform (`startswith()`) before calling this module.
 
 Separately, an unrelated in-flight change is folded into this same release: the existing `org_permission_sets` input is renamed to `organization_permission_sets`, for consistency with this module's other already-full-length names (`organization_id`, `project_permission_sets`, `project_ids`) rather than the one abbreviated holdout.
 
@@ -49,7 +50,7 @@ variable "bucket_actions" {
 }
 ```
 
-`bucket_names` takes exact, literal bucket names only — no glob/prefix syntax. Neither `bucket_names` nor `bucket_actions` defaults to a populated value — a stack must explicitly list both which buckets and which actions it wants, reinforcing "no resource access by default" at both levels rather than granting a preset action bundle the moment any bucket name is supplied. `bucket_actions` applies uniformly to every bucket in `bucket_names`; there is no per-bucket action customization. The `validation` block restricts entries to a known-valid set of S3 actions (matching this module's existing `scaleway/object-bucket` precedent of validating enum-like string inputs) to catch typos rather than silently producing a bucket policy with a misspelled, no-op action.
+`bucket_names` takes exact, literal bucket names only — no glob/prefix syntax. Neither `bucket_names` nor `bucket_actions` defaults to a populated value — a stack must explicitly list both which buckets and which actions it wants, reinforcing "no resource access by default" at both levels rather than granting a preset action bundle the moment any bucket name is supplied. `bucket_actions` applies uniformly to every bucket in `bucket_names`; there is no per-bucket action customization. The `validation` block restricts entries to a known-valid set of S3 actions (matching this module's existing `terraform/modules/scaleway/object-bucket` precedent of validating enum-like string inputs) to catch typos rather than silently producing a bucket policy with a misspelled, no-op action.
 
 ### New resource: one `scaleway_object_bucket_policy` per bucket
 
@@ -77,7 +78,7 @@ resource "scaleway_object_bucket_policy" "bucket_access" {
 
 ### Wildcard support is caller-side, not module-side
 
-"Grant access to all buckets prefixed `data-`" is implemented by the *caller*, not this module: since the caller already holds the literal bucket names (typically from their own `scaleway/object-bucket` module calls' `name` outputs), they filter with plain Terraform before calling this module, e.g. `bucket_names = [for b in local.known_bucket_names : b if startswith(b, "data-")]`. This module has no pattern-matching input and cannot auto-discover buckets, since Scaleway exposes no bucket-listing data source.
+"Grant access to all buckets prefixed `data-`" is implemented by the *caller*, not this module: since the caller already holds the literal bucket names (typically from their own `terraform/modules/scaleway/object-bucket` module calls' `name` outputs), they filter with plain Terraform before calling this module, e.g. `bucket_names = [for b in local.known_bucket_names : b if startswith(b, "data-")]`. This module has no pattern-matching input and cannot auto-discover buckets, since Scaleway exposes no bucket-listing data source.
 
 ### Composition hazard with blanket ObjectStorage grants
 

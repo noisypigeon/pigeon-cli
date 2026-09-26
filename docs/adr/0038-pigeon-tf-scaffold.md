@@ -1,8 +1,9 @@
-# ADR-0001: pigeon-tf repo scaffold
+# ADR-0038: pigeon-tf repo scaffold
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-22.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0001, merged into this repo by ADR-0037.
 
 ## Context
 
@@ -14,10 +15,10 @@ This ADR backfills that decision into `pigeon-tf` itself, now that it's history 
 
 ### Repo layout
 
-- Root holds provider/resource directories directly — `digitalocean/access-key`, `digitalocean/object-bucket`, `digitalocean/object-bucket-cold`, `digitalocean/project` — with no wrapping `modules/` directory, since the whole repo already is a module collection.
+- Root holds provider/resource directories directly — `terraform/modules/digitalocean/access-key`, `terraform/modules/digitalocean/object-bucket`, `terraform/modules/digitalocean/object-bucket-cold`, `terraform/modules/digitalocean/project` — with no wrapping `modules/` directory, since the whole repo already is a module collection.
 - No `LICENSE` file, matching the existing convention across `pigeon-cli` and `topology-v1`.
 - No root provider/backend configuration — this repo is never `terraform`/`terragrunt` run standalone, only consumed as module sources by other repos.
-- `README.md` is the module index.
+- `terraform/README.md` is the module index.
 
 ### Module self-containment
 
@@ -28,7 +29,7 @@ This ADR backfills that decision into `pigeon-tf` itself, now that it's history 
 
 - Semantic-version git tags (`vX.Y.Z`) on `main`. No CI or release automation — a GitHub Release is cut by hand per tag.
 - Three modules (`access-key`, `object-bucket`, `project`) were ported and released at `v0.1.0`. `object-bucket-cold` was added at `v0.1.2` — a data-source-only wrapper, since Cold Storage buckets aren't yet supported as a Terraform resource by the DigitalOcean provider.
-- `README.md`'s module table is the living, authoritative list of what's available — new modules land via an ordinary PR and version bump, not a new ADR, unless they change the scaffold conventions decided here.
+- `terraform/README.md`'s module table is the living, authoritative list of what's available — new modules land via an ordinary PR and version bump, not a new ADR, unless they change the scaffold conventions decided here.
 
 ### Consumption
 

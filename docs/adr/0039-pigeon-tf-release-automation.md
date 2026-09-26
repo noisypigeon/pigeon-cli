@@ -1,12 +1,13 @@
-# ADR-0002: pigeon-tf release automation
+# ADR-0039: pigeon-tf release automation
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-22.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0002, merged into this repo by ADR-0037.
 
 ## Context
 
-ADR-0001 explicitly deferred CI/release automation ("Out of scope: CI or release automation") — reasonable when the repo had four modules and a manual `git tag` + `gh release create` per whole-repo version was low toil. That toil is growing in two ways: modules now need their own input/output documentation (none currently has a `README.md`), and whole-repo `vX.Y.Z` tagging (`v0.1.0`–`v0.1.3`, all four confirmed repo-wide) means every module gets a version bump even when only one actually changed.
+ADR-0038 explicitly deferred CI/release automation ("Out of scope: CI or release automation") — reasonable when the repo had four modules and a manual `git tag` + `gh release create` per whole-repo version was low toil. That toil is growing in two ways: modules now need their own input/output documentation (none currently has a `README.md`), and whole-repo `vX.Y.Z` tagging (`v0.1.0`–`v0.1.3`, all four confirmed repo-wide) means every module gets a version bump even when only one actually changed.
 
 This ADR reverses that specific "out of scope" line and designs the automation: a GitHub Actions workflow that generates per-module README input/output docs, tags/releases modules independently, and maintains a per-module `CHANGELOG.md` from PR descriptions — plus a Claude Code skill giving the sole contributor a repeatable branch → PR → merge → sync loop that feeds the automation correctly (labels, PR body content). PR discipline is wanted here even without another human reviewer, so the workflow leans on PR metadata (labels, body) as its structured input rather than parsing commit messages or requiring a separate release-config file to hand-edit.
 
@@ -16,9 +17,9 @@ This is greenfield: no `.github/workflows/` exists in `pigeon-tf`, `pigeon-do`, 
 
 ### Module documentation (terraform-docs)
 
-- `terraform-docs` (via the `terraform-docs/gh-actions` GitHub Action, `output-method: inject`) generates an inputs/outputs table only — not full resource/provider dumps — into each module's own `README.md`, between `<!-- BEGIN_TF_DOCS -->`/`<!-- END_TF_DOCS -->` markers. This creates a `README.md` in every module directory (any directory containing a `versions.tf`, per ADR-0001's self-containment convention) where none currently exists.
-- The root `README.md`'s existing two-column `Modules` table stays as-is, as the lightweight repo-wide index.
-- Runs as `.github/workflows/module-docs.yml`, triggered on `push` to `main` path-filtered to `digitalocean/**/*.tf`, auto-committing doc changes directly to `main`.
+- `terraform-docs` (via the `terraform-docs/gh-actions` GitHub Action, `output-method: inject`) generates an inputs/outputs table only — not full resource/provider dumps — into each module's own `README.md`, between `<!-- BEGIN_TF_DOCS -->`/`<!-- END_TF_DOCS -->` markers. This creates a `README.md` in every module directory (any directory containing a `versions.tf`, per ADR-0038's self-containment convention) where none currently exists.
+- The `terraform/README.md`'s existing two-column `Modules` table stays as-is, as the lightweight repo-wide index.
+- Runs as `.github/workflows/module-docs.yml`, triggered on `push` to `main` path-filtered to `terraform/modules/digitalocean/**/*.tf`, auto-committing doc changes directly to `main`.
 
 ### Per-module versioning and tagging
 
@@ -29,7 +30,7 @@ This is greenfield: no `.github/workflows/` exists in `pigeon-tf`, `pigeon-do`, 
 
 ### Per-module CHANGELOG.md
 
-- One `CHANGELOG.md` per module directory (e.g. `digitalocean/object-bucket/CHANGELOG.md`), not a single repo-root file — matches per-module versioning one-to-one, and keeps each module's history self-contained next to its `.tf` files.
+- One `CHANGELOG.md` per module directory (e.g. `terraform/modules/digitalocean/object-bucket/CHANGELOG.md`), not a single repo-root file — matches per-module versioning one-to-one, and keeps each module's history self-contained next to its `.tf` files.
 - Keep a Changelog-style format. Each release workflow run prepends an entry: version, date, the PR title, the PR body verbatim, and a link back to the PR. The file is created on that module's first automated release (lazily, per the cutover above) — it doesn't exist for any module today.
 
 ### Claude Code skill for the PR workflow
@@ -43,7 +44,7 @@ This is greenfield: no `.github/workflows/` exists in `pigeon-tf`, `pigeon-do`, 
 ## Consequences
 
 - Documentation, versioning, and changelog toil is automated per module instead of manually maintained per whole-repo release.
-- Two new GitHub Actions workflows exist where none did before, directly reversing part of ADR-0001's original CI/release-automation deferral.
+- Two new GitHub Actions workflows exist where none did before, directly reversing part of ADR-0038's original CI/release-automation deferral.
 - The solo contributor gets a PR ritual enforced by convention (the skill) rather than by GitHub — this repo has no branch protection today, and this ADR doesn't add any.
 - Automated bot commits (doc regeneration, changelog updates) become a routine part of `main`'s history.
 - `pigeon-do` currently pins `pigeon-tf` by checking out a single whole-repo tag (per `pigeon-do`'s own ADR-0002). Once new changes stop landing under whole-repo tags, there's no longer one tag that captures "all modules as of now" — `pigeon-do`'s consumption model will need its own follow-up decision (e.g. tracking `main` directly, since its existing model already accepts version drift, or pinning per module). This ADR flags that consequence but explicitly does not resolve it here.

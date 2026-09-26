@@ -1,12 +1,13 @@
-# ADR-0004: port the droplet module from pigeon-pizza
+# ADR-0041: port the droplet module from pigeon-pizza
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-23.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0004, merged into this repo by ADR-0037.
 
 ## Context
 
-`pigeon-pizza/tofu/modules/digitalocean/droplet` is a real, working DigitalOcean droplet module — cloud-init provisioning (rclone, an LVM auto-combine script for attached volumes, a sudo user), a Cloudflare DNS alias — but it lives in `pigeon-pizza`'s `topology-v1`-style central `env.tf`/`source_do_x_module` pattern, the exact thing `pigeon-tf`'s ADR-0002 replaced with self-contained, independently-versioned modules. It isn't yet instantiated by any real leaf stack in `pigeon-pizza` (only the unused `source_do_droplet_module` path local exists there), so this is a copy into a better home, not an extraction from live infrastructure. `pigeon-pizza`'s own copy is untouched by this change.
+`pigeon-pizza/tofu/modules/digitalocean/droplet` is a real, working DigitalOcean droplet module — cloud-init provisioning (rclone, an LVM auto-combine script for attached volumes, a sudo user), a Cloudflare DNS alias — but it lives in `pigeon-pizza`'s `topology-v1`-style central `env.tf`/`source_do_x_module` pattern, the exact thing `pigeon-tf`'s ADR-0039 replaced with self-contained, independently-versioned modules. It isn't yet instantiated by any real leaf stack in `pigeon-pizza` (only the unused `source_do_droplet_module` path local exists there), so this is a copy into a better home, not an extraction from live infrastructure. `pigeon-pizza`'s own copy is untouched by this change.
 
 This is the first `pigeon-tf` module needing two providers (DigitalOcean *and* Cloudflare) plus `random`, and the first with a genuine inner-module dependency — on `access-key`, for the droplet's rclone Spaces credentials.
 
@@ -14,7 +15,7 @@ This is the first `pigeon-tf` module needing two providers (DigitalOcean *and* C
 
 ### Module source: drop the injected path variable
 
-The source module's `spaces_key.tf` took the `access-key` module's path as `var.source_do_access_key_module`, set by the consumer via `pigeon-pizza`'s central `env.tf` — the pattern ADR-0002 already moved away from. Since `droplet` and `access-key` now live in the same repo at a fixed relative offset, the port hardcodes `source = "../access-key"` instead — no variable, no consumer-side wiring. Terraform resolves a local path module source relative to the `.tf` file that declares it, never relative to however the outer module itself was sourced, so this resolves correctly regardless of how `pigeon-do` references `droplet`. More self-contained than the pattern being replaced, directly in ADR-0002's spirit.
+The source module's `spaces_key.tf` took the `access-key` module's path as `var.source_do_access_key_module`, set by the consumer via `pigeon-pizza`'s central `env.tf` — the pattern ADR-0039 already moved away from. Since `droplet` and `access-key` now live in the same repo at a fixed relative offset, the port hardcodes `source = "../access-key"` instead — no variable, no consumer-side wiring. Terraform resolves a local path module source relative to the `.tf` file that declares it, never relative to however the outer module itself was sourced, so this resolves correctly regardless of how `pigeon-do` references `droplet`. More self-contained than the pattern being replaced, directly in ADR-0039's spirit.
 
 ### Providers
 
@@ -22,7 +23,7 @@ The source module's `spaces_key.tf` took the `access-key` module's path as `var.
 
 ### No module rename
 
-`droplet` already names the DO resource concept directly, unlike `object-bucket`/`object-bucket-cold` (renamed in this repo's ADR-0003 because those names encoded a Terraform implementation detail instead of the actual product choice). Nothing analogous applies here.
+`droplet` already names the DO resource concept directly, unlike `object-bucket`/`object-bucket-cold` (renamed in this repo's ADR-0040 because those names encoded a Terraform implementation detail instead of the actual product choice). Nothing analogous applies here.
 
 ### Input/output cleanup
 
@@ -35,7 +36,7 @@ No other variable or output *name* changed — `namespace`/`size`/`cloudflare_zo
 ## Consequences
 
 - `pigeon-tf` now has a real, deployable compute module, self-contained like every other module here.
-- `droplet`'s consumed `access-key` revision is pinned to whatever commit `droplet` itself is checked out at — there's no way to float `access-key`'s version independently under a fixed `droplet` version. This is the whole-repo-checkout consumption model ADR-0002 already established, just exercised for the first time by real cross-module composition within this repo.
+- `droplet`'s consumed `access-key` revision is pinned to whatever commit `droplet` itself is checked out at — there's no way to float `access-key`'s version independently under a fixed `droplet` version. This is the whole-repo-checkout consumption model ADR-0039 already established, just exercised for the first time by real cross-module composition within this repo.
 - Any consumer of the old `url` output name (none exist yet — this module isn't wired into `pigeon-do`) would need to update to `hostname`.
 
 ## Out of scope

@@ -1,12 +1,13 @@
-# ADR-0005: add block-storage-volume module
+# ADR-0042: add block-storage-volume module
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-25.
 - **Status**: Accepted.
+- **Origin**: pigeon-tf ADR-0005, merged into this repo by ADR-0037.
 
 ## Context
 
-`block-storage-volume` already existed in the working tree as an untracked, ad hoc module (`inputs.tf`, `outputs.tf`, `volume.tf`) with no git history — missing the scaffolding every sibling module has (`versions.tf`, `README.md`), input/output descriptions predating ADR-0004's terse noun-phrase convention, and a copy-paste bug in its `urns` output. This ADR documents bringing it up to repo scaffold conventions before its first release, and the decisions made while doing so.
+`block-storage-volume` already existed in the working tree as an untracked, ad hoc module (`inputs.tf`, `outputs.tf`, `volume.tf`) with no git history — missing the scaffolding every sibling module has (`versions.tf`, `README.md`), input/output descriptions predating ADR-0041's terse noun-phrase convention, and a copy-paste bug in its `urns` output. This ADR documents bringing it up to repo scaffold conventions before its first release, and the decisions made while doing so.
 
 ## Decision
 
@@ -24,11 +25,11 @@ The `urns` output's `value` was `digitalocean_volume.volume[*].id`, copy-pasted 
 
 ### Input/output cleanup
 
-Every input/output description was tightened to this repo's established terse, noun-phrase style (no leading articles, no trailing periods), matching the pattern ADR-0004 applied to `droplet`.
+Every input/output description was tightened to this repo's established terse, noun-phrase style (no leading articles, no trailing periods), matching the pattern ADR-0041 applied to `droplet`.
 
 ### Docs
 
-Added `README.md` with `terraform-docs` inject markers (`<!-- BEGIN_TF_DOCS -->` / `<!-- END_TF_DOCS -->`), populated by CI after merge. Added the module to `module-docs.yml`'s hand-maintained `working-dir` list — ADR-0003 already flagged this list as non-self-discovering, so a new module is invisible to doc generation until added there. Added a row to the root `README.md` module table, per ADR-0001's rule that the table is the living, authoritative list of what's available.
+Added `README.md` with `terraform-docs` inject markers (`<!-- BEGIN_TF_DOCS -->` / `<!-- END_TF_DOCS -->`), populated by CI after merge. Added the module to `module-docs.yml`'s hand-maintained `working-dir` list — ADR-0040 already flagged this list as non-self-discovering, so a new module is invisible to doc generation until added there. Added a row to `terraform/README.md`'s module table, per ADR-0038's rule that the table is the living, authoritative list of what's available.
 
 ### Changelog
 
@@ -46,4 +47,4 @@ Shipped via the `release-pr` skill, tagged `digitalocean/block-storage-volume/v0
 ## Out of scope
 
 - Wiring this module into `droplet` or any `pigeon-do` leaf stack.
-- The LVM/mdadm combination logic itself, which lives in `droplet`'s cloud-init (per ADR-0004's own out-of-scope note) — this module only provides the raw volumes and their stable device paths.
+- The LVM/mdadm combination logic itself, which lives in `droplet`'s cloud-init (per ADR-0041's own out-of-scope note) — this module only provides the raw volumes and their stable device paths.
