@@ -123,6 +123,25 @@ jobs:
 
             git add "$CHANGELOG"
             TAGS="$TAGS ${dir}/v${NEXT}"
+
+            # Also append a one-liner to the repo-wide root CHANGELOG.md (ADR-0050).
+            ROOT_CHANGELOG="CHANGELOG.md"
+            ROOT_ENTRY="- [terraform/${dir#terraform/modules/}] ${PR_TITLE} ([#${PR_NUMBER}](${PR_URL}))"
+            if grep -q "^## ${TODAY}\$" "$ROOT_CHANGELOG"; then
+              awk -v today="## ${TODAY}" -v entry="$ROOT_ENTRY" '
+                { print }
+                $0 == today { print ""; print entry }
+              ' "$ROOT_CHANGELOG" > "${ROOT_CHANGELOG}.new"
+            else
+              awk -v today="## ${TODAY}" -v entry="$ROOT_ENTRY" '
+                BEGIN { inserted = 0 }
+                /^## / && !inserted { print today; print ""; print entry; print ""; inserted = 1 }
+                { print }
+                END { if (!inserted) { print ""; print today; print ""; print entry } }
+              ' "$ROOT_CHANGELOG" > "${ROOT_CHANGELOG}.new"
+            fi
+            mv "${ROOT_CHANGELOG}.new" "$ROOT_CHANGELOG"
+            git add "$ROOT_CHANGELOG"
           done
 
           echo "tags=${TAGS# }" >> "$GITHUB_OUTPUT"
