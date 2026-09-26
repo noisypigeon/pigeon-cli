@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-25
+
 - ADR-0051: GitHub repo renamed `pigeon-cli` → `pigeon`; corrects `Cargo.toml`'s `repository` field and every in-repo GitHub link, bumps to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).
 
 - ADR-0029: Every substantive change now lands via branch → PR → local `mise run ci` gate → auto-merge, with a changelog entry per PR ([#1](https://github.com/noisypigeon/pigeon/pull/1)).
