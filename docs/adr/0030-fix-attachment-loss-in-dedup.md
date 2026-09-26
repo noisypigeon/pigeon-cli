@@ -86,8 +86,8 @@ An integration-level test is added alongside the fix: real `EmailTransform::tran
 
 ## Out of scope
 
-- Investigating the 29723-message failure count. ([#38](https://github.com/noisypigeon/pigeon-cli/issues/38))
-- Structured/aggregated failure-reason reporting (today's per-message `eprintln!` warnings have no aggregate summary) -- a related but distinct UX gap. ([#37](https://github.com/noisypigeon/pigeon-cli/issues/37))
+- Investigating the 29723-message failure count. ([#38](https://github.com/noisypigeon/pigeon/issues/38))
+- Structured/aggregated failure-reason reporting (today's per-message `eprintln!` warnings have no aggregate summary) -- a related but distinct UX gap. ([#37](https://github.com/noisypigeon/pigeon/issues/37))
 - Any change to the dedup/placement algorithm's actual logic beyond the path-reconstruction fix -- the two-pass structure, idempotency guard, and canonical-selection order are all correct as designed.
 
 Implementation is a separate, later task.
@@ -162,6 +162,6 @@ Finding 1 is a separate, real, confirmed bug with its own fix direction: `verify
 
 - Implementing either fix -- both are a separate, later task, pending direction on whether to land them together or separately.
 - Any other change to the dedup/placement algorithm beyond what Finding 2 requires.
-- Structured/aggregated failure-reason reporting (still a distinct, existing gap, unchanged since the original ADR). ([#37](https://github.com/noisypigeon/pigeon-cli/issues/37))
+- Structured/aggregated failure-reason reporting (still a distinct, existing gap, unchanged since the original ADR). ([#37](https://github.com/noisypigeon/pigeon/issues/37))
 
 Implementation is a separate, later task.

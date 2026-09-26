@@ -100,7 +100,7 @@ A file that fails to decrypt -- wrong key, truncated, tampered (AEAD tag mismatc
 
 ## Out of scope
 
-- Any bucket-download step (e.g. new `pigeon dataops`/bucket "copy down" tooling) -- this ADR assumes the encrypted files are already present in `--input-dir` by whatever means (manual download, existing S3-compatible tooling, a future ADR). ([#33](https://github.com/noisypigeon/pigeon-cli/issues/33))
+- Any bucket-download step (e.g. new `pigeon dataops`/bucket "copy down" tooling) -- this ADR assumes the encrypted files are already present in `--input-dir` by whatever means (manual download, existing S3-compatible tooling, a future ADR). ([#33](https://github.com/noisypigeon/pigeon/issues/33))
 - Re-encrypting or re-uploading decrypted output -- this is a one-way "get my plaintext back" tool, not a re-encryption or migration utility.
 - Any change to the encryption scheme, key management, or upload path -- ADR-0025/0026/0027 stand entirely as decided.
 

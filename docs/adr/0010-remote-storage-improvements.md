@@ -58,7 +58,7 @@ Together these mean `remotes.toml` and the keychain entries backing it are never
 
 ## Out of scope
 
-- Renaming an existing alias in place (remove + reconfigure instead). ([#15](https://github.com/noisypigeon/pigeon-cli/issues/15))
+- Renaming an existing alias in place (remove + reconfigure instead). ([#15](https://github.com/noisypigeon/pigeon/issues/15))
 - Any change to the S3 client crate or connectivity model ADR-0009 already decided.
 - Any change to `email`.
 - Implementation itself — like every ADR before its own separate implementation request, this is a decision record only.

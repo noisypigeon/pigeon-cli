@@ -57,7 +57,7 @@ Called out explicitly so a future reader doesn't wonder why only the dedup index
 
 ## Out of scope
 
-- A per-provider concurrency-cap table in `provider.rs` — accepted non-decision, deferred pending real usage data. ([#20](https://github.com/noisypigeon/pigeon-cli/issues/20))
+- A per-provider concurrency-cap table in `provider.rs` — accepted non-decision, deferred pending real usage data. ([#20](https://github.com/noisypigeon/pigeon/issues/20))
 - Concurrency for `--debug sink`/`--debug transform`.
 - Retry/backoff on provider rate-limit rejections surfaced by higher concurrency — today's existing hard-error-per-mailbox behavior is unchanged; backoff is a separate future ADR.
 - Any change to `--output-remote`'s per-message upload mechanics beyond what naturally results from more mailboxes' messages uploading in parallel — ADR-0011's one-call-per-file model is untouched.

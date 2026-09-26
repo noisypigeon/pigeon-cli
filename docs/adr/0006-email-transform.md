@@ -76,6 +76,6 @@ One shared `attachments/` folder per identity (not per-message) — ADR-0001's o
 
 ## Out of scope
 
-- Decoding mailbox names' modified-UTF-7 encoding into human-readable tags (the `mailbox/...` tag uses the same raw sanitized form sink already produces; prettifying it can follow later without changing this ADR's taxonomy shape). ([#8](https://github.com/noisypigeon/pigeon-cli/issues/8))
-- Any query/search command over the transformed output. ([#9](https://github.com/noisypigeon/pigeon-cli/issues/9))
+- Decoding mailbox names' modified-UTF-7 encoding into human-readable tags (the `mailbox/...` tag uses the same raw sanitized form sink already produces; prettifying it can follow later without changing this ADR's taxonomy shape). ([#8](https://github.com/noisypigeon/pigeon/issues/8))
+- Any query/search command over the transformed output. ([#9](https://github.com/noisypigeon/pigeon/issues/9))
 - Deleting or modifying sink's `.eml` files — transform is read-only over its input, the same spirit as sink's read-only IMAP guarantee (ADR-0005).

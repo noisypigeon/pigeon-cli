@@ -1,4 +1,4 @@
-# pigeon-cli
+# pigeon
 
 A monorepo for personal infrastructure: `pigeon`, a Rust CLI that
 authenticates, syncs, transforms, and optionally encrypts personal data to

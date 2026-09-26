@@ -162,12 +162,12 @@ jane-doe          7          568      42           209.0 MB
   ADR-0021 restructure moved them into `service/pigeon-cli/src/commands/job/email_sync/` --
   confirmed still raw `eprintln!` today, reachable while other workers'
   bars are live. A real, pre-existing gap, but unrelated to the silent
-  manifest phase this ADR addresses. ([#40](https://github.com/noisypigeon/pigeon-cli/issues/40))
+  manifest phase this ADR addresses. ([#40](https://github.com/noisypigeon/pigeon/issues/40))
 - Any progress indicator for the dedup phase (`run_dedup_pass`), which is
   also currently silent -- a separate, adjacent gap from the one raised
-  here. ([#41](https://github.com/noisypigeon/pigeon-cli/issues/41))
+  here. ([#41](https://github.com/noisypigeon/pigeon/issues/41))
 - Reconciling BODYSTRUCTURE-derived attachment estimates against the real
-  `deduped_attachments` count reported once a run finishes. ([#42](https://github.com/noisypigeon/pigeon-cli/issues/42))
+  `deduped_attachments` count reported once a run finishes. ([#42](https://github.com/noisypigeon/pigeon/issues/42))
 
 The three items above are filed as GitHub issues via `mise run adr-issue`
 while landing this ADR, per ADR-0031 §4. Implementation of the Decision

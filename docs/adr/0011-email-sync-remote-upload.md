@@ -50,7 +50,7 @@ Uploads mirror `--output-dir`'s relative tree directly at the configured remote'
 
 ## Out of scope
 
-- Deleting remote objects that no longer have a local counterpart — no sync/mirror semantics, matching ADR-0009's `copy`-only, never-destructive stance. ([#12](https://github.com/noisypigeon/pigeon-cli/issues/12))
-- Uploading to more than one remote at once. ([#16](https://github.com/noisypigeon/pigeon-cli/issues/16))
+- Deleting remote objects that no longer have a local counterpart — no sync/mirror semantics, matching ADR-0009's `copy`-only, never-destructive stance. ([#12](https://github.com/noisypigeon/pigeon/issues/12))
+- Uploading to more than one remote at once. ([#16](https://github.com/noisypigeon/pigeon/issues/16))
 - Any change to `remote`'s own standalone commands beyond adding the shared `upload_if_changed` primitive.
 - Implementation itself — like every ADR before its own separate implementation request, this is a decision record only.

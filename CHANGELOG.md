@@ -11,4 +11,8 @@ backfill of prior history.
 
 ## 2026-09-26
 
-- [repo] ADR-0050: relocate `Cargo.toml`/`Cargo.lock` into `service/pigeon-cli/`, add this repo-wide dated changelog, rename `LICENSE` to `LICENSE.md`, and rewrite both READMEs ([#59](https://github.com/noisypigeon/pigeon-cli/pull/59)).
+- [repo] ADR-0050: relocate `Cargo.toml`/`Cargo.lock` into `service/pigeon-cli/`, add this repo-wide dated changelog, rename `LICENSE` to `LICENSE.md`, and rewrite both READMEs ([#59](https://github.com/noisypigeon/pigeon/pull/59)).
+
+## 2026-09-25
+
+- [repo] ADR-0051: rename GitHub repo references `pigeon-cli` → `pigeon`, correct `Cargo.toml`'s `repository` field, and bump to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).

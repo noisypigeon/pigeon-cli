@@ -1,11 +1,11 @@
 [package]
 name = "pigeon-cli"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 rust-version = "1.92"
 description = "Pigeon: authenticate, sink, and transform personal data from external services."
 license = "GPL-3.0-or-later"
-repository = "https://github.com/noisypigeon/pigeon-cli"
+repository = "https://github.com/noisypigeon/pigeon"
 readme = "README.md"
 keywords = ["email", "imap", "s3", "backup", "cli"]
 categories = ["command-line-utilities", "email"]

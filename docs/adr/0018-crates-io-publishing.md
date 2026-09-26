@@ -79,9 +79,9 @@ A review found no secrets or personal data in tracked files (test fixtures use `
 
 ## Out of scope
 
-- GitHub Actions or any other CI/CD automation for publishing — explicitly not introduced, matching this project's existing all-`mise`, no-CI pattern. ([#34](https://github.com/noisypigeon/pigeon-cli/issues/34))
-- Automated version-bumping tooling (`cargo-release` or similar). ([#35](https://github.com/noisypigeon/pigeon-cli/issues/35))
-- A full dependency license audit — flagged as a pre-publish verification step, not performed by this ADR. ([#36](https://github.com/noisypigeon/pigeon-cli/issues/36))
+- GitHub Actions or any other CI/CD automation for publishing — explicitly not introduced, matching this project's existing all-`mise`, no-CI pattern. ([#34](https://github.com/noisypigeon/pigeon/issues/34))
+- Automated version-bumping tooling (`cargo-release` or similar). ([#35](https://github.com/noisypigeon/pigeon/issues/35))
+- A full dependency license audit — flagged as a pre-publish verification step, not performed by this ADR. ([#36](https://github.com/noisypigeon/pigeon/issues/36))
 - Implementation itself — like every ADR before it, this is a decision record only.
 
 ## Amendment (2026-09-26): manifest relocation (ADR-0050)
@@ -101,3 +101,19 @@ a direct result, both superseded rather than contradicted:
   before and after the move: before, it included all 49 ADRs, every
   Terraform module, and `.github/`/`.claude/`; after, only
   `service/pigeon-cli/`'s own files.
+
+## Amendment (2026-09-25): GitHub repo rename (ADR-0051)
+
+The GitHub repository has been renamed from `noisypigeon/pigeon-cli` to
+`noisypigeon/pigeon` (ADR-0051). Two things stated above are now stale as
+*current* facts but stay unedited as an accurate record of what was true when
+this ADR was written and implemented:
+
+- The Context bullet "`git remote -v` confirms the canonical repo is
+  `github.com/noisypigeon/pigeon-cli`" — true on 2026-09-23, not true today.
+- The `repository = "https://github.com/noisypigeon/pigeon-cli"` code block
+  above, documenting this ADR's own original `Cargo.toml` decision.
+
+`service/pigeon-cli/Cargo.toml`'s actual `repository` field is corrected to
+`https://github.com/noisypigeon/pigeon` by ADR-0051, along with every other
+in-repo GitHub link — see that ADR for the full scope.

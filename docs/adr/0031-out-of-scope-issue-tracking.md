@@ -54,7 +54,7 @@ Every ADR from 0003 through 0030 was audited against the current codebase for Ou
 
 ## Consequences
 
-- Every still-open Out of scope bullet across ADR-0003-0030 gains an inline issue link, e.g. `- Support non-S3 dataops backends (GCS, Azure, local-to-local). ([#17](https://github.com/noisypigeon/pigeon-cli/issues/17))`.
+- Every still-open Out of scope bullet across ADR-0003-0030 gains an inline issue link, e.g. `- Support non-S3 dataops backends (GCS, Azure, local-to-local). ([#17](https://github.com/noisypigeon/pigeon/issues/17))`.
 - The repo gains its first `scripts/` directory (relocated to `.github/scripts/` by ADR-0036) and its first non-cargo mise task.
 - Deferred work becomes a real, labeled, prioritizable backlog instead of prose that's easy to forget.
 - Landing a future ADR gains one small extra step, offset by how cheap it is (one script call per deferred item).

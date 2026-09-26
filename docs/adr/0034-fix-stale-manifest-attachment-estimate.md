@@ -166,7 +166,7 @@ read as a decision input at all -- there's nothing left to go stale.
 
 ## Out of scope
 
-- The RFC 2231 encoded-parameter-name gap in `count_attachments` ([#49](https://github.com/noisypigeon/pigeon-cli/issues/49))
+- The RFC 2231 encoded-parameter-name gap in `count_attachments` ([#49](https://github.com/noisypigeon/pigeon/issues/49))
   (`name*0*=`/`name*=` not matching the current exact `"name"` check)
   -- a narrower, content-dependent heuristic gap, unrelated to why the
   estimate is *always* zero.

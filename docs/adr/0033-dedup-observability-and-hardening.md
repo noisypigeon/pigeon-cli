@@ -239,7 +239,7 @@ all three call sites for free with no other call-site changes.
   fixes are confirmed correct and untouched here.
 - A live-terminal-width-aware progress bar -- indicatif's template width is
   resolved once, statically, not queried at render time; the fixed
-  24-char budget is a one-time, defensible choice, not adaptive sizing. ([#46](https://github.com/noisypigeon/pigeon-cli/issues/46))
+  24-char budget is a one-time, defensible choice, not adaptive sizing. ([#46](https://github.com/noisypigeon/pigeon/issues/46))
 
 The genuinely-deferred item above is filed as a GitHub issue via `mise run
 adr-issue` while landing this ADR, per ADR-0031 §4; the first two bullets

@@ -20,16 +20,16 @@ This directory holds only module source — it has no root provider/backend conf
 
 ## Versioning
 
-Releases are tagged on `pigeon-cli`'s `main` with per-module, path-scoped semantic versions (`terraform/modules/<provider>/<module>/vX.Y.Z`). Consuming repos pin to a tag by checking out that tag in their local clone of this repo. Tags created before the ADR-0037 merge keep their original, shorter form (`v0.1.0`-`v0.1.3` repo-wide, `<provider>/<module>/vX.Y.Z` per-module) — see ADR-0037 for why they weren't renamed.
+Releases are tagged on `pigeon`'s `main` with per-module, path-scoped semantic versions (`terraform/modules/<provider>/<module>/vX.Y.Z`). Consuming repos pin to a tag by checking out that tag in their local clone of this repo. Tags created before the ADR-0037 merge keep their original, shorter form (`v0.1.0`-`v0.1.3` repo-wide, `<provider>/<module>/vX.Y.Z` per-module) — see ADR-0037 for why they weren't renamed.
 
 ## Consuming locally
 
 Since consumers run Terragrunt/Terraform locally (no remote module source), clone this repo as a sibling directory to the consuming repo and check out the tag you want:
 
 ```
-git clone git@github.com:noisypigeon/pigeon-cli.git ../pigeon-cli
-cd ../pigeon-cli && git checkout terraform/modules/digitalocean/access-key/v0.1.0
+git clone git@github.com:noisypigeon/pigeon.git ../pigeon
+cd ../pigeon && git checkout terraform/modules/digitalocean/access-key/v0.1.0
 ```
 
 then reference modules by their path under `terraform/modules/`, e.g.
-`../pigeon-cli/terraform/modules/digitalocean/access-key`.
+`../pigeon/terraform/modules/digitalocean/access-key`.
