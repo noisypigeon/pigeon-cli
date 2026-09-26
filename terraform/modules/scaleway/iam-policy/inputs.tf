@@ -3,12 +3,12 @@ variable "name" {
   description = "IAM application/policy name"
 
   validation {
-    condition = (
+    condition = var.name != "" && (
       (var.organization_id != null && length(coalesce(var.organization_permission_sets, [])) > 0) ||
       (var.project_ids != null && length(coalesce(var.project_permission_sets, [])) > 0) ||
       (length(var.bucket_names) > 0 && length(var.bucket_actions) > 0)
     )
-    error_message = "At least one of organization_id+organization_permission_sets, project_ids+project_permission_sets, or bucket_names+bucket_actions must be fully set."
+    error_message = "name must be non-empty, and at least one of organization_id+organization_permission_sets, project_ids+project_permission_sets, or bucket_names+bucket_actions must be fully set."
   }
 }
 
