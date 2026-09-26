@@ -6,17 +6,17 @@
 
 ## Context
 
-`pigeon email sink` is still a stub (`src/commands/email.rs`'s `sink()` prints `Not Yet Implemented`). ADR-0001 named its rough shape (`pigeon email sink first-last --directory /tmp/first`) and said the output feeds a later `transform` stage that converts "MBOX and EML files" to Markdown, but never specified sink's actual download mechanics. ADR-0003 deliberately left `credentials::get_secret` unwritten, noting "nothing reads credentials back until sink exists" — sink is that consumer. This ADR decides how sink actually connects, downloads, and stores mail, without mutating anything on the server.
+`pigeon email sink` is still a stub (`service/pigeon-cli/src/commands/email.rs`'s `sink()` prints `Not Yet Implemented`). ADR-0001 named its rough shape (`pigeon email sink first-last --directory /tmp/first`) and said the output feeds a later `transform` stage that converts "MBOX and EML files" to Markdown, but never specified sink's actual download mechanics. ADR-0003 deliberately left `credentials::get_secret` unwritten, noting "nothing reads credentials back until sink exists" — sink is that consumer. This ADR decides how sink actually connects, downloads, and stores mail, without mutating anything on the server.
 
 ## Decision
 
 ### Identity selection
 
-`Sink`'s `alias` argument becomes `Option<String>` (a documented amendment to ADR-0002's original `alias: String` shape, the same kind of change ADR-0003 made to `Authenticate`). When omitted, `sink` lists `identity::Store`'s aliases via `dialoguer::Select` — the same pattern `Provider::prompt_select()` already established in `src/provider.rs`. Exactly one stored identity auto-selects without prompting; zero identities is a hard error pointing the user at `authenticate`.
+`Sink`'s `alias` argument becomes `Option<String>` (a documented amendment to ADR-0002's original `alias: String` shape, the same kind of change ADR-0003 made to `Authenticate`). When omitted, `sink` lists `identity::Store`'s aliases via `dialoguer::Select` — the same pattern `Provider::prompt_select()` already established in `service/pigeon-cli/src/provider.rs`. Exactly one stored identity auto-selects without prompting; zero identities is a hard error pointing the user at `authenticate`.
 
 ### Connecting
 
-`src/imap_client.rs`'s `verify_login` connects, logs in, and logs out immediately — it exists only to validate a credential during `authenticate`. `sink` needs one `Session` held open across many `list`/`examine`/`uid_fetch` calls across every mailbox, so `imap_client` gains a second function that returns a live, logged-in `Session` instead of closing it. `sink`'s entire multi-mailbox download runs inside one `tokio` `block_on`, the same single-runtime-per-command shape `verify_login` already uses, just scoped to the whole operation instead of one login round-trip.
+`service/pigeon-cli/src/imap_client.rs`'s `verify_login` connects, logs in, and logs out immediately — it exists only to validate a credential during `authenticate`. `sink` needs one `Session` held open across many `list`/`examine`/`uid_fetch` calls across every mailbox, so `imap_client` gains a second function that returns a live, logged-in `Session` instead of closing it. `sink`'s entire multi-mailbox download runs inside one `tokio` `block_on`, the same single-runtime-per-command shape `verify_login` already uses, just scoped to the whole operation instead of one login round-trip.
 
 The secret itself comes from a new `credentials::get_secret(alias) -> Result<String, String>`, wrapping `keyring::Entry::get_password`.
 

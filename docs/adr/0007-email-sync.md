@@ -54,7 +54,7 @@ ADR-0001 originally wanted sink to "pull all emails and attachments" as a preser
 
 - The common case drops from two invocations to one, and messages no longer permanently double their storage footprint (raw `.eml` + Markdown) by default.
 - Anyone who wants ADR-0001's original permanent-raw-archive guarantee back has to opt in via `--debug sink` and manage that directory themselves — it's no longer the default behavior of getting mail out of a mailbox at all.
-- `src/sink.rs` and `src/transform.rs`'s core logic barely changes — `sink::run`'s per-mailbox fetch loop and `transform::run`'s per-message parse-and-render logic are still the right shapes, just called from a shared per-UID orchestrator instead of two separate command handlers. This is a refactor of *orchestration*, not a rewrite of either phase.
+- `service/pigeon-cli/src/sink.rs` and `service/pigeon-cli/src/transform.rs`'s core logic barely changes — `sink::run`'s per-mailbox fetch loop and `transform::run`'s per-message parse-and-render logic are still the right shapes, just called from a shared per-UID orchestrator instead of two separate command handlers. This is a refactor of *orchestration*, not a rewrite of either phase.
 - `credentials::get_secret` is now needed by the default `sync` flow and by `--debug sink`, but still not by `--debug transform` (matching `transform`'s existing no-keychain-access property).
 
 ## Out of scope

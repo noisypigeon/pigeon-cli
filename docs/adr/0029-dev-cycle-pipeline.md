@@ -24,7 +24,7 @@ This repo has no CI infrastructure yet (`.github/workflows/` is empty) and no br
 
 `gh pr create` with a title matching this repo's existing commit convention (`type(adr-XXXX): summary`, e.g. `feat(adr-0024): concurrent uploads and better observability`, per current `git log`). Body: the ADR's Context in 1-2 sentences, its Decision as condensed bullets, and a relative link to the full ADR file in `docs/adr/` — never the whole ADR pasted in.
 
-### 4. `CHANGELOG.md` gains an `[Unreleased]` section, updated once per merged PR
+### 4. `service/pigeon-cli/CHANGELOG.md` gains an `[Unreleased]` section, updated once per merged PR
 
 Keep a Changelog's standard `[Unreleased]` section, added at the top of the file (above `[0.2.0]`). Once a PR exists (so its number/URL is known), push one follow-up commit on the same branch adding a single bullet:
 
@@ -46,7 +46,7 @@ This is why the changelog update happens *after* PR creation, not before — the
 
 - Every substantive change gets a real PR, branch, and changelog line going forward — a genuine audit trail where today there's a flat commit history with no PR record at all.
 - No manual merge-approval friction: the ADR/plan approval step (already required) is the only human checkpoint; CI passing is the only automated one.
-- `CHANGELOG.md` becomes a living document updated continuously, not just at release time — `[Unreleased]` is always an accurate "what's landed since the last release" list.
+- `service/pigeon-cli/CHANGELOG.md` becomes a living document updated continuously, not just at release time — `[Unreleased]` is always an accurate "what's landed since the last release" list.
 - No new CI infrastructure or repo-settings changes (branch protection, required status checks) — the gate is local and self-administered, which is only appropriate because there's no second contributor to bypass it.
 
 ## Out of scope

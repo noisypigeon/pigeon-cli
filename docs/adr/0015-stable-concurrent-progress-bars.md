@@ -8,20 +8,20 @@
 
 A real run of `pigeon email sync` showed its progress bars failing to update in place: the same bar (e.g. `[Gmail]/All Mail fetch`) reprinted as a brand-new scrolling line on every tick (`629/15436`, `634/15436`, `685/15436`, ...) instead of overwriting itself, and this happened across bars for multiple mailboxes interleaved in one pane. This regressed after ADR-0014 (concurrent mailbox processing), which made `sync::run_async` spawn multiple mailbox workers sharing one `indicatif::MultiProgress`.
 
-Root cause, confirmed directly in the current code (`src/email/sync.rs`, `src/email/transform.rs`) and in `indicatif` 0.18.6's own source:
+Root cause, confirmed directly in the current code (`service/pigeon-cli/src/email/sync.rs`, `service/pigeon-cli/src/email/transform.rs`) and in `indicatif` 0.18.6's own source:
 
 `MultiProgress` redraws by tracking how many terminal lines it drew last time, moving the cursor up, and overwriting. Any plain `println!`/`eprintln!` call that happens while bars are active bypasses that tracking entirely — the write lands on the terminal without `MultiProgress` knowing a line was added, so its next redraw's cursor-up count is wrong, and every active bar starts reprinting as new lines instead of overwriting. `MultiProgress` is a single shared instance (cloned into every worker per ADR-0014), so one worker's raw print corrupts every other concurrently-running worker's bars too — exactly matching the observed screenshot, where unrelated `[Gmail]/...` fetch bars were the ones duplicating.
 
-Three call sites in `sync_mailbox` (`src/email/sync.rs`) do this today, all reachable while other mailboxes' bars are actively drawing:
+Three call sites in `sync_mailbox` (`service/pigeon-cli/src/email/sync.rs`) do this today, all reachable while other mailboxes' bars are actively drawing:
 - the "up to date" status line (`println!("{mailbox_name}: up to date ...")`, in the `pending.is_empty()` early-return branch — runs before *this* mailbox's own bar exists, but other mailboxes' bars are already live);
 - the "upload failed for UID ..." warning (`eprintln!`, inside the per-UID loop, with `sync_bar` and others actively drawing);
 - the "verification failed for UID ..." warning (`eprintln!`, same situation).
 
-`transform::transform_one` (`src/email/transform.rs`) has five of its own `eprintln!` warning sites (unparseable message, missing `Date` header, unreadable file, non-UID filename, missing canonical file on a dedup merge) — called synchronously from inside `sync_mailbox`'s dedup-lock-guarded block, also while bars are live. `transform.rs` has zero `indicatif` dependency today by design (ADR-0006/0007 — it's reused standalone by `--debug transform`, which draws no bars at all), so threading a `MultiProgress` into its signature would needlessly couple a pure transform module to sync's UI concerns.
+`transform::transform_one` (`service/pigeon-cli/src/email/transform.rs`) has five of its own `eprintln!` warning sites (unparseable message, missing `Date` header, unreadable file, non-UID filename, missing canonical file on a dedup merge) — called synchronously from inside `sync_mailbox`'s dedup-lock-guarded block, also while bars are live. `transform.rs` has zero `indicatif` dependency today by design (ADR-0006/0007 — it's reused standalone by `--debug transform`, which draws no bars at all), so threading a `MultiProgress` into its signature would needlessly couple a pure transform module to sync's UI concerns.
 
 `indicatif::MultiProgress` already provides exactly the right primitives for both cases: `println(msg)` — print one line above all bars, then redraw correctly — and `suspend(f)` — hide every bar, run `f`, then redraw; its own doc comment describes this as "useful for external code that writes to the standard output."
 
-Confirmed not implicated, no changes needed: `src/email/sink.rs` has zero `println!`/`eprintln!` calls at all; `src/email/commands.rs`'s prints all run either before any sync starts or after `sync::run` has fully returned (the runtime, and every bar, is long gone by then); `run_async`'s own post-collection `eprintln!("Error: {err}")` only runs once every worker — and thus every bar — has already finished.
+Confirmed not implicated, no changes needed: `service/pigeon-cli/src/email/sink.rs` has zero `println!`/`eprintln!` calls at all; `service/pigeon-cli/src/email/commands.rs`'s prints all run either before any sync starts or after `sync::run` has fully returned (the runtime, and every bar, is long gone by then); `run_async`'s own post-collection `eprintln!("Error: {err}")` only runs once every worker — and thus every bar — has already finished.
 
 ## Decision
 

@@ -6,7 +6,7 @@
 
 ## Context
 
-ADR-0025 tied encryption to a `BucketConfig.encrypt: bool` flag, set once when the bucket is configured (`pigeon keyring add/modify bucket`'s "Encrypt files before upload to this bucket?" prompt). ADR-0026 built key selection on top of that flag: `EncryptionKeyInput.required` in `src/commands/job/email_sync/wizard.rs` was exactly `job.remote.as_ref().is_some_and(|(bc, _)| bc.encrypt)` -- so the job wizard only ever offered to select an encryption key if the target bucket had been pre-configured that way. There was no interactive path to opt into encryption at run-time for a bucket that wasn't configured with `encrypt: true` up front.
+ADR-0025 tied encryption to a `BucketConfig.encrypt: bool` flag, set once when the bucket is configured (`pigeon keyring add/modify bucket`'s "Encrypt files before upload to this bucket?" prompt). ADR-0026 built key selection on top of that flag: `EncryptionKeyInput.required` in `service/pigeon-cli/src/commands/job/email_sync/wizard.rs` was exactly `job.remote.as_ref().is_some_and(|(bc, _)| bc.encrypt)` -- so the job wizard only ever offered to select an encryption key if the target bucket had been pre-configured that way. There was no interactive path to opt into encryption at run-time for a bucket that wasn't configured with `encrypt: true` up front.
 
 This ADR originally (as first accepted) removed that coupling entirely: encryption became a pure per-job-run interactive choice, mirroring the existing "Upload to a bucket-config?" pattern (`RemoteOutputInput`) -- the job wizard asked "Encrypt this upload?" whenever there was an upload target at all, independent of anything stored on the bucket-config, with `--encryption-key`/interactive selection as the only way to name a key.
 
@@ -139,7 +139,7 @@ Three ways this resolves, in priority order (`WizardInput::resolve()`'s existing
 let encrypt = encryptor.is_some();
 ```
 
-in `src/commands/job/email_sync/worker.rs` is untouched by this amendment -- `encryptor: Option<&Aes256GcmSivEncryptor>` remains the only source of truth at that point, however its alias was resolved.
+in `service/pigeon-cli/src/commands/job/email_sync/worker.rs` is untouched by this amendment -- `encryptor: Option<&Aes256GcmSivEncryptor>` remains the only source of truth at that point, however its alias was resolved.
 
 ## Consequences
 

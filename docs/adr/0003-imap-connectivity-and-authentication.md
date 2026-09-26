@@ -55,7 +55,7 @@ Storage is split between non-secret metadata and the secret itself:
 - **TTY**: `dialoguer::Password`, masked and interactive, as originally decided above.
 - **Not a TTY** (piped/redirected stdin): read a single line from stdin directly and use it as the secret verbatim.
 
-This is a deliberate, minimal branch rather than a workaround bolted on for tests: it makes `pigeon` scriptable with a piped secret as a side benefit, and it's what makes `authenticate`'s failure paths exercisable in `tests/cli.rs` without a real TTY. The secret is still never accepted as a CLI argument in either mode, so it never lands in shell history or `ps`.
+This is a deliberate, minimal branch rather than a workaround bolted on for tests: it makes `pigeon` scriptable with a piped secret as a side benefit, and it's what makes `authenticate`'s failure paths exercisable in `service/pigeon-cli/tests/cli.rs` without a real TTY. The secret is still never accepted as a CLI argument in either mode, so it never lands in shell history or `ps`.
 
 ### Multi-provider management
 

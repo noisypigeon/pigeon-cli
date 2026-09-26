@@ -26,7 +26,7 @@ Exactly as requested: **Alias → Bucket Name → Endpoint URL → Access Key ID
 
 ### Remove `region` entirely
 
-From the struct, the TOML schema, and the prompt. This isn't just simplification for its own sake: `Remote.region` was captured at `configure` time and persisted, but nothing in `src/remote/client.rs` ever reads it — no builder call anywhere sets `.region(...)`. The `minio` crate resolves region per-bucket on its own. The field was dead the moment it was written, matching the user's own instinct that it's "inferred by the endpoint" anyway (true for DigitalOcean Spaces and most S3-compatible providers, which bake the region into the hostname).
+From the struct, the TOML schema, and the prompt. This isn't just simplification for its own sake: `Remote.region` was captured at `configure` time and persisted, but nothing in `service/pigeon-cli/src/remote/client.rs` ever reads it — no builder call anywhere sets `.region(...)`. The `minio` crate resolves region per-bucket on its own. The field was dead the moment it was written, matching the user's own instinct that it's "inferred by the endpoint" anyway (true for DigitalOcean Spaces and most S3-compatible providers, which bake the region into the hostname).
 
 ### Remove the inline "list buckets to help choose" step from `configure`
 

@@ -15,7 +15,7 @@ login-keychain password before it proceeds.
 
 ### Why it happens 5-10 times, not once
 
-`src/core/keyring/credentials.rs`'s `get_secret`/`set_secret`/
+`service/pigeon-cli/src/core/keyring/credentials.rs`'s `get_secret`/`set_secret`/
 `delete_secret` each open a `keyring::Entry::new("pigeon", alias)` (the
 `keyring` crate, `v4.2.0`, pinned in `Cargo.toml`; its macOS backend is
 `apple-native-keyring-store`). Reading that vendored crate's
@@ -23,12 +23,12 @@ login-keychain password before it proceeds.
 becomes a genuinely distinct macOS Keychain "generic password" item,
 uniquely identified by its `(service="pigeon", account=alias)` pair.
 
-`src/commands/job/email_sync/wizard.rs::dispatch_async` calls
+`service/pigeon-cli/src/commands/job/email_sync/wizard.rs::dispatch_async` calls
 `credentials::get_secret` once per selected identity (a loop, line
 ~441), once more for the target bucket-config if uploading (~498), and
 once more for the encryption key if encrypting (~526). A fourth call
 site with the identical shape exists in
-`src/commands/job/decrypt_files/wizard.rs:219`. For N selected
+`service/pigeon-cli/src/commands/job/decrypt_files/wizard.rs:219`. For N selected
 identities plus upload/encryption, that's `N + 2` *distinct* keychain
 items touched in a single run -- this fully explains "5-10 times" on
 its own; no call site fetches the same alias twice.
@@ -76,7 +76,7 @@ and unchanged Keychain Access visibility.
 ## Decision
 
 On macOS only (`#[cfg(target_os = "macos")]`), `set_secret`/
-`get_secret`/`delete_secret` in `src/core/keyring/credentials.rs` shell
+`get_secret`/`delete_secret` in `service/pigeon-cli/src/core/keyring/credentials.rs` shell
 out to `/usr/bin/security` instead of the `keyring` crate, using the
 exact flag syntax confirmed via `security <subcommand> -h` on this
 machine:
@@ -235,7 +235,7 @@ guessing again live against a real Keychain.
 ### Decision
 
 Reject this ADR's approach. The implementation attempt (a working
-tree change to `src/core/keyring/credentials.rs`) was discarded before
+tree change to `service/pigeon-cli/src/core/keyring/credentials.rs`) was discarded before
 being committed -- no code from this ADR ever landed in `main`, and
 `credentials.rs` is unchanged from its pre-ADR-0035 state. Status
 above changed from Accepted to **Rejected**.

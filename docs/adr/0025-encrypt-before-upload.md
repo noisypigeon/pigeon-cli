@@ -12,18 +12,18 @@ The user wants files encrypted client-side before `pigeon job run email-sync` up
 2. The user generates their own key, following recommendations, and stores it in their own 1Password vault -- pigeon does not generate, store, or integrate with 1Password for this key.
 3. Duplicate detection must keep working in the bucket, as long as the same key is used for the files being compared.
 
-Requirement 3 is the crux of the design. Encryption normally randomizes ciphertext via a random nonce, so two uploads of identical plaintext produce different ciphertext and defeat `upload_if_changed`'s existing MD5-vs-S3-ETag comparison (`src/commands/keyring/bucket/client.rs`). The fix is **deterministic encryption**: derive the nonce from the plaintext itself, keyed by the secret, so `Enc(key, plaintext)` is always byte-identical for the same `(key, plaintext)` pair. This was confirmed directly with the user as an accepted tradeoff: an attacker with bucket access (but not the key) can tell that two ciphertext objects are duplicates of each other, but not what they contain.
+Requirement 3 is the crux of the design. Encryption normally randomizes ciphertext via a random nonce, so two uploads of identical plaintext produce different ciphertext and defeat `upload_if_changed`'s existing MD5-vs-S3-ETag comparison (`service/pigeon-cli/src/commands/keyring/bucket/client.rs`). The fix is **deterministic encryption**: derive the nonce from the plaintext itself, keyed by the secret, so `Enc(key, plaintext)` is always byte-identical for the same `(key, plaintext)` pair. This was confirmed directly with the user as an accepted tradeoff: an attacker with bucket access (but not the key) can tell that two ciphertext objects are duplicates of each other, but not what they contain.
 
 The key model was also confirmed directly with the user: a single **symmetric** secret key, not an asymmetric keypair. "Private key" in the original request meant "my own secret," not X25519/age-style public/private separation -- age's standard construction uses ephemeral per-file keys and a random nonce via HKDF, which is fundamentally incompatible with deterministic dedup without abandoning age's own tooling guarantees for no benefit here.
 
 Prior research into this codebase established:
 
-- The single choke point for intercepting bytes before they leave the process is `src/commands/job/email_sync/worker.rs`'s `upload_one` -- specifically the `fs::read(&task.path)` call and the `client::upload_if_changed(...)` call right after it.
+- The single choke point for intercepting bytes before they leave the process is `service/pigeon-cli/src/commands/job/email_sync/worker.rs`'s `upload_one` -- specifically the `fs::read(&task.path)` call and the `client::upload_if_changed(...)` call right after it.
 - `upload_if_changed` computes `md5::compute(&data)` and compares it to S3's ETag; it needs **zero logic changes** -- it keeps working correctly as long as what it's handed is deterministic ciphertext instead of plaintext.
 - Local content-hash dedup (`core::data::ContentIndex`, `commands::job::email_sync::dedup::EmailDedup`, per ADR-0012/0020/0021) operates entirely on **plaintext** bytes, before and independent of upload -- this ADR does not touch it.
-- Trait conventions (ADR-0023): traits live in `src/core/`, are `pub(crate)`, and it's an accepted, explicitly-named tradeoff to introduce a trait with exactly one real implementor for structural consistency (precedent: `Job`, `Transform`, `Dedup`).
-- No existing precedent for sourcing a secret from outside pigeon's own `keyring.toml`/OS-keychain `Store` (`src/commands/keyring/store.rs`, `src/core/keyring/credentials.rs`) -- every current secret is either typed interactively (`core::wizard::read_secret`) or stored via `keyring::Entry` under service `"pigeon"`. This ADR establishes a new, narrow precedent: one environment variable, read once, never persisted by pigeon.
-- `BucketConfig` (`src/commands/keyring/bucket/store.rs`) is a small `Serialize`/`Deserialize` struct (`alias`, `endpoint`, `bucket`, `access_key_id`) -- a new `#[serde(default)] encrypt: bool` field is additive and won't break existing `keyring.toml` entries.
+- Trait conventions (ADR-0023): traits live in `service/pigeon-cli/src/core/`, are `pub(crate)`, and it's an accepted, explicitly-named tradeoff to introduce a trait with exactly one real implementor for structural consistency (precedent: `Job`, `Transform`, `Dedup`).
+- No existing precedent for sourcing a secret from outside pigeon's own `keyring.toml`/OS-keychain `Store` (`service/pigeon-cli/src/commands/keyring/store.rs`, `service/pigeon-cli/src/core/keyring/credentials.rs`) -- every current secret is either typed interactively (`core::wizard::read_secret`) or stored via `keyring::Entry` under service `"pigeon"`. This ADR establishes a new, narrow precedent: one environment variable, read once, never persisted by pigeon.
+- `BucketConfig` (`service/pigeon-cli/src/commands/keyring/bucket/store.rs`) is a small `Serialize`/`Deserialize` struct (`alias`, `endpoint`, `bucket`, `access_key_id`) -- a new `#[serde(default)] encrypt: bool` field is additive and won't break existing `keyring.toml` entries.
 
 ## Decision
 
@@ -43,7 +43,7 @@ Wire format: `nonce (12 bytes) || AES-256-GCM-SIV ciphertext+tag`. No AAD is bou
 
 New dependencies: `aes-gcm-siv`, `hkdf`, `sha2`, `hmac`, `hex` -- all small, widely-used RustCrypto-family crates, the same quality bar as this project's existing `md5` dependency.
 
-### 2. New trait `Encryptor` in `src/core/crypto.rs`, one real implementor alongside it
+### 2. New trait `Encryptor` in `service/pigeon-cli/src/core/crypto.rs`, one real implementor alongside it
 
 ```rust
 /// Behavior shared by every place this CLI needs to turn plaintext bytes
@@ -114,7 +114,7 @@ pub struct BucketConfig {
 }
 ```
 
-`#[serde(default)]` keeps existing `keyring.toml` entries valid, defaulting to `encrypt: false`. The `bucket-config new`/`edit` wizard flows (`src/commands/keyring/wizard.rs`) gain one confirm prompt: "Encrypt files before upload to this bucket?".
+`#[serde(default)]` keeps existing `keyring.toml` entries valid, defaulting to `encrypt: false`. The `bucket-config new`/`edit` wizard flows (`service/pigeon-cli/src/commands/keyring/wizard.rs`) gain one confirm prompt: "Encrypt files before upload to this bucket?".
 
 ### 5. Integration point: `worker.rs::upload_one`, at the existing `fs::read`/`upload_if_changed` boundary
 

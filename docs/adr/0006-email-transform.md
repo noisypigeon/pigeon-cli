@@ -6,7 +6,7 @@
 
 ## Context
 
-`pigeon email transform` is still a stub (`src/commands/email.rs`'s `transform()` prints `Not Yet Implemented`). ADR-0001 fixed the output naming scheme and folder shape (`YYYY-MM-DD-${sanitized-subject}.md`, kebab-case, a shared `attachments/` folder) but explicitly deferred "Frontmatter and Taxonomy" to "a future ADR." ADR-0005 fixed transform's actual *input* shape: one raw `.eml` file per message under `<sink-directory>/<mailbox-path>/<uid>.eml`, with mailbox names left in IMAP's raw wire-form (modified UTF-7) encoding, explicitly deferred to transform. This ADR decides both: how transform parses `.eml` input into Markdown, and how frontmatter/taxonomy work.
+`pigeon email transform` is still a stub (`service/pigeon-cli/src/commands/email.rs`'s `transform()` prints `Not Yet Implemented`). ADR-0001 fixed the output naming scheme and folder shape (`YYYY-MM-DD-${sanitized-subject}.md`, kebab-case, a shared `attachments/` folder) but explicitly deferred "Frontmatter and Taxonomy" to "a future ADR." ADR-0005 fixed transform's actual *input* shape: one raw `.eml` file per message under `<sink-directory>/<mailbox-path>/<uid>.eml`, with mailbox names left in IMAP's raw wire-form (modified UTF-7) encoding, explicitly deferred to transform. This ADR decides both: how transform parses `.eml` input into Markdown, and how frontmatter/taxonomy work.
 
 ## Decision
 
@@ -15,7 +15,7 @@
 - [`mail-parser`](https://docs.rs/mail-parser) (Stalwart Labs) parses each `.eml` file. It's zero-copy, fully RFC 5322/2045-2049/2047 compliant, decodes 41 character sets, and — unlike libraries that expose the raw nested MIME tree — gives a flat, human-friendly view: `MessageParser::default().parse(bytes)` → `Message`, with `.subject()`/`.from()`/`.to()`/`.date()` for headers, `.body_text(n)`/`.body_html(n)` for body parts, and `.attachment(n)`/`.attachment_name()` for attachments. One crate covers parsing entirely; no separate RFC 2047 or base64/quoted-printable decoder is needed.
 - [`htmd`](https://docs.rs/htmd) (turndown.js-inspired, built on `html5ever`) converts a `text/html` body part to real Markdown — `htmd::convert(html) -> String`. When a message has a genuine `text/html` part, it's converted via `htmd` and used as the Markdown body **even when a `text/plain` alternative also exists** — the HTML part is often the richer, more complete one (proper links, formatting), while an accompanying plain-text part is frequently a lossy auto-generated fallback. Plain-text-only messages use the plain text as-is; no conversion needed.
 - `chrono`, already in the dependency tree transitively (`async-imap` depends on it for `INTERNALDATE` parsing), gets promoted to a direct dependency for formatting the `Date` header — no new dependency, just a declared one.
-- No YAML crate. `serde_yaml` was archived/deprecated in 2024, and its maintained successors (`serde-saphyr`, `yaml-rust2`, etc.) are all built for round-tripping arbitrary YAML — more than `pigeon` needs, which is one-directional: emit a small, fixed set of scalar/list fields, never parse YAML back. The `---\nkey: value\n---` frontmatter block is hand-written directly, the same "no premature abstraction" style already used for the hand-rolled `.uidvalidity` marker in `src/sink.rs`.
+- No YAML crate. `serde_yaml` was archived/deprecated in 2024, and its maintained successors (`serde-saphyr`, `yaml-rust2`, etc.) are all built for round-tripping arbitrary YAML — more than `pigeon` needs, which is one-directional: emit a small, fixed set of scalar/list fields, never parse YAML back. The `---\nkey: value\n---` frontmatter block is hand-written directly, the same "no premature abstraction" style already used for the hand-rolled `.uidvalidity` marker in `service/pigeon-cli/src/sink.rs`.
 
 ### Naming scheme (reusing ADR-0001, not reinventing it)
 
@@ -62,7 +62,7 @@ One shared `attachments/` folder per identity (not per-message) — ADR-0001's o
 
 ### `--mbox-to-markdown` no longer matches sink's output
 
-`Transform`'s existing `--mbox-to-markdown` flag (from ADR-0002's scaffold) is now misnamed: ADR-0005 committed sink to one `.eml` file per message, never `.mbox`. This ADR doesn't change `src/cli.rs` — that's implementation, not decision — but flags the mismatch explicitly so a future implementation amends the flag (e.g. to `--eml-to-markdown` or drops the format qualifier entirely, since `.eml`-to-Markdown is the only format transform will support per this ADR) rather than silently keeping a name that no longer describes what it does.
+`Transform`'s existing `--mbox-to-markdown` flag (from ADR-0002's scaffold) is now misnamed: ADR-0005 committed sink to one `.eml` file per message, never `.mbox`. This ADR doesn't change `service/pigeon-cli/src/cli.rs` — that's implementation, not decision — but flags the mismatch explicitly so a future implementation amends the flag (e.g. to `--eml-to-markdown` or drops the format qualifier entirely, since `.eml`-to-Markdown is the only format transform will support per this ADR) rather than silently keeping a name that no longer describes what it does.
 
 ### New dependencies
 
@@ -72,7 +72,7 @@ One shared `attachments/` folder per identity (not per-message) — ADR-0001's o
 
 - `transform` becomes implementable against this design: parse `.eml` → Markdown with YAML frontmatter, flat per-identity output, namespaced tags for cross-cutting taxonomy.
 - Downstream tooling (a future search/query command, or any Markdown-aware PKM tool like Obsidian) can rely on the tag taxonomy directly — `pigeon` itself doesn't need to build a query layer for the file tree to be useful.
-- `src/cli.rs`'s `--mbox-to-markdown` flag name is flagged as needing a rename during implementation, not fixed by this ADR.
+- `service/pigeon-cli/src/cli.rs`'s `--mbox-to-markdown` flag name is flagged as needing a rename during implementation, not fixed by this ADR.
 
 ## Out of scope
 
