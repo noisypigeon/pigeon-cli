@@ -10,6 +10,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0052: decides how to merge the separate `pigeon-do` repo's full history into this repo as `terraform/infrastructure/*`, renumbering its 12 ADRs to 0053-0064 and rewriting its module sources to point at `terraform/modules/` (documents the decision; the user performs the actual merge manually) ([#62](https://github.com/noisypigeon/pigeon/pull/62)).
+
 ## [0.2.1] - 2026-09-25
 
 - ADR-0051: GitHub repo renamed `pigeon-cli` → `pigeon`; corrects `Cargo.toml`'s `repository` field and every in-repo GitHub link, bumps to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).
