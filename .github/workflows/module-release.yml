@@ -46,7 +46,7 @@ jobs:
         run: |
           CHANGED_FILES=$(git diff --name-only "${MERGE_SHA}~1" "$MERGE_SHA")
 
-          MODULE_DIRS=$(find digitalocean scaleway -mindepth 2 -maxdepth 2 -name versions.tf -printf '%h\n' | sort)
+          MODULE_DIRS=$(find terraform/modules/digitalocean terraform/modules/scaleway -mindepth 2 -maxdepth 2 -name versions.tf -printf '%h\n' | sort)
 
           CHANGED_MODULES=""
           for dir in $MODULE_DIRS; do

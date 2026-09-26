@@ -1,15 +1,16 @@
 ---
 name: release-pr
-description: Use this skill when making a change to a pigeon-tf Terraform module and getting it merged to main. Covers branching off main, committing, opening the pull request, applying the required release:* label, merging, and syncing local main afterward. Trigger on requests like "open a PR for this", "release this module change", "ship this to main", or "merge this pigeon-tf change".
+description: Use this skill when making a change to one of this repo's terraform/modules/ Terraform modules and getting it merged to main. Covers branching off main, committing, opening the pull request, applying the required release:* label, merging, and syncing local main afterward. Trigger on requests like "open a PR for this", "release this module change", "ship this to main", or "merge this terraform module change".
 ---
 
-# Releasing a pigeon-tf module change
+# Releasing a terraform/modules/ change
 
-pigeon-tf has no human reviewer and no branch-protection rules — this skill *is*
-the PR discipline. Follow it in full for every change, including trivial ones,
-because the PR body becomes this module's changelog entry and GitHub Release
-notes verbatim, and the label drives the version bump. There is no separate
-"write good release notes" step later — get the PR body right the first time.
+This repo's Terraform module release automation has no human reviewer and no
+branch-protection rules — this skill *is* the PR discipline. Follow it in full
+for every change, including trivial ones, because the PR body becomes that
+module's changelog entry and GitHub Release notes verbatim, and the label
+drives the version bump. There is no separate "write good release notes" step
+later — get the PR body right the first time.
 
 ## Steps
 
@@ -31,7 +32,7 @@ notes verbatim, and the label drives the version bump. There is no separate
    - Body: written in full sentences a consumer of the module would want to
      read later, describing what changed and why it matters to someone
      consuming this module — not "fixed bug" or a raw commit list. It is
-     copied verbatim into `digitalocean/<module>/CHANGELOG.md` and into the
+     copied verbatim into `terraform/modules/<provider>/<module>/CHANGELOG.md` and into the
      GitHub Release notes by `module-release.yml` on merge, with no editing
      pass in between.
    ```
@@ -47,9 +48,9 @@ notes verbatim, and the label drives the version bump. There is no separate
      applying it explicitly isn't strictly required to get a release, but do
      it anyway — an unlabeled PR is a signal something was skipped, not a
      deliberate patch decision.
-   - A PR that doesn't touch any `digitalocean/<module>/` directory (e.g.
-     workflow or root-doc changes) doesn't need a label at all — nothing will
-     be tagged or released regardless.
+   - A PR that doesn't touch any `terraform/modules/<provider>/<module>/`
+     directory (e.g. workflow or root-doc changes) doesn't need a label at
+     all — nothing will be tagged or released regardless.
    ```
    gh pr edit <pr-number> --add-label "release:patch"
    ```
