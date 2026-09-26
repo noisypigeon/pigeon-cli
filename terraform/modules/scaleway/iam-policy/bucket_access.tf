@@ -1,5 +1,5 @@
 resource "scaleway_object_bucket_policy" "bucket_access" {
-  for_each = toset(var.bucket_names)
+  for_each = var.bucket_names
 
   bucket = each.value
   policy = jsonencode({

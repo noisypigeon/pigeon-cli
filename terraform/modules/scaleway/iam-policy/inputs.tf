@@ -1,6 +1,15 @@
 variable "name" {
   type        = string
   description = "IAM application/policy name"
+
+  validation {
+    condition = (
+      (var.organization_id != null && length(coalesce(var.organization_permission_sets, [])) > 0) ||
+      (var.project_ids != null && length(coalesce(var.project_permission_sets, [])) > 0) ||
+      (length(var.bucket_names) > 0 && length(var.bucket_actions) > 0)
+    )
+    error_message = "At least one of organization_id+organization_permission_sets, project_ids+project_permission_sets, or bucket_names+bucket_actions must be fully set."
+  }
 }
 
 variable "description" {
@@ -40,9 +49,9 @@ variable "expires_at" {
 }
 
 variable "bucket_names" {
-  type        = list(string)
-  description = "Exact Object Storage bucket names to grant access to (no bucket access is granted by default)"
-  default     = []
+  type        = map(string)
+  description = "Map of static logical key => exact Object Storage bucket name to grant access to (no bucket access is granted by default)"
+  default     = {}
 }
 
 variable "bucket_actions" {
