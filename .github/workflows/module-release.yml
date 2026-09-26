@@ -1,0 +1,153 @@
+name: module-release
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: main-writer
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.merge_commit_sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Determine bump level from PR labels
+        id: bump
+        env:
+          LABELS_JSON: ${{ toJSON(github.event.pull_request.labels) }}
+        run: |
+          if echo "$LABELS_JSON" | jq -e '.[] | select(.name=="release:major")' >/dev/null; then
+            echo "level=major" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS_JSON" | jq -e '.[] | select(.name=="release:minor")' >/dev/null; then
+            echo "level=minor" >> "$GITHUB_OUTPUT"
+          elif echo "$LABELS_JSON" | jq -e '.[] | select(.name=="release:patch")' >/dev/null; then
+            echo "level=patch" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No release:* label found on PR #${{ github.event.pull_request.number }}; defaulting to patch."
+            echo "level=patch" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Determine changed module directories
+        id: modules
+        env:
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          CHANGED_FILES=$(git diff --name-only "${MERGE_SHA}~1" "$MERGE_SHA")
+
+          MODULE_DIRS=$(find terraform/modules/digitalocean terraform/modules/scaleway -mindepth 2 -maxdepth 2 -name versions.tf -printf '%h\n' | sort)
+
+          CHANGED_MODULES=""
+          for dir in $MODULE_DIRS; do
+            if echo "$CHANGED_FILES" | grep -qE "^${dir}/.*\.tf$"; then
+              CHANGED_MODULES="$CHANGED_MODULES $dir"
+            fi
+          done
+
+          echo "changed=${CHANGED_MODULES# }" >> "$GITHUB_OUTPUT"
+
+      - name: Configure git identity
+        if: steps.modules.outputs.changed != ''
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Update changelogs and compute versions
+        id: versions
+        if: steps.modules.outputs.changed != ''
+        env:
+          BUMP: ${{ steps.bump.outputs.level }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          CHANGED_MODULES: ${{ steps.modules.outputs.changed }}
+        run: |
+          TODAY=$(date -u +%Y-%m-%d)
+          TAGS=""
+
+          for dir in $CHANGED_MODULES; do
+            LATEST=$(git tag -l "${dir}/v*" | sed "s#${dir}/v##" | sort -V | tail -n1)
+
+            if [ -z "$LATEST" ]; then
+              NEXT="0.1.0"
+            else
+              MA=$(echo "$LATEST" | cut -d. -f1)
+              MI=$(echo "$LATEST" | cut -d. -f2)
+              PA=$(echo "$LATEST" | cut -d. -f3)
+              case "$BUMP" in
+                major) NEXT="$((MA+1)).0.0" ;;
+                minor) NEXT="${MA}.$((MI+1)).0" ;;
+                patch) NEXT="${MA}.${MI}.$((PA+1))" ;;
+              esac
+            fi
+
+            CHANGELOG="${dir}/CHANGELOG.md"
+            if [ ! -f "$CHANGELOG" ]; then
+              cat > "$CHANGELOG" <<'HEADER'
+          # Changelog
+
+          All notable changes to this module are documented in this file.
+
+          The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+          HEADER
+            fi
+
+            ENTRY=$(mktemp)
+            {
+              echo ""
+              echo "## [${NEXT}] - ${TODAY}"
+              echo ""
+              echo "### ${PR_TITLE}"
+              echo ""
+              echo "${PR_BODY}"
+              echo ""
+              echo "[#${PR_NUMBER}](${PR_URL})"
+            } > "$ENTRY"
+
+            head -n 5 "$CHANGELOG" > "${CHANGELOG}.new"
+            cat "$ENTRY" >> "${CHANGELOG}.new"
+            tail -n +6 "$CHANGELOG" >> "${CHANGELOG}.new"
+            mv "${CHANGELOG}.new" "$CHANGELOG"
+
+            git add "$CHANGELOG"
+            TAGS="$TAGS ${dir}/v${NEXT}"
+          done
+
+          echo "tags=${TAGS# }" >> "$GITHUB_OUTPUT"
+
+      - name: Commit changelog updates
+        if: steps.modules.outputs.changed != ''
+        run: |
+          git commit -m "chore: update changelog(s) for PR #${{ github.event.pull_request.number }}"
+          git fetch origin main
+          git rebase origin/main
+          git push origin HEAD:main
+
+      - name: Tag and release each changed module
+        if: steps.modules.outputs.changed != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          RELEASE_TAGS: ${{ steps.versions.outputs.tags }}
+        run: |
+          NOTES=$(mktemp)
+          printf '%s\n\nPR: %s\n' "$PR_BODY" "$PR_URL" > "$NOTES"
+
+          for tag in $RELEASE_TAGS; do
+            git tag "$tag"
+            git push origin "$tag"
+            gh release create "$tag" --title "$tag" --notes-file "$NOTES"
+          done
