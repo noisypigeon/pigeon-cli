@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`pigeon` is a Rust CLI (clap + Mise) that authenticates, syncs, transforms, and optionally encrypts personal email data to local storage or S3-compatible remotes, backed by a unified `keyring` for identities, buckets, and encryption keys.
+`pigeon` is a Rust CLI (clap + Mise) that authenticates, syncs, transforms, and optionally encrypts personal email data to local storage or S3-compatible remotes, backed by a unified `keyring` for identities, buckets, and encryption keys. The repo also holds `terraform/modules/` — versioned, reusable Terraform modules (DigitalOcean, Scaleway), merged in from the former `pigeon-tf` repo (ADR-0037), consumed locally by `pigeon-do` and future infra repos.
 
 ## ADRs govern this project
 
@@ -43,6 +43,8 @@ Before making architectural or interface changes, read the ADRs in `docs/adr/` a
 - `docs/adr/0035-pretrust-keychain-access.md` — **Rejected.** Root-caused `job run email-sync` prompting for the macOS keychain password 5-10 times per run (one distinct `keyring::Entry` per identity/bucket-config/encryption-key alias, each needing its own OS-level access grant), but its proposed fix (shell out to `security add-generic-password -T <current-binary-path>` instead of the `keyring` crate) was disproved by a live implementation attempt: routing reads through `/usr/bin/security` makes *that* process the one needing Keychain trust, not `pigeon`, so `-T <pigeon-path>` didn't suppress repeat prompts. No code landed; problem still open.
 - `docs/adr/0036-monorepo-service-layout.md` — restructures the repo for a future monorepo: `src/`/`tests/`/`scripts/` move to `service/pigeon-cli/src/`, `service/pigeon-cli/tests/`, and `.github/scripts/` respectively; `Cargo.toml` gains explicit `[lib]`/`[[bin]]`/`[[test]]` paths (Cargo.toml itself stays at repo root); every existing ADR's historical `src/`/`tests/`/`scripts/` citations get rewritten to match, occurrence-by-occurrence (not a blind find-and-replace — idiomatic prose like "scripts/muscle memory" is a confirmed false positive). Amended: `CHANGELOG.md` also relocates to `service/pigeon-cli/CHANGELOG.md`.
 - `docs/adr/0037-merge-pigeon-tf-terraform-modules.md` — merges the separate `pigeon-tf` repo's full history into this repo as `terraform/modules/{digitalocean,scaleway}/*`, via a `git filter-repo` path rewrite (preserving all 20 release tags on their rewritten commits) plus `git merge --allow-unrelated-histories`; its 12 ADRs join `docs/adr/` renumbered to 0038-0049 with an added Origin bullet each; its two GitHub Actions workflows and one Claude Code skill (`.github/workflows/`, `.claude/skills/release-pr/`) move over unchanged in path but retargeted at the new module paths; its README becomes `terraform/README.md` and its CLAUDE.md folds into this file.
+- `docs/adr/0038-pigeon-tf-scaffold.md` — (originally `pigeon-tf` ADR-0001) repo layout, module self-containment (per-module `versions.tf`), versioning/tagging, and local-clone consumption model, now for `terraform/modules/`.
+- `docs/adr/0043-add-scaleway-provider.md` — (originally `pigeon-tf` ADR-0006) adds the second provider root (`terraform/modules/scaleway/`), generalizes `module-docs.yml`/`module-release.yml` beyond a single hardcoded provider root, and fixes a latent per-module tag-naming bug.
 
 ## Dev cycle: how work lands (ADR-0029)
 
