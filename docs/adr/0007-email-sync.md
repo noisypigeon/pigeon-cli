@@ -59,5 +59,5 @@ ADR-0001 originally wanted sink to "pull all emails and attachments" as a preser
 
 ## Out of scope
 
-- Automatically detecting and cleaning up stale Markdown files after a `UIDVALIDITY` change (ADR-0005's staleness case already handles this for the *raw* side; the transformed side has no cheap equivalent since Markdown lives in a flat per-identity folder, not a UID-addressable one). The new `uid:` frontmatter field makes a future reconciliation pass possible; building one is deferred, same spirit as ADR-0005 deferring fetch batching. ([#10](https://github.com/noisypigeon/pigeon-cli/issues/10))
+- Automatically detecting and cleaning up stale Markdown files after a `UIDVALIDITY` change (ADR-0005's staleness case already handles this for the *raw* side; the transformed side has no cheap equivalent since Markdown lives in a flat per-identity folder, not a UID-addressable one). The new `uid:` frontmatter field makes a future reconciliation pass possible; building one is deferred, same spirit as ADR-0005 deferring fetch batching. ([#10](https://github.com/noisypigeon/pigeon/issues/10))
 - Any change to `authenticate` or `list-identities`.

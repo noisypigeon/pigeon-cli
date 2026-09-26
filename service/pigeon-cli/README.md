@@ -23,8 +23,8 @@ This installs a binary named `pigeon`.
 
 Run `pigeon --help`, `pigeon keyring --help`, or `pigeon job --help` for the full command reference.
 
-The full design rationale for every decision behind this crate lives in [`docs/adr/`](https://github.com/noisypigeon/pigeon-cli/tree/main/docs/adr), as a sequence of architecture decision records.
+The full design rationale for every decision behind this crate lives in [`docs/adr/`](https://github.com/noisypigeon/pigeon/tree/main/docs/adr), as a sequence of architecture decision records.
 
 ## License
 
-Licensed under the GNU General Public License v3.0 or later — see [`LICENSE.md`](https://github.com/noisypigeon/pigeon-cli/blob/main/LICENSE.md).
+Licensed under the GNU General Public License v3.0 or later — see [`LICENSE.md`](https://github.com/noisypigeon/pigeon/blob/main/LICENSE.md).

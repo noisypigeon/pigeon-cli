@@ -73,7 +73,7 @@ Attachment dedup composes with ADR-0011 with **no changes needed there at all**:
 
 ## Out of scope
 
-- Retroactively reconciling an output directory that already has duplicate content from before this ADR's implementation — a one-time "reconcile the existing archive" pass, in the same spirit as ADR-0007's own deferred UID-based reconciliation idea, is a plausible future ADR, not this one. ([#17](https://github.com/noisypigeon/pigeon-cli/issues/17))
-- Cross-identity deduplication — this stays scoped to one identity's own output tree, matching ADR-0006's flat-per-identity folder structure. ([#18](https://github.com/noisypigeon/pigeon-cli/issues/18))
+- Retroactively reconciling an output directory that already has duplicate content from before this ADR's implementation — a one-time "reconcile the existing archive" pass, in the same spirit as ADR-0007's own deferred UID-based reconciliation idea, is a plausible future ADR, not this one. ([#17](https://github.com/noisypigeon/pigeon/issues/17))
+- Cross-identity deduplication — this stays scoped to one identity's own output tree, matching ADR-0006's flat-per-identity folder structure. ([#18](https://github.com/noisypigeon/pigeon/issues/18))
 - Any change to the hash algorithm choice, or to `remote`'s standalone commands beyond the composition already provided by ADR-0011's existing upload-comparison primitive.
 - Implementation itself — like every ADR before its own separate implementation request, this is a decision record only.

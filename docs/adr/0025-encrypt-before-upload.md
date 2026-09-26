@@ -139,6 +139,6 @@ No changes are needed inside `client::upload_if_changed` itself -- it already ju
 - Any CLI command that calls `Encryptor::decrypt` -- no `pigeon ... download`/`decrypt` command yet. The trait supports it for symmetry and future reuse, but surfacing it is a separate ADR once download/restore tooling exists.
 - Any 1Password SDK/CLI integration inside pigeon itself.
 - Per-bucket distinct keys -- one global key, via one env var, covers every bucket with `encrypt: true`.
-- Migrating or re-encrypting objects already uploaded as plaintext before `encrypt` was turned on for a given bucket. ([#31](https://github.com/noisypigeon/pigeon-cli/issues/31))
+- Migrating or re-encrypting objects already uploaded as plaintext before `encrypt` was turned on for a given bucket. ([#31](https://github.com/noisypigeon/pigeon/issues/31))
 
 Implementation is a separate, later task.

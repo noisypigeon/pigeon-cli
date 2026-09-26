@@ -29,7 +29,7 @@ This repo has no CI infrastructure yet (`.github/workflows/` is empty) and no br
 Keep a Changelog's standard `[Unreleased]` section, added at the top of the file (above `[0.2.0]`). Once a PR exists (so its number/URL is known), push one follow-up commit on the same branch adding a single bullet:
 
 ```
-- ADR-XXXX: <one-line description> ([#N](https://github.com/noisypigeon/pigeon-cli/pull/N))
+- ADR-XXXX: <one-line description> ([#N](https://github.com/noisypigeon/pigeon/pull/N))
 ```
 
 This is why the changelog update happens *after* PR creation, not before — the PR URL doesn't exist yet at branch-creation time.
@@ -51,8 +51,8 @@ This is why the changelog update happens *after* PR creation, not before — the
 
 ## Out of scope
 
-- Real GitHub Actions CI and GitHub's native auto-merge (viable later upgrade if a second contributor or a desire for a visible status check ever arrives). ([#34](https://github.com/noisypigeon/pigeon-cli/issues/34))
-- Automating the release-cutting step itself. ([#35](https://github.com/noisypigeon/pigeon-cli/issues/35))
+- Real GitHub Actions CI and GitHub's native auto-merge (viable later upgrade if a second contributor or a desire for a visible status check ever arrives). ([#34](https://github.com/noisypigeon/pigeon/issues/34))
+- Automating the release-cutting step itself. ([#35](https://github.com/noisypigeon/pigeon/issues/35))
 - Any form of code review from a second person — there isn't one.
 
 Implementation is part of this same task (small enough not to defer, and this ADR's own landing is the first real exercise of the pipeline it defines).

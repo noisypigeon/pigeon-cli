@@ -174,7 +174,7 @@ Every file's destination is named in §1's tree above. Nothing is deleted outrig
 
 ## Out of scope
 
-- Turning the bucket/S3 client operations (`commands::keyring::bucket::client`) into a trait — the request named transform/dedup and email/bucket specifically, not the S3 wire protocol; those operations stay concrete, non-trait functions. ([#27](https://github.com/noisypigeon/pigeon-cli/issues/27))
+- Turning the bucket/S3 client operations (`commands::keyring::bucket::client`) into a trait — the request named transform/dedup and email/bucket specifically, not the S3 wire protocol; those operations stay concrete, non-trait functions. ([#27](https://github.com/noisypigeon/pigeon/issues/27))
 - Any actual new job type, keyring kind, transform strategy, or dedup strategy — this ADR only introduces the trait layer and relocates existing logic to implement it against that layer.
 - Any change to on-disk formats (`keyring.toml`, `.job-checkpoint`, `.manifest`, the dedup dotfiles) or any CLI-visible behavior.
 

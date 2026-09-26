@@ -45,6 +45,6 @@ Called out explicitly, with the reasoning above, so a future reader knows these 
 
 ## Out of scope
 
-- Terminal line-wrapping from long prefixes on narrow terminals — a plausible secondary contributor to bar-rendering glitches in general, but not what the observed pattern shows and not confirmed here; deferred unless it resurfaces after this fix. ([#21](https://github.com/noisypigeon/pigeon-cli/issues/21))
+- Terminal line-wrapping from long prefixes on narrow terminals — a plausible secondary contributor to bar-rendering glitches in general, but not what the observed pattern shows and not confirmed here; deferred unless it resurfaces after this fix. ([#21](https://github.com/noisypigeon/pigeon/issues/21))
 - Any change to `transform.rs`'s warning messages themselves or its lenient-skip behavior — only *how* (not *whether* or *what*) they print changes.
 - Implementation itself — like every ADR before it, this is a decision record only.

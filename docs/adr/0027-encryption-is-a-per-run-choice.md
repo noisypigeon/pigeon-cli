@@ -150,7 +150,7 @@ in `service/pigeon-cli/src/commands/job/email_sync/worker.rs` is untouched by th
 
 ## Out of scope
 
-- Any bucket-level *requirement* that uploads be encrypted -- declining (interactively) or omitting `--encryption-key` (non-interactively, for a bucket with no default) is always possible; this ADR only changes what the *default* answer is, never removes the choice. ([#32](https://github.com/noisypigeon/pigeon-cli/issues/32))
-- Propagating a bucket's default-key change to objects already uploaded under a different key (or unencrypted) -- unchanged from ADR-0025's original gap. ([#31](https://github.com/noisypigeon/pigeon-cli/issues/31))
+- Any bucket-level *requirement* that uploads be encrypted -- declining (interactively) or omitting `--encryption-key` (non-interactively, for a bucket with no default) is always possible; this ADR only changes what the *default* answer is, never removes the choice. ([#32](https://github.com/noisypigeon/pigeon/issues/32))
+- Propagating a bucket's default-key change to objects already uploaded under a different key (or unencrypted) -- unchanged from ADR-0025's original gap. ([#31](https://github.com/noisypigeon/pigeon/issues/31))
 
 Implementation is part of this same task (small enough not to defer).
