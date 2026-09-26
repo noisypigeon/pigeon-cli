@@ -29,6 +29,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - ADR-0036: Rewrites every existing ADR's historical `src/`/`tests/`/`scripts/`/`CHANGELOG.md` path citations to match the restructure, occurrence-by-occurrence rather than a blind find-and-replace (idiomatic prose and a vendored crate's own internal path were confirmed false positives and left untouched) ([#56](https://github.com/noisypigeon/pigeon-cli/pull/56)).
 - ADR-0037: Merges the separate `pigeon-tf` repo's full history into this repo as `terraform/modules/{scaleway,digitalocean}/*` (all 20 release tags preserved via a `git filter-repo` rewrite), renumbers its 12 ADRs to 0038-0049, and consolidates each of the 9 modules' changelogs ([#57](https://github.com/noisypigeon/pigeon-cli/pull/57)).
 - ADR-0037: Collapses each module's `CHANGELOG.md` back to one entry after the retargeted `module-release.yml` fired on PR #57 itself and prepended a duplicate, generic auto-generated entry on top of the hand-written consolidation ([#58](https://github.com/noisypigeon/pigeon-cli/pull/58)).
+- ADR-0050: Relocates `Cargo.toml`/`Cargo.lock` into `service/pigeon-cli/` (mise stays the entry point via `--manifest-path`), fixing `cargo package`'s scope to just this crate instead of the whole repo ([#59](https://github.com/noisypigeon/pigeon-cli/pull/59)).
 
 ## [0.2.0] - 2026-09-25
 
