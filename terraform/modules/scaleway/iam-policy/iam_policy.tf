@@ -10,7 +10,7 @@ resource "scaleway_iam_policy" "policy" {
 
   rule {
     organization_id       = var.organization_id
-    permission_set_names  = var.org_permission_sets
+    permission_set_names  = var.organization_permission_sets
   }
 
   rule {
