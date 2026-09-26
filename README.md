@@ -10,8 +10,13 @@ Terraform modules used to provision that infrastructure.
 - [`service/pigeon-cli/`](service/pigeon-cli/) — the Rust CLI. See its own
   [README](service/pigeon-cli/README.md) for the command reference.
 - [`terraform/modules/`](terraform/modules/) — versioned DigitalOcean and
-  Scaleway Terraform modules. See [`terraform/README.md`](terraform/README.md)
-  for the module index.
+  Scaleway Terraform modules. See
+  [`terraform/modules/README.md`](terraform/modules/README.md) for the
+  module index.
+- [`terraform/infrastructure/`](terraform/infrastructure/) — this repo
+  owner's live Terragrunt/Terraform configuration for personal
+  infrastructure, consuming the modules above. See
+  [`terraform/infrastructure/README.md`](terraform/infrastructure/README.md).
 - [`docs/adr/`](docs/adr/) — architecture decision records governing every
   change in this repo, across both of the above.
 
@@ -33,7 +38,7 @@ mise run ci                   # the full local gate (fmt-check + lint + test)
 ```
 
 Terraform module changes follow their own PR discipline — see the
-`release-pr` Claude Code skill and `terraform/README.md`.
+`release-pr` Claude Code skill and `terraform/modules/README.md`.
 
 ## Install (published crate)
 

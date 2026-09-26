@@ -1,5 +1,7 @@
 [tools]
 rust = "1.92.0"
+terraform = "1.16.3"
+terragrunt = "1.1.6"
 
 [tasks.build]
 run = """
@@ -41,3 +43,19 @@ run = "cargo publish --manifest-path service/pigeon-cli/Cargo.toml"
 
 [tasks.adr-issue]
 run = ".github/scripts/adr-issue.sh \"$@\""
+
+[env]
+# terragrunt defaults to invoking `tofu`; this repo standardizes on Terraform.
+TG_TF_PATH = "terraform"
+
+[tasks.fmt]
+run = ["terragrunt hcl format", "terraform fmt -recursive"]
+
+[tasks.fmt-check]
+run = ["terragrunt hcl format --check", "terraform fmt -recursive -check"]
+
+[tasks.plan]
+run = "terragrunt run --all -- plan"
+
+[tasks.apply]
+run = "terragrunt run --all -- apply"
