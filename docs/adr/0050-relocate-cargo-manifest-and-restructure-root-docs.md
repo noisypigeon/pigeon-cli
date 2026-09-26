@@ -64,8 +64,13 @@ follows the manifest's directory, so `target/` naturally becomes
 (`build`/`pigeon` tasks) update from `target/debug/pigeon` to
 `service/pigeon-cli/target/debug/pigeon`. A new
 `service/pigeon-cli/.gitignore` gets `/target` (mirroring
-`terraform/.gitignore`'s existing per-subtree pattern from ADR-0037); root
-`.gitignore` drops its now-dead `/target` line, keeping only `.DS_Store`.
+`terraform/.gitignore`'s existing per-subtree pattern from ADR-0037). Root
+`.gitignore` keeps its own `/target` line too, defensively — confirmed
+during implementation that a stray root-level `target/` can still get
+created by tooling that doesn't go through `mise`/`--manifest-path` (e.g. an
+editor's background `rustc`/clippy check using its own manifest
+discovery), so both locations stay ignored rather than assuming only one
+can ever appear.
 
 This supersedes ADR-0036's stated assumption that "`target/debug/pigeon`'s
 build-output path is unaffected... since Cargo's `target/` dir follows the
