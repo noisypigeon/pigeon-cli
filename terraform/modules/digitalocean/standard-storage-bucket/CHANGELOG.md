@@ -4,14 +4,18 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-09-23
+## [1.0.0] - 2026-09-25
 
-### Rename object-bucket to standard-storage-bucket
+### Consolidate as terraform/modules/digitalocean/standard-storage-bucket 1.0.0
 
-Renames `digitalocean/object-bucket` to `digitalocean/standard-storage-bucket` (per ADR-0003) — names the module after what it actually is (standard object storage, as opposed to Cold Storage) rather than an implementation detail. Also tightens the `project` input and `name` output descriptions to match sibling-module tone.
+A DigitalOcean Spaces bucket (`digitalocean_spaces_bucket`) named with a
+randomized suffix scheme (`{namespace}-{random_code}-{name}`, e.g.
+`example-com-q82q17-sample`). Renamed from `object-bucket` (per
+[ADR-0040](../../../../docs/adr/0040-storage-bucket-module-renames.md)) to
+name the module after the actual consumer choice (standard object storage
+vs. Cold Storage) rather than a Terraform implementation detail.
 
-Breaking for any consumer referencing the old path directly — notably `pigeon-do`'s `pigeon.dev/digitalocean/tor1/management/terraform-state/bucket.tf`, which is not fixed in this PR (see ADR-0003's explicit deferral).
-
-No functional/behavior change otherwise — same resources, same inputs/outputs schema.
-
-[#5](https://github.com/noisypigeon/pigeon-tf/pull/5)
+Consolidates this module's prior `pigeon-tf` version history (`v0.1.0`) into
+a single 1.0.0 release as part of merging `pigeon-tf` into this repo — see
+[ADR-0037](../../../../docs/adr/0037-merge-pigeon-tf-terraform-modules.md)
+for the merge.

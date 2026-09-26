@@ -4,10 +4,18 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-09-23
+## [1.0.0] - 2026-09-25
 
-### Tighten access-key input/output descriptions
+### Consolidate as terraform/modules/digitalocean/access-key 1.0.0
 
-Tightens access-key's input and output descriptions to match the terse, noun-phrase style used by the other modules, and clarifies what `is_bucket_scoped=false` actually does (grants full account access via an empty-string bucket grant, rather than being unclear about what "limit" means). No behavior change — descriptions only, no type/default edits.
+A DigitalOcean Spaces access key (`digitalocean_spaces_key`), optionally
+scoped to one or more buckets via `is_bucket_scoped` (`false` grants full
+account access through an empty-string bucket grant; `true` restricts the
+key to the named buckets).
 
-[#2](https://github.com/noisypigeon/pigeon-tf/pull/2)
+Consolidates this module's prior `pigeon-tf` version history (`v0.1.0`) into
+a single 1.0.0 release as part of merging `pigeon-tf` into this repo — see
+[ADR-0037](../../../../docs/adr/0037-merge-pigeon-tf-terraform-modules.md)
+for the merge and
+[ADR-0038](../../../../docs/adr/0038-pigeon-tf-scaffold.md) for this
+module's original scaffold decisions.

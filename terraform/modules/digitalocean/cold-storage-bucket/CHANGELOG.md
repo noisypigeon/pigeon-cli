@@ -4,14 +4,19 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-09-23
+## [1.0.0] - 2026-09-25
 
-### Rename object-bucket-cold to cold-storage-bucket
+### Consolidate as terraform/modules/digitalocean/cold-storage-bucket 1.0.0
 
-Renames `digitalocean/object-bucket-cold` to `digitalocean/cold-storage-bucket` (per ADR-0003) — names the module after what it actually is (Cold Storage) rather than an implementation detail. Also tightens the `project` input and `name` output descriptions to match sibling-module tone.
+A data-source wrapper for a DigitalOcean Spaces Cold Storage bucket (not yet
+supported as a Terraform resource by the DigitalOcean provider — the bucket
+is created click-ops and managed here as a data source), optionally attached
+to a project. Renamed from `object-bucket-cold` (per
+[ADR-0040](../../../../docs/adr/0040-storage-bucket-module-renames.md)) to
+name the module after the actual consumer choice rather than a Terraform
+implementation detail.
 
-Breaking for any consumer referencing the old path directly — notably `pigeon-do`'s `pigeon.dev/digitalocean/tor1/rolodex/email/bucket/bucket.tf`, which is not fixed in this PR (see ADR-0003's explicit deferral).
-
-No functional/behavior change otherwise — same resources, same inputs/outputs schema.
-
-[#7](https://github.com/noisypigeon/pigeon-tf/pull/7)
+Consolidates this module's prior `pigeon-tf` version history (`v0.1.0`) into
+a single 1.0.0 release as part of merging `pigeon-tf` into this repo — see
+[ADR-0037](../../../../docs/adr/0037-merge-pigeon-tf-terraform-modules.md)
+for the merge.

@@ -4,10 +4,13 @@ All notable changes to this module are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.1.0] - 2026-09-23
+## [1.0.0] - 2026-09-25
 
-### Tighten project input/output descriptions
+### Consolidate as terraform/modules/digitalocean/project 1.0.0
 
-Tightens project's input and output descriptions to match the terse, noun-phrase style used elsewhere in this repo. No behavior change — descriptions only, no type/default edits.
+A thin wrapper around `digitalocean_project`.
 
-[#8](https://github.com/noisypigeon/pigeon-tf/pull/8)
+Consolidates this module's prior `pigeon-tf` version history (`v0.1.0`) into
+a single 1.0.0 release as part of merging `pigeon-tf` into this repo — see
+[ADR-0037](../../../../docs/adr/0037-merge-pigeon-tf-terraform-modules.md)
+for the merge.
