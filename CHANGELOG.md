@@ -1,70 +1,95 @@
 # Changelog
 
-One line per PR across this whole repo, sectioned by date, newest first.
-Not versioned — for versioned, package-scoped changelogs see
-[`service/pigeon-cli/CHANGELOG.md`](service/pigeon-cli/CHANGELOG.md) (the
-`pigeon-cli` crate) and `terraform/modules/*/*/CHANGELOG.md` (each
-Terraform module). Entry format: `- [<scope>] <summary> ([#N](PR URL))`,
-where `<scope>` is `pigeon-cli`, `blog`, `terraform/<provider>/<module>`, or
-`repo` for cross-cutting/structural changes. Starts fresh at ADR-0050 — no
-backfill of prior history.
+Versioned changelog for the `pigeon-cli` crate specifically. For a one-line,
+date-sectioned log across this whole repo (including `terraform/`), see the
+root [`/CHANGELOG.md`](../../CHANGELOG.md).
 
-## 2026-09-30
+All notable changes to this module are documented in this file.
 
-- [pigeon-cli] fix(adr-0085): add Linux keyring support via kernel keyutils ([#2](https://github.com/noisypigeon/pigeon-cli/pull/2))
-- [repo] docs(adr-0084): split pigeon-cli into its own repo ([#99](https://github.com/noisypigeon/noisypigeon/pull/99))
-- [pigeon-cli] feat(adr-0083): implement sort job ([#98](https://github.com/noisypigeon/noisypigeon/pull/98))
-- [pigeon-cli] docs(adr-0083): add sort job ADR ([#96](https://github.com/noisypigeon/noisypigeon-2/pull/96))
-- [pigeon-cli] feat(adr-0082): implement dedupe job ([#95](https://github.com/noisypigeon/noisypigeon-2/pull/95))
-- [pigeon-cli] docs(adr-0082): add dedupe job ADR ([#94](https://github.com/noisypigeon/noisypigeon/pull/94))
-- [pigeon-cli] feat(adr-0081): implement email-pull job ([#93](https://github.com/noisypigeon/noisypigeon/pull/93))
-- [pigeon-cli] docs(adr-0081): add email-pull job ADR ([#92](https://github.com/noisypigeon/noisypigeon/pull/92))
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## 2026-09-29
+## [Unreleased]
 
-- [terraform/digitalocean/droplet] Drop Cloudflare DNS record integration ([#91](https://github.com/noisypigeon/noisypigeon/pull/91))
+- ADR-0085: fixes `pigeon keyring add`/`modify`/`delete`/`list` failing outright on headless Linux ("No default store has been set") by switching Linux to the kernel-keyutils backend instead of the D-Bus Secret Service backend, which needs a desktop session/daemon a headless server doesn't have ([#2](https://github.com/noisypigeon/pigeon-cli/pull/2)).
+- ADR-0084: splits `service/pigeon-cli` out of this monorepo into its own repo, `noisypigeon/pigeon-cli`, via a full-history force-push followed by one ordinary prune commit in each repo -- see the root `/CHANGELOG.md` for the repo-wide record; this crate's changelog continues unaffected in the new repo ([#99](https://github.com/noisypigeon/noisypigeon/pull/99)).
+- ADR-0083: implements `pigeon job run sort` -- reuses `commands/job/download.rs`/`upload.rs` directly, with a plain `stream::buffer_unordered` fetch phase (no growable queue, since there's no zip expansion) and a placement pass that always disambiguates a filename collision via `unique_path`, never a hash check ([#98](https://github.com/noisypigeon/noisypigeon/pull/98)).
+- ADR-0083: adds `pigeon job run sort`, a bucket-to-bucket job that downloads an input bucket, flattens it into top-level `<extension>/` folders by literal extension, and uploads (mandatory) to an output bucket, never encrypting; designed to run after `dedupe` so a filename collision is always disambiguated via `unique_path` rather than hash-checked, with no `ContentIndex`/`Dedup`/zip-expansion machinery at all ([#96](https://github.com/noisypigeon/noisypigeon-2/pull/96)).
+- ADR-0082: implements `pigeon job run dedupe` -- reuses `pull_transform::archive`'s zip expansion directly, hoists `pull-transform`'s disk-space-preflight/streaming-download helpers into a new shared `commands/job/download.rs` (refactoring `pull-transform` to use it), and scopes checkpoint/content-hash bookkeeping and the upload walk so `dedupe-report.txt` can never leak into the destination bucket ([#95](https://github.com/noisypigeon/noisypigeon-2/pull/95)).
+- ADR-0082: adds `pigeon job run dedupe`, a bucket-to-bucket job that recursively scans a source bucket, always inflates zips (containers never uploaded, only their inflated contents), content-hashes everything bucket-wide to keep one byte-identical copy of each file, writes a human-readable merge report, and optionally uploads unencrypted to a different bucket-config; hoists `pull-transform`'s disk-space-preflight/streaming-download helpers into a new shared `commands/job/download.rs` ([#94](https://github.com/noisypigeon/noisypigeon/pull/94)).
 
-- [terraform/digitalocean/droplet] Accept caller-supplied bucket credentials per rclone remote ([#90](https://github.com/noisypigeon/noisypigeon/pull/90))
+- ADR-0081: implements `pigeon job run email-pull` -- fetches raw `.eml` files straight to their final location and extracts attachments into a deduplicated `attachments/` folder, with no Markdown/frontmatter transform and no encryption support, optionally uploading the result unencrypted to a bucket-config ([#93](https://github.com/noisypigeon/noisypigeon/pull/93)).
+- ADR-0081: adds `pigeon job run email-pull`, a sibling to `email-sync` that pulls raw `.eml` files and unpacked attachments (no Markdown/frontmatter transform), deduplicates attachments only by content hash, never encrypts, and optionally uploads unencrypted to a bucket-config ([#92](https://github.com/noisypigeon/noisypigeon/pull/92)).
+- ADR-0080: adds an optional per-identity IMAP connection cap on `Identity` (set via `pigeon keyring add/modify email`), overriding `job run email-sync`'s job-wide `--max-connections-per-identity` default for that identity only; routes `transform.rs`'s four lenient-skip warnings through `tracing::warn!` instead of `eprintln!`, so they now reach the JSONL observability log ([#87](https://github.com/noisypigeon/noisypigeon/pull/87)).
+- ADR-0078: formalizes a repeatable procedure for analyzing `pigeon.jsonl` job-run logs (isolating a run, reading the resource-sample stream, cross-checking failure tallies) and packages it as the `.claude/skills/analyze-job-run` skill -- no source changes ([#85](https://github.com/noisypigeon/pigeon/pull/85)).
+- ADR-0077: adds `--file-types`, `--expand-zips`, and `--image-format`/`--video-format`/`--audio-format` to `pull-transform`, letting a run filter which extensions get pulled/transformed/uploaded, opt individual zips out of expansion (upload as-is instead), and adapt the media-transcoding mapping from a small vetted per-category menu ([#84](https://github.com/noisypigeon/pigeon/pull/84)).
+- ADR-0076: streams `pull-transform` downloads and zip expansion straight to disk instead of buffering whole objects/zip contents in memory, root-causing and fixing a real SIGKILL crash against 50-100GB zip archives; adds a live disk-space preflight check ([#83](https://github.com/noisypigeon/pigeon/pull/83)).
+- ADR-0052: decides how to merge the separate `pigeon-do` repo's full history into this repo as `terraform/infrastructure/*`, renumbering its 12 ADRs to 0053-0064 and rewriting its module sources to point at `terraform/modules/` (documents the decision; the user performs the actual merge manually) ([#62](https://github.com/noisypigeon/pigeon/pull/62)).
+- ADR-0065: fixes a `job run email-sync` crash root-caused to `imap-proto` only recognizing `MESSAGE`/`RFC822` in `BODYSTRUCTURE` -- `pull_manifest` now bisects a failing UID batch to isolate the specific unparseable message(s) with a placeholder, instead of losing the whole mailbox's manifest data ([#65](https://github.com/noisypigeon/pigeon/pull/65)).
+- ADR-0068: fixes three IMAP `LOGOUT` calls that treated a logout failure as fatal even after the real work already succeeded -- `gather_pending` was discarding the whole identity's already-gathered manifest data on a logout-time disconnect; now best-effort, matching `worker.rs`'s existing pattern ([#67](https://github.com/noisypigeon/pigeon/pull/67)).
+- ADR-0071: fixes a `job run email-sync` connection storm at high `--concurrency` against multiple identities ("Too many simultaneous connections") with a new per-identity connection cap (`--max-connections-per-identity`, default 6), retries a transiently-failed batch once before giving up, and collapses per-UID "missing file" warning spam into one line per batch ([#76](https://github.com/noisypigeon/pigeon/pull/76)).
+- ADR-0073: adds cross-cutting observability -- structured `tracing` spans/events carrying identity/mailbox/uid/step/attempt context, a durable JSON-formatted `pigeon.jsonl` log (`--log-file`/`--log-level`), CPU/memory/disk telemetry, and a panic hook, all wired uniformly through one `Observable` trait and `run_instrumented` harness reused by every current and future command ([#80](https://github.com/noisypigeon/noisypigeon/pull/80)).
+- ADR-0074: adds `pigeon job run pull-transform` -- recursively pulls a bucket-config, expands zips in-memory, recodes photos/screenshots/video/audio to a size-optimized canonical format via `ffmpeg`/`ffprobe` with verify+retry+fallback-to-original, dates media (EXIF) and documents (PDF/OOXML metadata + text scan), dedups by SHA-256, organizes by extension, and optionally encrypts and uploads to a bucket-config ([#81](https://github.com/noisypigeon/noisypigeon/pull/81)).
+- ADR-0075 (amends ADR-0074): adds progress visibility to `pull-transform` -- a run against a real, large bucket looked hung after the final confirmation, since the whole download/recode/verify phase and placement pass had no progress bar or console output at all; now both phases show a live bar, plus named call-outs for large downloads and video/audio recodes specifically ([#82](https://github.com/noisypigeon/noisypigeon/pull/82)).
 
-- [terraform/scaleway/compute-instance] docs(adr-0079): add scaleway/compute-instance module ([#86](https://github.com/noisypigeon/noisypigeon/pull/86))
+## [0.2.1] - 2026-09-25
 
-## 2026-09-28
+- ADR-0051: GitHub repo renamed `pigeon-cli` → `pigeon`; corrects `Cargo.toml`'s `repository` field and every in-repo GitHub link, bumps to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).
 
-- [pigeon-cli] feat(adr-0080): add a per-identity IMAP connection cap via keyring, and route transform lenient-skip warnings through tracing ([#87](https://github.com/noisypigeon/noisypigeon/pull/87))
-- [repo] feat(adr-0078): formalize a job-run log analysis procedure and package it as the `analyze-job-run` Claude Code skill ([#85](https://github.com/noisypigeon/noisypigeon/pull/85))
+- ADR-0029: Every substantive change now lands via branch → PR → local `mise run ci` gate → auto-merge, with a changelog entry per PR ([#1](https://github.com/noisypigeon/pigeon/pull/1)).
+- ADR-0030: Root-causes silent, total attachment-upload loss to a wrong path reconstruction in `run_dedup_pass` (documents investigation and fix; fix not yet implemented) ([#2](https://github.com/noisypigeon/pigeon/pull/2)).
+- ADR-0030: Implements the attachment-placement fix -- `email-sync` attachments are now correctly found, deduped, and uploaded instead of silently lost ([#3](https://github.com/noisypigeon/pigeon/pull/3)).
+- ADR-0030: Amends the investigation -- real post-fix runs still lost attachments due to a second, deeper bug (attachment placement only runs for messages canonicalized in the same call), plus a separate malformed-source-message finding (documents both; fix not yet implemented) ([#4](https://github.com/noisypigeon/pigeon/pull/4)).
+- ADR-0030: Implements both amendment fixes -- attachment placement now resolves each message's canonical path across runs (a re-run genuinely recovers previously-orphaned attachments), and a malformed source message's phantom zero-byte attachment part no longer rejects the whole message ([#5](https://github.com/noisypigeon/pigeon/pull/5)).
+- ADR-0031: Adds `mise run adr-issue` and category labels to file/link GitHub issues for genuinely-deferred ADR Out of scope items, and backfills 33 issues across ADR-0003–0030's still-open items ([#39](https://github.com/noisypigeon/pigeon/pull/39)).
+- ADR-0032: Documents adding a progress bar to `job run email-sync`'s previously-silent manifest-gathering phase, and an `ATTACHMENTS` column (an IMAP `BODYSTRUCTURE`-derived estimate) to the wizard's pre-run summary table (documents the decision; implementation not yet done) ([#43](https://github.com/noisypigeon/pigeon/pull/43)).
+- ADR-0032: Implements the decision -- the manifest-gathering phase now shows a per-identity connect line and mailbox-scoped progress bar, and the summary table gains its `ATTACHMENTS` column ([#44](https://github.com/noisypigeon/pigeon/pull/44)).
+- ADR-0033: Documents closing seven backlog issues raised while investigating an attachments-still-not-working report (both ADR-0030 fixes confirmed correctly present): a dedup-phase progress bar with suspend-safe warnings, structured per-category failure reporting, a narrower manifest attachment estimate shown next to the real per-run count, bounded progress-bar prefix width, and control-character escaping in frontmatter YAML values (documents the decision; implementation not yet done) ([#47](https://github.com/noisypigeon/pigeon/pull/47)).
+- ADR-0033: Implements the decision -- the dedup pass now shows a progress bar with a suspend-safe warning, `email-sync`'s failure count breaks down by cause (connect/examine/batch-error/verification/parse-skipped), the manifest attachment estimate also counts a `Content-Type` `name` param and is shown next to the real per-run staged count, every progress-bar prefix is bounded to 24 characters, and `yaml_quote` escapes embedded control characters ([#47](https://github.com/noisypigeon/pigeon/pull/47)).
+- ADR-0034: Root-causes the manifest `ATTACHMENTS` estimate being stuck at zero for every identity to `gather_pending`'s persisted-manifest reuse fast-path, which caches a UID's attachment count indefinitely and never invalidates it; decides to drop the reuse fast-path and always re-pull `BODYSTRUCTURE` fresh (documents the decision; implementation not yet done) ([#48](https://github.com/noisypigeon/pigeon/pull/48)).
+- ADR-0034: Implements the decision -- `gather_pending` always re-pulls a fresh size/attachment-count manifest for pending UIDs instead of reusing a persisted `.manifest` entry, so the `ATTACHMENTS` estimate can no longer get stuck stale; `.manifest` is now a write-only snapshot, and the now-unused `load_manifest` is removed ([#51](https://github.com/noisypigeon/pigeon/pull/51)).
+- ADR-0035: Root-causes `job run email-sync` prompting for the macOS keychain password 5-10 times per run to one distinct keychain item per identity/bucket-config/encryption-key alias, each needing its own OS-level access grant; decides that, on macOS, writing a secret should pre-authorize the running binary via `security add-generic-password -T` so future reads never prompt (documents the decision; implementation not yet done) ([#52](https://github.com/noisypigeon/pigeon/pull/52)).
+- ADR-0035: Amended and **rejected** -- a live implementation attempt showed the `-T` grant doesn't suppress repeat Keychain prompts, since `/usr/bin/security` (not `pigeon`) is the process actually requesting access once reads are shelled out; no code landed, problem remains open for a future attempt ([#53](https://github.com/noisypigeon/pigeon/pull/53)).
+- ADR-0036: Documents restructuring the repo for a future monorepo -- `src/`/`tests/`/`scripts/` move to `service/pigeon-cli/src/`, `service/pigeon-cli/tests/`, and `.github/scripts/`; `Cargo.toml` stays at repo root with updated `[lib]`/`[[bin]]`/`[[test]]` paths; every existing ADR's historical path citations get rewritten to match (documents the decision; implementation not yet done) ([#54](https://github.com/noisypigeon/pigeon/pull/54)).
+- ADR-0036: Amended to also relocate `CHANGELOG.md` (this file) to `service/pigeon-cli/CHANGELOG.md`, and implements the restructure -- `src/`, `tests/`, `scripts/`, and `CHANGELOG.md` move via `git mv`; `Cargo.toml` gains explicit `[lib]`/`[[bin]]`/`[[test]]` paths; `.mise.toml` and `CLAUDE.md`'s Dev cycle instructions updated to match. The historical-citation rewrite across existing ADRs is a separate follow-up PR ([#55](https://github.com/noisypigeon/pigeon/pull/55)).
+- ADR-0036: Rewrites every existing ADR's historical `src/`/`tests/`/`scripts/`/`CHANGELOG.md` path citations to match the restructure, occurrence-by-occurrence rather than a blind find-and-replace (idiomatic prose and a vendored crate's own internal path were confirmed false positives and left untouched) ([#56](https://github.com/noisypigeon/pigeon/pull/56)).
+- ADR-0037: Merges the separate `pigeon-tf` repo's full history into this repo as `terraform/modules/{scaleway,digitalocean}/*` (all 20 release tags preserved via a `git filter-repo` rewrite), renumbers its 12 ADRs to 0038-0049, and consolidates each of the 9 modules' changelogs ([#57](https://github.com/noisypigeon/pigeon/pull/57)).
+- ADR-0037: Collapses each module's `CHANGELOG.md` back to one entry after the retargeted `module-release.yml` fired on PR #57 itself and prepended a duplicate, generic auto-generated entry on top of the hand-written consolidation ([#58](https://github.com/noisypigeon/pigeon/pull/58)).
+- ADR-0050: Relocates `Cargo.toml`/`Cargo.lock` into `service/pigeon-cli/` (mise stays the entry point via `--manifest-path`), fixing `cargo package`'s scope to just this crate instead of the whole repo ([#59](https://github.com/noisypigeon/pigeon/pull/59)).
 
-## 2026-09-27
+## [0.2.0] - 2026-09-25
 
-- [pigeon-cli] feat(adr-0077): add pull-transform file-type selection, adaptable transcoding mapping, and zip pass-through ([#84](https://github.com/noisypigeon/noisypigeon/pull/84))
+Unstable. Introduces a trait-based core architecture, a unified keyring, and end-to-end client-side encryption for `email-sync` uploads.
 
-- [pigeon-cli] fix(adr-0076): stream pull-transform downloads and zip expansion to disk instead of buffering whole objects/zips in memory, fixing a real SIGKILL crash against 50-100GB zip archives ([#83](https://github.com/noisypigeon/noisypigeon/pull/83))
+- ADR-0028: `pigeon job run decrypt-files` decrypts `*.enc` files from a local input directory into an output directory using a configured encryption key — `core::job::Job`'s second real implementor, alongside `email-sync`.
+- ADR-0027: An encryption key can default to a bucket-config (chosen by alias in `keyring add/modify bucket`) and still be overridden per run via `--encryption-key` or interactively; non-interactive runs now pick up that default automatically instead of always skipping encryption.
+- ADR-0026: `pigeon keyring add/modify encryption-key` manages symmetric encryption keys — generated or imported — in the OS keychain, selectable by alias wherever a key is needed.
+- ADR-0025: `email-sync` uploads can be encrypted client-side with AES-256-GCM-SIV and a content-derived deterministic nonce, so identical plaintext still dedups correctly against S3 ETags even when encrypted.
+- ADR-0024: The upload phase now runs concurrently across every selected identity (previously sequential), with its own progress bar and per-file retry-with-backoff.
+- ADR-0023: Core logic reorganized into trait-based `src/core/` (`Job`, `Transform`, `Dedup`, `KeyringEntry`, `WizardInput`) with concrete implementations moved to `src/commands/`.
+- ADR-0022: `pigeon email authenticate` and `pigeon dataops bucket-config` are replaced by one `pigeon keyring add/modify/delete/list`, backed by a single `keyring.toml` and OS-keychain service.
+- ADR-0021: `pigeon job run email-sync` replaces `pigeon email sync` with a wizard that resolves identities/concurrency/upload target, batches work across every identity's mailboxes, and shows a pre-run manifest summary.
+- ADR-0020: Dedup and transform primitives (`ContentIndex`, filename sanitization, etc.) genericized for reuse beyond email.
+- ADR-0019: Sync now runs fetch → transform+dedup → upload as ordered phases with an `.uploaded` checkpoint, instead of uploading inline per message.
 
-- [pigeon-cli] feat(adr-0075): add progress visibility to pull-transform -- a live bar plus named call-outs for large downloads/recodes, so a long run no longer looks hung ([#82](https://github.com/noisypigeon/noisypigeon/pull/82))
+## [0.1.0] - 2026-09-23
 
-- [pigeon-cli] feat(adr-0074): add pull-transform job -- pulls a bucket, expands zips, recodes media via ffmpeg with verify/fallback, dates and dedups by content, and organizes/uploads the result ([#81](https://github.com/noisypigeon/noisypigeon/pull/81))
+Initial release; unstable. Scaffolds `pigeon email sync` end to end: IMAP connectivity, Markdown transform, S3-compatible remote storage, and deduplication.
 
-- [pigeon-cli] feat(adr-0073): add cross-cutting observability -- structured tracing, a durable JSONL log, and CPU/mem/disk telemetry via one Observable trait reused by every command ([#80](https://github.com/noisypigeon/noisypigeon/pull/80))
-
-- [terraform/scaleway/object-bucket] fix(adr-0072): raise GLACIER transition to Scaleway's 90-day minimum ([#77](https://github.com/noisypigeon/noisypigeon/pull/77))
-
-- [terraform/scaleway/iam-policy] fix(adr-0070): downgrade admin bucket-policy statement to a supported version ([#73](https://github.com/noisypigeon/noisypigeon/pull/73))
-
-- [terraform/scaleway/iam-policy] feat(adr-0069): guard scaleway/iam-policy against bucket-policy self-lockout ([#71](https://github.com/noisypigeon/pigeon/pull/71))
-
-- [blog] ADR-0067: rewrite the noisypigeon.github.io blog from Jekyll to Zola as `service/blog` ([#66](https://github.com/noisypigeon/pigeon/pull/66))
-- [pigeon-cli] ADR-0068: treat IMAP `LOGOUT` failures as best-effort, not fatal -- fixes a crash (and silent manifest-data loss) when the connection drops right after a successful `job run email-sync` mailbox scan ([#67](https://github.com/noisypigeon/pigeon/pull/67)).
-- [pigeon-cli] ADR-0071: cap simultaneous IMAP connections per identity, retry a transiently-failed batch once, and collapse per-UID fetch-failure warning spam into one line per batch ([#76](https://github.com/noisypigeon/noisypigeon/pull/76))
-
-- [terraform/scaleway/iam-policy] feat(adr-0066): guard scaleway/iam-policy against bucket-scope widening ([#64](https://github.com/noisypigeon/pigeon/pull/64))
-- [pigeon-cli] ADR-0065: fix a `job run email-sync` crash caused by a single unparseable `BODYSTRUCTURE` message aborting an entire mailbox's manifest gathering -- `pull_manifest` now bisects the UID batch to isolate just the poisoned message(s) ([#65](https://github.com/noisypigeon/pigeon/pull/65)).
-
-## 2026-09-26
-
-- [terraform/digitalocean/droplet] Fix droplet module's access-key dependency source ([#63](https://github.com/noisypigeon/pigeon/pull/63))
-
-- [repo] ADR-0050: relocate `Cargo.toml`/`Cargo.lock` into `service/pigeon-cli/`, add this repo-wide dated changelog, rename `LICENSE` to `LICENSE.md`, and rewrite both READMEs ([#59](https://github.com/noisypigeon/pigeon/pull/59)).
-
-## 2026-09-25
-
-- [repo] ADR-0051: rename GitHub repo references `pigeon-cli` → `pigeon`, correct `Cargo.toml`'s `repository` field, and bump to `0.2.1` in prep for the next publish ([#60](https://github.com/noisypigeon/pigeon/pull/60)).
-- [repo] ADR-0052: decide how to merge the separate `pigeon-do` repo's full history into this repo as `terraform/infrastructure/*`, a new sibling to `terraform/modules/` (documents the decision; the user performs the actual merge manually) ([#62](https://github.com/noisypigeon/pigeon/pull/62)).
+- ADR-0018: Published to crates.io as `pigeon-cli`.
+- ADR-0017: `pigeon remote` renamed to `pigeon dataops`.
+- ADR-0016: Fixed a macOS keychain ACL bug that lost stored credentials across rebuilds; CLI cleanup (`--local-output`, `--remote-output`, `list`).
+- ADR-0015: Progress bars made safe under concurrent mailbox processing.
+- ADR-0014: Mailboxes fetched concurrently, one IMAP session per worker.
+- ADR-0013: Per-mailbox progress reporting; sender-controlled attachment names sanitized against path-separator crashes.
+- ADR-0012: Byte-identical messages and attachments deduplicated on output (content-hashed, merged via `also-in:` frontmatter).
+- ADR-0011: `email sync` can upload its output to a configured remote, with MD5/ETag-based skip-if-unchanged.
+- ADR-0010: Remote configuration simplified (`alias`, reordered prompts, a `bucket_exists` check replacing an unreliable list-buckets probe).
+- ADR-0009: `pigeon remote` adds rclone-style S3-compatible storage (`configure`/`list-buckets`/`ls`/`lsd`/`copy`).
+- ADR-0008: Email-specific code grouped under `src/email/` ahead of a second command group.
+- ADR-0007: `sink` and `transform` merged into one `pigeon email sync` command, with `--debug` to isolate either phase.
+- ADR-0006: `pigeon email transform` converts `.eml` to flat, frontmattered Markdown via `mail-parser`/`htmd`.
+- ADR-0005: `pigeon email sink` downloads mail read-only via IMAP with UID-based resume.
+- ADR-0004: `mise run pigeon --` runs the built binary.
+- ADR-0003: IMAP auth via per-provider app/bridge passwords (not OAuth2), credentials stored in the OS keychain.
+- ADR-0002: CLI scaffolded (clap, Mise-pinned toolchain, stub commands).
+- ADR-0001: Initial design for authenticating, sinking, and transforming mail from Gmail, Fastmail, iCloud, and Proton.
