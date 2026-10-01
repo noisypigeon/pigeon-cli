@@ -72,7 +72,7 @@ match arm in `commands/job/commands.rs` delegating to
 
 ### 1. New job scaffold
 
-- `service/pigeon-cli/src/commands/job/email_pull/{mod,wizard,manifest,worker,dedup}.rs`
+- `src/commands/job/email_pull/{mod,wizard,manifest,worker,dedup}.rs`
   (mirrors `email_sync`'s module shape, ADR-0008).
 - `EmailPullJob { identities: Vec<IdentityContext> }`-shaped struct
   implementing `core::job::Job` (`Plan = Vec<Vec<PendingMailbox>>`,

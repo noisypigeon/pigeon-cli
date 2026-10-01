@@ -178,3 +178,18 @@ this move, not despite it.
   assumption for no functional benefit).
 - Any Cargo workspace conversion — still a single relocated package, per
   ADR-0036's own already-established stance.
+
+## Amendment (2026-09-30): manifest relocation reversed (ADR-0086)
+
+ADR-0084 already split this repo down to holding nothing but the pigeon-cli
+crate — the Terraform/blog content this ADR's three-tier changelog model and
+packaging-scope reasoning were built around is gone. ADR-0086 moves
+`Cargo.toml` (and every other crate file) back out of `service/pigeon-cli/`
+to the repo root, collapses the three-tier changelog model back to one file,
+and merges the two READMEs this ADR split apart back into one. "No
+`exclude`/`include` list needed... because packaging naturally scopes to
+`service/pigeon-cli/`" no longer holds once the manifest returns to a root
+that also permanently holds `docs/adr/`/`CLAUDE.md`/`.claude/` — ADR-0086
+adds an explicit `include` list instead. This ADR's body stays unedited as
+an accurate record of what was decided and why, at the time, per this
+repo's established convention; ADR-0086 is the record of the reversal.

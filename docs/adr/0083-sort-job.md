@@ -84,7 +84,7 @@ ever. `Observable` arm: `"job.sort"` (ADR-0073).
 
 ### 2. New job scaffold
 
-`service/pigeon-cli/src/commands/job/sort/{mod,wizard,manifest,worker}.rs`
+`src/commands/job/sort/{mod,wizard,manifest,worker}.rs`
 — no `dedup.rs`, no `archive` involvement at all (Context above). `SortJob
 { source_bucket: BucketConfig, source_secret: String, local_output:
 PathBuf, remote: (BucketConfig, String) }` implements `core::job::Job` —

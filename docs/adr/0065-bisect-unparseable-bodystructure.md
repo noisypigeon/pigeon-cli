@@ -51,7 +51,7 @@ the observed `0/37` (zero progress in that mailbox) before the crash. This
 is not a rare edge case: any mailbox containing a bounce, a read receipt, or
 an internationalized embedded message can trigger it.
 
-**Where this lives**: `service/pigeon-cli/src/commands/job/email_sync/manifest.rs`'s
+**Where this lives**: `src/commands/job/email_sync/manifest.rs`'s
 `pull_manifest` issues one `session.uid_fetch(&uid_set, "(UID RFC822.SIZE
 BODYSTRUCTURE)")` for *every* pending UID in a mailbox at once, then
 propagates any fetch/parse error with `?` — which currently kills the whole

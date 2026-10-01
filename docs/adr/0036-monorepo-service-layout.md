@@ -207,3 +207,16 @@ remain unaffected and stay at repo root, as originally decided.
 
 Implementation of this amendment lands together with the rest of this
 ADR's implementation, not as a separate task.
+
+## Amendment (2026-09-30): the `service/pigeon-cli/` layout is undone (ADR-0086)
+
+ADR-0084 already split this repo down to holding nothing but the pigeon-cli
+crate, which made this ADR's original "prepare for a monorepo" framing moot
+without reversing the directory layout itself. ADR-0086 completes that
+reversal: `src/`, `tests/`, `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md`
+move back out of `service/pigeon-cli/` to the repo root, and the now-empty
+`service/` directory is deleted. This ADR's body (the original move, and the
+false-positive/judgment-call guidance in its Context) stays unedited as an
+accurate record of what was decided and why, at the time — per this repo's
+own established convention (e.g. ADR-0084 declining to edit this very ADR
+for the same reason). ADR-0086 is the record of this reversal.

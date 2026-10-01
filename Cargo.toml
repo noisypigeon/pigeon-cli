@@ -9,6 +9,7 @@ repository = "https://github.com/noisypigeon/pigeon-cli"
 readme = "README.md"
 keywords = ["email", "imap", "s3", "backup", "cli"]
 categories = ["command-line-utilities", "email"]
+include = ["src/**", "tests/**", "Cargo.toml", "Cargo.lock", "README.md", "LICENSE.md", "CHANGELOG.md"]
 
 [lib]
 name = "pigeon"

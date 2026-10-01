@@ -16,10 +16,10 @@ ADR-0003 named this exact risk when the `keyring` crate was first adopted, as an
 
 ### Root cause
 
-- `service/pigeon-cli/Cargo.toml` depends on `keyring = "4.2.0"` with no feature flags, so it resolves to the crate's *default* features: `v1` (the stable `Entry` API), `windows-native-keyring-store`, and — on Linux — `zbus-secret-service-keyring-store`, a pure-Rust D-Bus Secret Service backend.
+- `Cargo.toml` depends on `keyring = "4.2.0"` with no feature flags, so it resolves to the crate's *default* features: `v1` (the stable `Entry` API), `windows-native-keyring-store`, and — on Linux — `zbus-secret-service-keyring-store`, a pure-Rust D-Bus Secret Service backend.
 - That backend needs an active D-Bus session plus a running Secret Service daemon (`gnome-keyring`, KWallet). That's standard on a Linux *desktop* session; it's simply absent on a headless server VM like this Scaleway instance, which has no desktop environment, no login session bus, and no Secret Service provider installed.
 - When no compiled-in backend can initialize, `keyring-core` never establishes a default credential store — which is exactly what the generic "No default store has been set" message is reporting. It isn't a bug in `pigeon`'s own code; it's `keyring` surfacing that it has nothing to talk to.
-- Every use of the crate in this codebase is already centralized in one place per ADR-0022's unified keyring command: `service/pigeon-cli/src/core/keyring/credentials.rs`'s `set_secret`/`get_secret`/`delete_secret`, each a plain `keyring::Entry::new(SERVICE_NAME, alias)` call. None of them assume a specific backend — the fix doesn't need to touch this file.
+- Every use of the crate in this codebase is already centralized in one place per ADR-0022's unified keyring command: `src/core/keyring/credentials.rs`'s `set_secret`/`get_secret`/`delete_secret`, each a plain `keyring::Entry::new(SERVICE_NAME, alias)` call. None of them assume a specific backend — the fix doesn't need to touch this file.
 - Per ADR-0022 §4, `add` calls `credentials::set_secret` *before* writing the `keyring.toml` metadata entry, specifically so a keychain failure rolls back cleanly. The failed `add` in the bug report therefore never persisted a dangling `keyring.toml` entry — there's nothing to clean up as part of this fix.
 
 ### Fix direction
@@ -34,7 +34,7 @@ The trade-off, confirmed against upstream docs before committing to this directi
 
 ### Linux-only `keyring` feature override
 
-`service/pigeon-cli/Cargo.toml` keeps its existing base dependency line unchanged — this continues to cover macOS (`apple-native-keyring-store`) and Windows (`windows-native-keyring-store`) exactly as today:
+`Cargo.toml` keeps its existing base dependency line unchanged — this continues to cover macOS (`apple-native-keyring-store`) and Windows (`windows-native-keyring-store`) exactly as today:
 
 ```toml
 [dependencies]
@@ -56,7 +56,7 @@ This is a deliberate, narrowly-scoped choice, not an attempt to support every po
 
 ### Reboot caveat, documented
 
-`service/pigeon-cli/README.md` gains a short note under its keyring/setup section (or this ADR's Consequences section stands as the record, if README doesn't cover keyring setup in enough detail to warrant one) stating that Linux secrets live in the kernel keyring and need re-adding via `pigeon keyring add`/`modify` after a reboot.
+`README.md` gains a short note under its keyring/setup section (or this ADR's Consequences section stands as the record, if README doesn't cover keyring setup in enough detail to warrant one) stating that Linux secrets live in the kernel keyring and need re-adding via `pigeon keyring add`/`modify` after a reboot.
 
 ## Consequences
 
