@@ -56,6 +56,9 @@ tracing-error = "0.2.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "4.2.0", default-features = false, features = ["v1", "linux-keyutils-keyring-store"] }
+
 [dev-dependencies]
 assert_cmd = "2"
 predicates = "3"
