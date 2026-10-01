@@ -15,12 +15,12 @@ revisited here.
 
 A full repo sweep confirmed exactly what does and doesn't need to change:
 
-- `service/pigeon-cli/Cargo.toml`'s `repository` field
+- `Cargo.toml`'s `repository` field
   (`https://github.com/noisypigeon/pigeon-cli`) is the one reference that
   actually ships to crates.io users — it's what renders on the crate's
   crates.io page and in `cargo info`. This is the primary reason a release is
   needed.
-- `service/pigeon-cli/README.md` (the crates.io-facing README, ADR-0050)
+- `README.md` (the crates.io-facing README, ADR-0050)
   has two live links built from the old repo URL.
 - Root `README.md`'s title, `# pigeon-cli`, is the repo-orientation doc's
   (ADR-0050) own self-identification and should track the repo's actual name.
@@ -74,13 +74,13 @@ git remote set-url origin git@github.com:noisypigeon/pigeon.git
 Not a file change, but required for `git fetch`/`push` to address the repo
 by its current name rather than relying on GitHub's redirect indefinitely.
 
-### `service/pigeon-cli/Cargo.toml`
+### `Cargo.toml`
 
 `repository` becomes `https://github.com/noisypigeon/pigeon`. `version`
 bumps `0.2.0` → `0.2.1` — a patch release, since the only change is corrected
 metadata, in preparation for the next `cargo publish`.
 
-### `service/pigeon-cli/README.md`
+### `README.md`
 
 Its two `noisypigeon/pigeon-cli` links (the `docs/adr/` tree link and the
 `LICENSE.md` blob link) become `noisypigeon/pigeon`.

@@ -13,7 +13,7 @@
 - `git remote -v` confirms the canonical repo is `github.com/noisypigeon/pigeon-cli`.
 - **No CI/CD automation exists** — no `.github/workflows/` directory anywhere in this project's history. Every existing task (`build`, `pigeon`, `test`, `fmt`, `lint`, `ci`) is a local `mise run <task>` per ADR-0004. Publishing should follow that same established pattern rather than introducing CI/CD as an unrequested side effect.
 - All current dependencies (`async-imap`, `tokio`, `clap`, `serde`, `minio`, `keyring`, etc.) are ordinary crates.io dependencies with version requirements — none are git/path deps, which would block publishing.
-- The crate is already a lib+bin layout (`service/pigeon-cli/src/lib.rs` + `service/pigeon-cli/src/main.rs`), which crates.io/`cargo install` fully supports without restructuring.
+- The crate is already a lib+bin layout (`src/lib.rs` + `src/main.rs`), which crates.io/`cargo install` fully supports without restructuring.
 
 Three decisions were confirmed directly with the project owner before writing this ADR:
 - **Package name**: `pigeon-cli`, matching the existing GitHub repo name exactly. The installed **binary** stays named `pigeon`, decoupled from the package name via an explicit `[[bin]]` section — preserving ADR-0002/ADR-0004's established `pigeon` command surface.
@@ -29,7 +29,7 @@ Three decisions were confirmed directly with the project owner before writing th
 ```toml
 [[bin]]
 name = "pigeon"
-path = "service/pigeon-cli/src/main.rs"
+path = "src/main.rs"
 ```
 
 keeps `cargo install pigeon-cli` installing a binary still invoked as `pigeon`, so `mise run pigeon -- <args>` and every other ADR-0002/ADR-0004-established convention is unaffected.
@@ -117,3 +117,19 @@ this ADR was written and implemented:
 `service/pigeon-cli/Cargo.toml`'s actual `repository` field is corrected to
 `https://github.com/noisypigeon/pigeon` by ADR-0051, along with every other
 in-repo GitHub link — see that ADR for the full scope.
+
+## Amendment (2026-09-30): crate moved back to repo root (ADR-0086)
+
+ADR-0086 moves `Cargo.toml` (and every other crate file) out of
+`service/pigeon-cli/` back to the repo root — a direct reversal of the
+ADR-0050 amendment above, since that amendment's reasoning depended entirely
+on the manifest living in a directory scoped to just the crate's own files.
+That stopped being true once `docs/adr/`, `CLAUDE.md`, and `.claude/`
+permanently stayed at root after ADR-0084's repo split (they didn't leave the
+way Terraform/blog did), so "no `exclude`/`include` list needed" flips back
+to **needing one**: `Cargo.toml` now carries an explicit `include` list
+scoping `cargo publish`'s package to `src/`, `tests/`, and its own metadata
+files, confirmed via `cargo package --list` the same way ADR-0050 itself
+originally confirmed the opposite direction. `readme = "README.md"` is
+unchanged as a literal string and now resolves to the repo-root `README.md`
+(the two READMEs ADR-0050 split apart are merged back into one by ADR-0086).
