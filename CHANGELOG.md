@@ -1,15 +1,12 @@
 # Changelog
 
-Versioned changelog for the `pigeon-cli` crate specifically. For a one-line,
-date-sectioned log across this whole repo (including `terraform/`), see the
-root [`/CHANGELOG.md`](../../CHANGELOG.md).
-
-All notable changes to this module are documented in this file.
+All notable changes to the `pigeon-cli` crate are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0086: moves the crate from `service/pigeon-cli/` to repo root now that ADR-0084 left this repo holding nothing else; collapses the two `CHANGELOG.md`s/`README.md`s/`.gitignore`s into one each, drops `--manifest-path` from every `.mise.toml` task, rewrites 40 ADRs' + `CLAUDE.md`'s historical path citations to match, and adds an explicit `Cargo.toml` `include` list so `cargo publish` doesn't regress ADR-0050's packaging-scope fix ([#3](https://github.com/noisypigeon/pigeon-cli/pull/3)).
 - ADR-0085: fixes `pigeon keyring add`/`modify`/`delete`/`list` failing outright on headless Linux ("No default store has been set") by switching Linux to the kernel-keyutils backend instead of the D-Bus Secret Service backend, which needs a desktop session/daemon a headless server doesn't have ([#2](https://github.com/noisypigeon/pigeon-cli/pull/2)).
 - ADR-0084: splits `service/pigeon-cli` out of this monorepo into its own repo, `noisypigeon/pigeon-cli`, via a full-history force-push followed by one ordinary prune commit in each repo -- see the root `/CHANGELOG.md` for the repo-wide record; this crate's changelog continues unaffected in the new repo ([#99](https://github.com/noisypigeon/noisypigeon/pull/99)).
 - ADR-0083: implements `pigeon job run sort` -- reuses `commands/job/download.rs`/`upload.rs` directly, with a plain `stream::buffer_unordered` fetch phase (no growable queue, since there's no zip expansion) and a placement pass that always disambiguates a filename collision via `unique_path`, never a hash check ([#98](https://github.com/noisypigeon/noisypigeon/pull/98)).
