@@ -27,12 +27,12 @@ Root cause, confirmed by reading the current implementation: **the entire
 pull-transform pipeline operates on whole objects fully materialized in
 memory**, at two compounding points:
 
-1. `bucket::client::get_object` (`service/pigeon-cli/src/commands/keyring/bucket/client.rs:147-167`)
+1. `bucket::client::get_object` (`src/commands/keyring/bucket/client.rs:147-167`)
    downloads a whole object into one contiguous `Vec<u8>` via
    `.content()?.to_segmented_bytes().await?.to_bytes().to_vec()` -- for a
    50-100GB object, this alone can exceed available RAM regardless of
    what's inside it.
-2. `archive::expand` (`service/pigeon-cli/src/commands/job/pull_transform/archive.rs:37-57`)
+2. `archive::expand` (`src/commands/job/pull_transform/archive.rs:37-57`)
    takes a zip's bytes already in memory, and for *every* entry inside it
    calls `entry.read_to_end(&mut buf)`, collecting every single
    decompressed member into one `Vec<ZipMember>` before returning any of

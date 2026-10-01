@@ -44,7 +44,7 @@ telemetry — without touching the established `Result<T, String>` error
 convention or the `indicatif`/`MultiProgress` progress-bar discipline
 (ADR-0013/0014/0015).
 
-### 1. New dependencies (`service/pigeon-cli/Cargo.toml`)
+### 1. New dependencies (`Cargo.toml`)
 
 ```toml
 tracing = "0.1.40"
@@ -80,7 +80,7 @@ and a dev-dependency, `serde_json = "1"`, for the new integration test.
 ### 2. One cross-cutting trait, one harness
 
 ```rust
-// service/pigeon-cli/src/core/observability.rs
+// src/core/observability.rs
 pub(crate) trait Observable {
     fn command_name(&self) -> &'static str;
 }
@@ -95,7 +95,7 @@ the command is already inside the span.
 
 One harness function, in a new `observability/` module:
 ```rust
-// service/pigeon-cli/src/observability/mod.rs
+// src/observability/mod.rs
 pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i32) -> i32 {
     let span = tracing::info_span!("command", command = command_name);
     let _guard = span.enter();
@@ -139,7 +139,7 @@ hold plaintext secrets) must `#[instrument(skip(ctx, ...))]` and hand-pick
 Debug-formats every parameter by default unless skipped; a secret must
 never ride along implicitly.
 
-Concrete sites in `service/pigeon-cli/src/commands/job/email_sync/`:
+Concrete sites in `src/commands/job/email_sync/`:
 - `mod.rs::gather_pending` — a per-identity span with `identity`/`email`
   fields.
 - `worker.rs::run_worker` — wraps each pulled batch's

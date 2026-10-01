@@ -16,9 +16,9 @@ Error: logout failed: connection lost
 ```
 
 **Root cause, confirmed by reading every `.logout()` call site**
-(`grep -rn "logout failed\|\.logout(" service/pigeon-cli/src/`): there are
+(`grep -rn "logout failed\|\.logout(" src/`): there are
 5 call sites across 3 files. Two of them
-(`service/pigeon-cli/src/commands/job/email_sync/worker.rs:147,203`, the
+(`src/commands/job/email_sync/worker.rs:147,203`, the
 concurrent fetch/transform/verify phase, ADR-0014/ADR-0024) already treat
 logout as best-effort cleanup: `let _ = conn.session.logout().await;` — a
 failure there is silently ignored, since the connection is being torn down
@@ -29,7 +29,7 @@ The other three **propagate the error with `?`**, turning a pure "say
 goodbye to the server" courtesy call into a hard failure of the whole
 function that already did its real work:
 
-- `service/pigeon-cli/src/commands/job/email_sync/mod.rs:168-170` — the
+- `src/commands/job/email_sync/mod.rs:168-170` — the
   exact crash site. This is the manifest-gathering phase's `gather_pending`:
   it loops over every mailbox, calls `manifest::pull_manifest` for each
   (ADR-0065's bisection now makes this loop *more* resilient to bad
@@ -40,11 +40,11 @@ function that already did its real work:
   *before* `save_manifest` ever runs, silently discarding every mailbox's
   successfully-gathered manifest data for that identity, not just failing
   loudly. This compounds a merely-annoying crash into real data loss.
-- `service/pigeon-cli/src/commands/job/email_sync/sink.rs:118-120` — the
+- `src/commands/job/email_sync/sink.rs:118-120` — the
   legacy `--debug sink` path's equivalent: every mailbox's `fetch_uids`
   already succeeded and `summary` is fully built, then logout can throw the
   whole `Ok(summary)` away via early `?`.
-- `service/pigeon-cli/src/commands/keyring/email/imap_client.rs:92-94` —
+- `src/commands/keyring/email/imap_client.rs:92-94` —
   `verify_login` (used by `pigeon keyring add email` to check a credential
   before persisting it). Its whole point is "did `LOGIN` succeed" — a
   subsequent `LOGOUT` failure says nothing about whether the credential is

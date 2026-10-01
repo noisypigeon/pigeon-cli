@@ -74,7 +74,7 @@ without a dedicated ADR spelling out its steps a second time.
 ## Consequences
 
 - No Rust code, no new CLI surface -- `mise run ci` passes trivially
-  (nothing changed under `service/pigeon-cli/src/`).
+  (nothing changed under `src/`).
 - Future schema changes to the JSONL log (a new tracing field, a new
   per-job `step` value) should update this skill's cheat sheet in the same
   PR, or the skill quietly goes stale -- called out explicitly in the
@@ -82,7 +82,7 @@ without a dedicated ADR spelling out its steps a second time.
   left implicit.
 - Both changelogs get an entry, following the observed precedent of
   ADR-0052 (also a no-code, cross-cutting decision) appearing in both
-  `service/pigeon-cli/CHANGELOG.md` and the root log -- root entry scoped
+  `CHANGELOG.md` and the root log -- root entry scoped
   `[repo]` per ADR-0050's guidance for non-crate-specific ADRs.
 
 ## Out of scope

@@ -46,7 +46,7 @@ new optional field, editable via the existing `pigeon keyring modify` flow).
 
 ### 1. `Identity` gains an optional `max_imap_connections` cap, set via `pigeon keyring add/modify`
 
-`Identity` (`service/pigeon-cli/src/commands/keyring/email/identity.rs`) gains:
+`Identity` (`src/commands/keyring/email/identity.rs`) gains:
 
 ```rust
 #[serde(default)]

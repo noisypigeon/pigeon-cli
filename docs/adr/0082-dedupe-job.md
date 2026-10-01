@@ -111,7 +111,7 @@ expanded; selectivity would work against the feature. `Observable` arm:
 
 ### 2. New job scaffold
 
-`service/pigeon-cli/src/commands/job/dedupe/{mod,wizard,manifest,worker,dedup}.rs`
+`src/commands/job/dedupe/{mod,wizard,manifest,worker,dedup}.rs`
 (mirrors `pull_transform`'s module shape, minus `archive`/`media`/
 `documents`/`date`, since those are reused directly or unneeded).
 `DedupeJob { source_bucket: BucketConfig, source_secret: String,

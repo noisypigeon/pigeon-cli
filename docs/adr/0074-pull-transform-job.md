@@ -71,7 +71,7 @@ restructure) — not a speculative abstraction.
 
 ### 1. New job scaffold
 
-- `service/pigeon-cli/src/commands/job/pull_transform/{mod,wizard,manifest,worker,archive,media,documents,dedup}.rs`
+- `src/commands/job/pull_transform/{mod,wizard,manifest,worker,archive,media,documents,dedup}.rs`
   (mirrors `email_sync`'s module shape, ADR-0008).
 - `JobType::PullTransform { source_bucket: Option<String>, local_output:
   Option<PathBuf>, remote_output: Option<String>, encryption_key:
