@@ -73,6 +73,19 @@ pub enum JobType {
         #[arg(long)]
         max_connections_per_identity: Option<usize>,
 
+        /// Resumes uploading already-completed local runs for the selected
+        /// identities instead of starting new ones: skips the IMAP
+        /// connect/fetch/transform/dedup phases entirely (and the
+        /// per-identity IMAP credentials they'd otherwise need) and
+        /// uploads straight from each identity's existing local result
+        /// tree, picking up where a prior run's upload phase left off via
+        /// the same `.staging/.uploaded` index per identity (ADR-0090). An
+        /// identity with no completed local run is skipped with a warning
+        /// rather than failing the whole command. Requires a mandatory
+        /// `--remote-output`.
+        #[arg(long)]
+        upload_only: bool,
+
         /// Skip the final "proceed?" confirmation. Every other omitted
         /// input (identities, concurrency) still follows its own
         /// independent flag-or-prompt rule -- this only answers the last
@@ -150,6 +163,19 @@ pub enum JobType {
         #[arg(long)]
         max_connections_per_identity: Option<usize>,
 
+        /// Resumes uploading already-completed local runs for the selected
+        /// identities instead of starting new ones: skips the IMAP
+        /// connect/fetch/dedup phases entirely (and the per-identity IMAP
+        /// credentials they'd otherwise need) and uploads straight from
+        /// each identity's existing local result tree, picking up where a
+        /// prior run's upload phase left off via the same
+        /// `.staging/.uploaded` index per identity (ADR-0090). An identity
+        /// with no completed local run is skipped with a warning rather
+        /// than failing the whole command. Requires a mandatory
+        /// `--remote-output`.
+        #[arg(long)]
+        upload_only: bool,
+
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
         yes: bool,
@@ -217,6 +243,20 @@ pub enum JobType {
         /// Maximum number of files to download/recode concurrently.
         #[arg(long)]
         concurrency: Option<usize>,
+
+        /// Resumes uploading an already-completed local pull-transform run
+        /// instead of starting a new one: skips the bucket listing/
+        /// download/classify/recode/placement phases entirely (and the
+        /// source bucket credentials and `ffmpeg`/`ffprobe` check they'd
+        /// otherwise need) and uploads straight from an existing
+        /// `--local-output`, picking up where a prior run's upload phase
+        /// left off via the same `.staging/.uploaded` index (ADR-0090).
+        /// Requires a `--local-output` from a completed prior run (its
+        /// `.processed` checkpoint must exist and it must hold at least
+        /// one placed-content subdirectory) and a mandatory
+        /// `--remote-output`.
+        #[arg(long)]
+        upload_only: bool,
 
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
@@ -304,6 +344,18 @@ pub enum JobType {
         /// Maximum number of files to download concurrently.
         #[arg(long)]
         concurrency: Option<usize>,
+
+        /// Resumes uploading an already-completed local sort run instead
+        /// of starting a new one: skips the bucket listing/download/
+        /// placement phases entirely (and the source bucket credentials
+        /// they'd otherwise need) and uploads straight from an existing
+        /// `--local-output`'s `result/` tree, picking up where a prior
+        /// run's upload phase left off via the same `.staging/.uploaded`
+        /// index (ADR-0090). Requires a `--local-output` from a completed
+        /// prior run (its `.staging/.processed` checkpoint must exist and
+        /// its `result/` must be non-empty).
+        #[arg(long)]
+        upload_only: bool,
 
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]

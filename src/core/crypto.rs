@@ -31,6 +31,11 @@ pub(crate) trait Encryptor {
 /// always byte-identical for the same `(key, plaintext)` pair. This is what
 /// lets `client::upload_if_changed`'s MD5-vs-S3-ETag duplicate detection
 /// keep working unchanged against ciphertext (ADR-0025).
+/// `Clone` (ADR-0090) so `decrypt_files::worker::decrypt_one` can move an
+/// owned copy into a `tokio::task::spawn_blocking` closure -- cheap, since
+/// `AesGcmSiv` itself already derives `Clone` and `nonce_key` is a plain
+/// byte array.
+#[derive(Clone)]
 pub(crate) struct Aes256GcmSivEncryptor {
     cipher: Aes256GcmSiv,
     nonce_key: [u8; 32],

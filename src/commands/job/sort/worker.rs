@@ -170,37 +170,46 @@ pub(crate) async fn run_sort_job(
         .await;
     bar.finish();
 
-    let mut downloaded = Vec::with_capacity(results.len());
-    let mut download_failed = 0usize;
-    for result in results {
-        match result {
-            Some(file) => downloaded.push(file),
-            None => download_failed += 1,
+    // `downloaded` (every file's metadata for the whole run) lives only
+    // inside this block, so it drops here, before the upload phase runs,
+    // instead of surviving in `run_sort_job`'s own scope through the whole
+    // upload phase afterward (ADR-0090, same ADR-0089 precedent) -- its
+    // entries are never referenced again after placement, since
+    // `pending_upload_tasks` independently re-walks `result_dir` from disk.
+    let (placed, placement_failed, download_failed) = {
+        let mut downloaded = Vec::with_capacity(results.len());
+        let mut download_failed = 0usize;
+        for result in results {
+            match result {
+                Some(file) => downloaded.push(file),
+                None => download_failed += 1,
+            }
         }
-    }
 
-    downloaded.sort_by(|a, b| a.original_key.cmp(&b.original_key));
-    let place_bar = sink::new_progress_bar(
-        "place".to_string(),
-        downloaded.len() as u64,
-        &multi_progress,
-    );
-    let mut placed = 0usize;
-    let mut placement_failed = 0usize;
-    for file in &downloaded {
-        place_bar.inc(1);
-        match place_one(&result_dir, file) {
-            Ok(()) => {
-                placed += 1;
-                manifest::append_checkpoint(&staging_dir, &file.original_key)?;
-            }
-            Err(err) => {
-                tracing::warn!(key = %file.original_key, step = "place", error = %err, "failed to place file");
-                placement_failed += 1;
+        downloaded.sort_by(|a, b| a.original_key.cmp(&b.original_key));
+        let place_bar = sink::new_progress_bar(
+            "place".to_string(),
+            downloaded.len() as u64,
+            &multi_progress,
+        );
+        let mut placed = 0usize;
+        let mut placement_failed = 0usize;
+        for file in &downloaded {
+            place_bar.inc(1);
+            match place_one(&result_dir, file) {
+                Ok(()) => {
+                    placed += 1;
+                    manifest::append_checkpoint(&staging_dir, &file.original_key)?;
+                }
+                Err(err) => {
+                    tracing::warn!(key = %file.original_key, step = "place", error = %err, "failed to place file");
+                    placement_failed += 1;
+                }
             }
         }
-    }
-    place_bar.finish();
+        place_bar.finish();
+        (placed, placement_failed, download_failed)
+    };
 
     let mut summary = SortSummary {
         placed,
@@ -210,31 +219,70 @@ pub(crate) async fn run_sort_job(
     summary.failure_breakdown.download = download_failed;
     summary.failure_breakdown.placement = placement_failed;
 
-    let (remote_bucket, remote_secret) = remote;
-    let (upload_tasks, uploaded_index) = upload::pending_upload_tasks(
+    let upload_summary = upload_result(
         &bucket_config.alias,
-        &staging_dir,
-        &result_dir,
-        &result_dir,
-        false,
-    )?;
+        local_output,
+        remote,
+        concurrency,
+        &multi_progress,
+    )
+    .await?;
+    summary.uploaded = upload_summary.uploaded;
+    summary.unchanged = upload_summary.unchanged;
+    summary.upload_failed = upload_summary.upload_failed;
+
+    Ok(summary)
+}
+
+/// Uploads `local_output/result/` to `remote`, resuming via the existing
+/// `.staging/.uploaded` index (ADR-0019/ADR-0024) -- the shared upload tail
+/// both `run_sort_job` and `run_upload_only` call, so there's one code path
+/// and one resume mechanism between a fresh run and a resumed
+/// `--upload-only` one (ADR-0090, same ADR-0089 precedent). `label` is
+/// purely descriptive (tracing/log context): `run_sort_job` passes the
+/// source bucket's alias (its historical behavior); `run_upload_only`,
+/// which never touches a source bucket, passes the remote's own alias
+/// instead.
+async fn upload_result(
+    label: &str,
+    local_output: &Path,
+    remote: (&BucketConfig, &str),
+    concurrency: usize,
+    multi_progress: &MultiProgress,
+) -> Result<upload::UploadSummary, String> {
+    let staging_dir = local_output.join(".staging");
+    let result_dir = local_output.join("result");
+    let (remote_bucket, remote_secret) = remote;
+
+    let (upload_tasks, uploaded_index) =
+        upload::pending_upload_tasks(label, &staging_dir, &result_dir, &result_dir, false)?;
     let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
     uploaded_indexes.insert(staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
-    let upload_summary = upload::run_upload_phase(
+    Ok(upload::run_upload_phase(
         upload_tasks,
         &uploaded_indexes,
         remote_bucket,
         remote_secret,
         None,
         concurrency,
-        &multi_progress,
+        multi_progress,
     )
-    .await;
-    summary.uploaded = upload_summary.uploaded;
-    summary.unchanged = upload_summary.unchanged;
-    summary.upload_failed = upload_summary.upload_failed;
+    .await)
+}
 
-    Ok(summary)
+/// Resumes uploading an already-completed local sort run, skipping the
+/// bucket listing/download/placement phases entirely (ADR-0090's
+/// `--upload-only`, same shape as `dedupe`'s ADR-0089 version -- `sort`'s
+/// `.staging`/`result` layout already matches `dedupe`'s exactly). Reuses
+/// `upload_result`, the same helper `run_sort_job`'s own upload tail calls.
+pub(crate) async fn run_upload_only(
+    local_output: &Path,
+    remote: (&BucketConfig, &str),
+    concurrency: usize,
+) -> Result<upload::UploadSummary, String> {
+    let multi_progress = MultiProgress::new();
+    let label = remote.0.alias.clone();
+    upload_result(&label, local_output, remote, concurrency, &multi_progress).await
 }
 
 #[cfg(test)]

@@ -163,6 +163,17 @@ fn next_scratch_path(dir: &Path, counter: &AtomicU64, extension: &str) -> Result
     Ok(dir.join(format!("{name:012}.{extension}")))
 }
 
+/// Streams `path` through SHA-256 on tokio's blocking-thread pool rather
+/// than the calling async task's own runtime worker thread -- CPU-bound,
+/// same ADR-0088 precedent `dedupe/worker.rs` set, generalized to every
+/// `download::sha256_file` call site in this module (ADR-0090).
+async fn hash_file_blocking(path: PathBuf) -> Result<String, String> {
+    match tokio::task::spawn_blocking(move || download::sha256_file(&path)).await {
+        Ok(result) => result,
+        Err(err) => Err(format!("hash task panicked: {err}")),
+    }
+}
+
 #[tracing::instrument(
     skip(input_path, scratch_dir, counter, multi_progress),
     fields(key = %display_key)
@@ -191,7 +202,7 @@ async fn process_media(
                 scratch_path.display()
             )
         })?;
-        let content_hash = download::sha256_file(&scratch_path)?;
+        let content_hash = hash_file_blocking(scratch_path.clone()).await?;
         return Ok((
             ProcessedFile {
                 original_key: display_key.to_string(),
@@ -208,7 +219,13 @@ async fn process_media(
 
     let (media_kind, date) = match kind {
         FileKind::Image => {
-            let date = media::exif_date(&input_path).or(before.creation_date);
+            // CPU-bound (EXIF parsing) -- handed to `spawn_blocking` rather
+            // than run inline (ADR-0090, same ADR-0088 precedent).
+            let exif_path = input_path.clone();
+            let exif_date = tokio::task::spawn_blocking(move || media::exif_date(&exif_path))
+                .await
+                .unwrap_or(None);
+            let date = exif_date.or(before.creation_date);
             let is_screenshot = before
                 .width
                 .zip(before.height)
@@ -262,7 +279,7 @@ async fn process_media(
     match recode_result {
         Ok(()) => {
             let _ = fs::remove_file(&input_path);
-            let content_hash = download::sha256_file(&output_path)?;
+            let content_hash = hash_file_blocking(output_path.clone()).await?;
             Ok((
                 ProcessedFile {
                     original_key: display_key.to_string(),
@@ -292,7 +309,7 @@ async fn process_media(
                     scratch_path.display()
                 )
             })?;
-            let content_hash = download::sha256_file(&scratch_path)?;
+            let content_hash = hash_file_blocking(scratch_path.clone()).await?;
             Ok((
                 ProcessedFile {
                     original_key: display_key.to_string(),
@@ -419,8 +436,8 @@ async fn process_item(
     item: QueueItem,
     raw_dir: &Path,
     scratch_dir: &Path,
-    counter: &AtomicU64,
-    extracted_bytes: &AtomicU64,
+    counter: &Arc<AtomicU64>,
+    extracted_bytes: &Arc<AtomicU64>,
     multi_progress: &MultiProgress,
     allowed_extensions: &HashSet<String>,
     expand_zip_keys: &HashSet<String>,
@@ -502,8 +519,24 @@ async fn process_item(
                 category: FailureCategory::Archive,
             };
         }
-        return match archive::expand_to_dir(&path, raw_dir, counter, extracted_bytes) {
-            Ok(raw_members) => {
+        // CPU-bound (decompression) -- handed to `spawn_blocking` rather
+        // than run inline, same ADR-0088 precedent `dedupe/worker.rs` set,
+        // generalized here (ADR-0090).
+        let expand_path = path.clone();
+        let expand_raw_dir = raw_dir.to_path_buf();
+        let expand_counter = Arc::clone(counter);
+        let expand_extracted_bytes = Arc::clone(extracted_bytes);
+        let expand_result = tokio::task::spawn_blocking(move || {
+            archive::expand_to_dir(
+                &expand_path,
+                &expand_raw_dir,
+                &expand_counter,
+                &expand_extracted_bytes,
+            )
+        })
+        .await;
+        return match expand_result {
+            Ok(Ok(raw_members)) => {
                 let _ = fs::remove_file(&path);
                 let members = raw_members
                     .into_iter()
@@ -521,8 +554,15 @@ async fn process_item(
                     members,
                 }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::warn!(key = %item.display_key, step = "archive", error = %err, "failed to open zip archive");
+                let _ = fs::remove_file(&path);
+                ItemOutcome::Failed {
+                    category: FailureCategory::Archive,
+                }
+            }
+            Err(err) => {
+                tracing::error!(key = %item.display_key, step = "archive", error = %err, "zip expansion task panicked");
                 let _ = fs::remove_file(&path);
                 ItemOutcome::Failed {
                     category: FailureCategory::Archive,
@@ -545,14 +585,30 @@ async fn process_item(
             )
             .await
         }
-        FileKind::Pdf | FileKind::Ooxml | FileKind::Other => process_document_or_other(
-            &item.display_key,
-            &extension,
-            kind,
-            path,
-            scratch_dir,
-            counter,
-        ),
+        FileKind::Pdf | FileKind::Ooxml | FileKind::Other => {
+            // CPU-bound (document parsing/hashing) -- handed to
+            // `spawn_blocking` rather than run inline (ADR-0090, same
+            // ADR-0088 precedent).
+            let display_key = item.display_key.clone();
+            let extension = extension.clone();
+            let scratch_dir = scratch_dir.to_path_buf();
+            let counter = Arc::clone(counter);
+            match tokio::task::spawn_blocking(move || {
+                process_document_or_other(
+                    &display_key,
+                    &extension,
+                    kind,
+                    path,
+                    &scratch_dir,
+                    &counter,
+                )
+            })
+            .await
+            {
+                Ok(result) => result,
+                Err(err) => Err(format!("classify task panicked: {err}")),
+            }
+        }
         FileKind::Zip => unreachable!("handled above"),
     };
 
@@ -761,22 +817,34 @@ pub(crate) async fn run_pull_transform_job(
         .into_inner()
         .map_err(|_| "internal error: failure breakdown lock poisoned".to_string())?;
 
-    let mut dedup = PullTransformDedup(ContentIndex::load(
-        local_output,
-        dedup::CONTENT_HASHES_FILE,
-    )?);
-    let (placement_summary, placed_keys) =
-        dedup::place_files(local_output, files, &mut dedup, &multi_progress);
-    let placed_keys: HashSet<String> = placed_keys.into_iter().collect();
+    // `dedup` (the full hash->path `ContentIndex`) and `placed_keys` live
+    // only inside this block, so they're dropped here, before the upload
+    // phase runs, instead of surviving in `run_pull_transform_job`'s own
+    // scope through the whole upload phase afterward (ADR-0090, same
+    // ADR-0089 precedent set for `dedupe`).
+    let placement_summary = {
+        let mut dedup = PullTransformDedup(ContentIndex::load(
+            local_output,
+            dedup::CONTENT_HASHES_FILE,
+        )?);
+        let (placement_summary, placed_keys) =
+            dedup::place_files(local_output, files, &mut dedup, &multi_progress);
+        let placed_keys: HashSet<String> = placed_keys.into_iter().collect();
 
-    // A root key is only checkpointed once every file it produced (itself,
-    // for a non-zip; every extracted member, for a zip) actually finished
-    // placement -- a zip whose expansion succeeded but whose *members*
-    // never reached `place_files` (worker task panic notwithstanding, which
-    // already aborts the whole run above) still only gets checkpointed via
-    // this same mechanism, since `finished_root_keys` already only contains
-    // depth-0 keys.
-    finished_root_keys.retain(|key| placed_keys.contains(key) || is_zip_key(key));
+        // A root key is only checkpointed once every file it produced
+        // (itself, for a non-zip; every extracted member, for a zip)
+        // actually finished placement -- a zip whose expansion succeeded
+        // but whose *members* never reached `place_files` (worker task
+        // panic notwithstanding, which already aborts the whole run above)
+        // still only gets checkpointed via this same mechanism, since
+        // `finished_root_keys` already only contains depth-0 keys.
+        finished_root_keys.retain(|key| placed_keys.contains(key) || is_zip_key(key));
+        for key in &finished_root_keys {
+            manifest::append_checkpoint(local_output, key)?;
+        }
+        placement_summary
+    };
+
     let mut summary = PullTransformSummary {
         processed: placement_summary.placed,
         failed: failure_breakdown.download
@@ -792,39 +860,92 @@ pub(crate) async fn run_pull_transform_job(
     summary.failure_breakdown.merge(&failure_breakdown);
     summary.failure_breakdown.placement = placement_summary.failed;
 
-    for key in &finished_root_keys {
-        manifest::append_checkpoint(local_output, key)?;
-    }
-
     if let Some((remote_bucket, remote_secret)) = remote {
-        let (tasks, uploaded_index) = upload::pending_upload_tasks(
+        let upload_summary = upload_result(
             &bucket_config.alias,
             local_output,
-            local_output,
-            local_output,
-            encryptor.is_some(),
-        )?;
-        let mut uploaded_indexes = std::collections::HashMap::new();
-        uploaded_indexes.insert(
-            local_output.to_path_buf(),
-            Arc::new(Mutex::new(uploaded_index)),
-        );
-        let upload_summary = upload::run_upload_phase(
-            tasks,
-            &uploaded_indexes,
-            remote_bucket,
-            remote_secret,
+            (remote_bucket, remote_secret),
             encryptor,
             concurrency,
             &multi_progress,
         )
-        .await;
+        .await?;
         summary.uploaded = upload_summary.uploaded;
         summary.unchanged = upload_summary.unchanged;
         summary.upload_failed = upload_summary.upload_failed;
     }
 
     Ok(summary)
+}
+
+/// Uploads `local_output` to `remote`, resuming via the existing
+/// `.staging/.uploaded` index (ADR-0019/ADR-0024) -- the shared upload tail
+/// both `run_pull_transform_job` and `run_upload_only` call, so there's one
+/// code path and one resume mechanism between a fresh run and a resumed
+/// `--upload-only` one (ADR-0090, same ADR-0089 precedent). Reuses the
+/// normal path's exact `pending_upload_tasks(local_output, local_output,
+/// local_output, ...)` call shape -- unlike `dedupe`/`sort`, this job never
+/// adopted a separate `result/` subdirectory, so its upload walk already
+/// (pre-existing, not introduced here) sweeps up `.processed`/
+/// `.content-hashes`/`.uploaded` as literal upload candidates since
+/// `core::data::collect_files` doesn't skip dotfiles. Not fixed here --
+/// `--upload-only` must match the existing (if imperfect) normal-path
+/// behavior, not silently diverge from it.
+async fn upload_result(
+    label: &str,
+    local_output: &Path,
+    remote: (&BucketConfig, &str),
+    encryptor: Option<&Aes256GcmSivEncryptor>,
+    concurrency: usize,
+    multi_progress: &MultiProgress,
+) -> Result<upload::UploadSummary, String> {
+    let (remote_bucket, remote_secret) = remote;
+    let (tasks, uploaded_index) = upload::pending_upload_tasks(
+        label,
+        local_output,
+        local_output,
+        local_output,
+        encryptor.is_some(),
+    )?;
+    let mut uploaded_indexes = std::collections::HashMap::new();
+    uploaded_indexes.insert(
+        local_output.to_path_buf(),
+        Arc::new(Mutex::new(uploaded_index)),
+    );
+    Ok(upload::run_upload_phase(
+        tasks,
+        &uploaded_indexes,
+        remote_bucket,
+        remote_secret,
+        encryptor,
+        concurrency,
+        multi_progress,
+    )
+    .await)
+}
+
+/// Resumes uploading an already-completed local pull-transform run,
+/// skipping the bucket listing/download/classify/recode/placement phases
+/// entirely (ADR-0090's `--upload-only`, same shape as `dedupe`'s
+/// ADR-0089 version). Reuses `upload_result`, the same helper
+/// `run_pull_transform_job`'s own upload tail calls.
+pub(crate) async fn run_upload_only(
+    local_output: &Path,
+    remote: (&BucketConfig, &str),
+    encryptor: Option<&Aes256GcmSivEncryptor>,
+    concurrency: usize,
+) -> Result<upload::UploadSummary, String> {
+    let multi_progress = MultiProgress::new();
+    let label = remote.0.alias.clone();
+    upload_result(
+        &label,
+        local_output,
+        remote,
+        encryptor,
+        concurrency,
+        &multi_progress,
+    )
+    .await
 }
 
 /// A zip whose expansion succeeded is checkpoint-eligible even though its
@@ -943,8 +1064,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let raw_dir = dir.path().join("raw");
         let scratch_dir = dir.path().join("scratch");
-        let counter = AtomicU64::new(0);
-        let extracted_bytes = AtomicU64::new(0);
+        let counter = Arc::new(AtomicU64::new(0));
+        let extracted_bytes = Arc::new(AtomicU64::new(0));
 
         let bucket_config = BucketConfig {
             alias: "unused".to_string(),
@@ -987,8 +1108,8 @@ mod tests {
         let raw_dir = dir.path().join("raw");
         fs::create_dir_all(&raw_dir).unwrap();
         let scratch_dir = dir.path().join("scratch");
-        let counter = AtomicU64::new(0);
-        let extracted_bytes = AtomicU64::new(0);
+        let counter = Arc::new(AtomicU64::new(0));
+        let extracted_bytes = Arc::new(AtomicU64::new(0));
 
         let zip_path = raw_dir.join("archive.zip");
         fs::write(&zip_path, b"not really a zip, just opaque bytes").unwrap();

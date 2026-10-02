@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use dialoguer::Input;
 
@@ -9,7 +10,8 @@ use crate::core::job::Job;
 use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
 
-use super::manifest::TypeSummary;
+use super::manifest::{self, TypeSummary};
+use super::worker;
 use super::{SortJob, gather_pending};
 
 /// Resolves which bucket-config to pull from -- mandatory, mirrors
@@ -145,6 +147,7 @@ pub fn dispatch(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
+    upload_only: bool,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -159,6 +162,7 @@ pub fn dispatch(
         local_output,
         remote_output,
         concurrency,
+        upload_only,
         yes,
     ))
 }
@@ -168,6 +172,7 @@ async fn dispatch_async(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
+    upload_only: bool,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as every
@@ -183,6 +188,17 @@ async fn dispatch_async(
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+
+    if upload_only {
+        return dispatch_upload_only(
+            local_output,
+            remote_output,
+            concurrency,
+            yes,
+            &keyring_store,
+        )
+        .await;
+    }
 
     let source_alias = match (SourceBucketInput {
         flag: source_bucket,
@@ -303,9 +319,150 @@ async fn dispatch_async(
     }
 }
 
+/// Whether `local_output` holds a completed prior sort run that
+/// `--upload-only` can resume uploading from: its `.staging/.processed`
+/// checkpoint must exist (there was a run at all) and its `result/` must be
+/// non-empty (there's something to upload) -- same check as `dedupe`'s,
+/// since `sort`'s layout matches it exactly (ADR-0090).
+fn upload_only_preflight_ok(local_output: &Path) -> bool {
+    let processed_marker = local_output
+        .join(".staging")
+        .join(manifest::PROCESSED_FILE_NAME);
+    if !processed_marker.exists() {
+        return false;
+    }
+    fs::read_dir(local_output.join("result"))
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+/// `--upload-only` branch of `dispatch_async` (ADR-0090): resumes uploading
+/// an already-completed local sort run, skipping the bucket listing/
+/// download/placement phases -- and the source bucket credentials they'd
+/// otherwise need -- entirely. `--remote-output` is already mandatory for
+/// `sort`'s normal flow, so there's no new "is upload mandatory in this
+/// mode" question to answer the way `dedupe`'s version had to.
+async fn dispatch_upload_only(
+    local_output: Option<PathBuf>,
+    remote_output: Option<String>,
+    concurrency: Option<usize>,
+    yes: bool,
+    keyring_store: &Store,
+) -> i32 {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+
+    if !upload_only_preflight_ok(&local_output) {
+        return fail(format!(
+            "no completed sort run found under {}; run without --upload-only first",
+            local_output.display()
+        ));
+    }
+
+    let remote_alias = match (RemoteOutputInput {
+        flag: remote_output,
+        store: keyring_store,
+    })
+    .resolve()
+    {
+        Ok(alias) => alias,
+        Err(err) => return fail(err),
+    };
+    let remote_bucket_config = match keyring_store
+        .bucket_configs()
+        .find(|bucket_config| bucket_config.alias == remote_alias)
+    {
+        Some(bucket_config) => bucket_config.clone(),
+        None => return fail(format!("no bucket-config named '{remote_alias}'")),
+    };
+    let remote_secret = match credentials::get_secret(&remote_bucket_config.alias) {
+        Ok(secret) => secret,
+        Err(err) => return fail(err),
+    };
+
+    let concurrency = match (ConcurrencyInput { flag: concurrency }).resolve() {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    match (ConfirmInput { yes }).resolve() {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("Cancelled.");
+            return 0;
+        }
+        Err(err) => return fail(err),
+    }
+
+    match worker::run_upload_only(
+        &local_output,
+        (&remote_bucket_config, &remote_secret),
+        concurrency,
+    )
+    .await
+    {
+        Ok(summary) => {
+            println!(
+                "Uploaded {} file(s), {} unchanged, {} upload failed.",
+                summary.uploaded, summary.unchanged, summary.upload_failed
+            );
+            if summary.upload_failed > 0 {
+                FAILURE_EXIT_CODE
+            } else {
+                0
+            }
+        }
+        Err(err) => fail(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_only_preflight_fails_without_a_processed_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("result")).unwrap();
+        fs::write(dir.path().join("result").join("a.txt"), b"a").unwrap();
+
+        assert!(!upload_only_preflight_ok(dir.path()));
+    }
+
+    #[test]
+    fn upload_only_preflight_fails_with_an_empty_result_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".staging")).unwrap();
+        fs::write(
+            dir.path()
+                .join(".staging")
+                .join(manifest::PROCESSED_FILE_NAME),
+            b"a.txt\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("result")).unwrap();
+
+        assert!(!upload_only_preflight_ok(dir.path()));
+    }
+
+    #[test]
+    fn upload_only_preflight_passes_for_a_completed_run() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".staging")).unwrap();
+        fs::write(
+            dir.path()
+                .join(".staging")
+                .join(manifest::PROCESSED_FILE_NAME),
+            b"a.txt\n",
+        )
+        .unwrap();
+        fs::create_dir_all(dir.path().join("result")).unwrap();
+        fs::write(dir.path().join("result").join("a.txt"), b"a").unwrap();
+
+        assert!(upload_only_preflight_ok(dir.path()));
+    }
 
     #[test]
     fn default_local_output_is_under_the_os_temp_dir() {

@@ -604,13 +604,7 @@ pub(crate) async fn run_email_sync_job(
         summary.deduped_attachments += dedup_summary.deduped_attachments;
 
         if remote.is_some() {
-            let (tasks, uploaded_index) = upload::pending_upload_tasks(
-                &ctx.identity.alias,
-                &ctx.staging_dir,
-                &identity_dir,
-                &ctx.output_dir,
-                encrypt,
-            )?;
+            let (tasks, uploaded_index) = identity_upload_tasks(ctx, encrypt)?;
             all_upload_tasks.extend(tasks);
             uploaded_indexes.insert(
                 ctx.staging_dir.clone(),
@@ -636,6 +630,69 @@ pub(crate) async fn run_email_sync_job(
     }
 
     Ok(summary)
+}
+
+/// Builds `ctx`'s pending upload tasks against its already-placed
+/// `identity_dir` -- the exact per-identity upload-task-building step
+/// `run_email_sync_job`'s own loop already does (after its dedup pass);
+/// `run_upload_only` calls this directly for every selected identity,
+/// skipping the dedup pass entirely since a prior run already completed it
+/// (ADR-0090, same ADR-0089 precedent).
+fn identity_upload_tasks(
+    ctx: &IdentityContext,
+    encrypt: bool,
+) -> Result<(Vec<upload::UploadTask>, UploadedIndex), String> {
+    let identity_dir = ctx
+        .output_dir
+        .join(identity::sanitize_segment(&ctx.identity.email));
+    upload::pending_upload_tasks(
+        &ctx.identity.alias,
+        &ctx.staging_dir,
+        &identity_dir,
+        &ctx.output_dir,
+        encrypt,
+    )
+}
+
+/// Resumes uploading already-completed local email-sync runs, skipping the
+/// IMAP connect/fetch/transform/dedup phases entirely (ADR-0090's
+/// `--upload-only`) -- `identities` is expected to already be filtered down
+/// to ones with a completed local run (the wizard's job, same preflight
+/// check `dedupe`'s single-tree version does, just per-identity here).
+/// Accumulates every identity's upload tasks into one shared
+/// `run_upload_phase` call, exactly mirroring how `run_email_sync_job`'s
+/// own per-identity loop already does before its own shared upload call.
+pub(crate) async fn run_upload_only(
+    identities: &[IdentityContext],
+    remote: (&BucketConfig, &str),
+    encryptor: Option<&Aes256GcmSivEncryptor>,
+    concurrency: usize,
+) -> Result<upload::UploadSummary, String> {
+    let multi_progress = MultiProgress::new();
+    let encrypt = encryptor.is_some();
+    let (bucket_config, secret) = remote;
+
+    let mut all_upload_tasks = Vec::new();
+    let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
+    for ctx in identities {
+        let (tasks, uploaded_index) = identity_upload_tasks(ctx, encrypt)?;
+        all_upload_tasks.extend(tasks);
+        uploaded_indexes.insert(
+            ctx.staging_dir.clone(),
+            Arc::new(Mutex::new(uploaded_index)),
+        );
+    }
+
+    Ok(upload::run_upload_phase(
+        all_upload_tasks,
+        &uploaded_indexes,
+        bucket_config,
+        secret,
+        encryptor,
+        concurrency,
+        &multi_progress,
+    )
+    .await)
 }
 
 #[cfg(test)]

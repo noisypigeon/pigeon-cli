@@ -14,6 +14,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     encryption_key,
                     concurrency,
                     max_connections_per_identity,
+                    upload_only,
                     yes,
                 } => email_sync::wizard::dispatch(
                     identities,
@@ -22,6 +23,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     encryption_key,
                     concurrency,
                     max_connections_per_identity,
+                    upload_only,
                     yes,
                 ),
                 JobType::EmailPull {
@@ -30,6 +32,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     remote_output,
                     concurrency,
                     max_connections_per_identity,
+                    upload_only,
                     yes,
                 } => email_pull::wizard::dispatch(
                     identities,
@@ -37,6 +40,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     remote_output,
                     concurrency,
                     max_connections_per_identity,
+                    upload_only,
                     yes,
                 ),
                 JobType::Sort {
@@ -44,12 +48,14 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     local_output,
                     remote_output,
                     concurrency,
+                    upload_only,
                     yes,
                 } => sort::wizard::dispatch(
                     source_bucket,
                     local_output,
                     remote_output,
                     concurrency,
+                    upload_only,
                     yes,
                 ),
                 JobType::Dedupe {
@@ -91,6 +97,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     video_format,
                     audio_format,
                     concurrency,
+                    upload_only,
                     yes,
                 } => pull_transform::wizard::dispatch(
                     source_bucket,
@@ -103,6 +110,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     video_format,
                     audio_format,
                     concurrency,
+                    upload_only,
                     yes,
                 ),
             })

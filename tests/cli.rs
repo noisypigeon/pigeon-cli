@@ -321,7 +321,39 @@ fn job_run_email_sync_help_shows_identities_and_concurrency_flags() {
         .stdout(predicate::str::contains("--remote-output"))
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--max-connections-per-identity"))
+        .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--yes"));
+}
+
+#[test]
+fn job_run_email_sync_upload_only_without_a_completed_run_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    // The identity resolves fine (it's configured), but its local output
+    // tree was never populated: the per-identity preflight check
+    // (ADR-0090) must skip it and, with no other identity selected, fail
+    // the whole command -- before ever touching IMAP credentials or
+    // --remote-output.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email-sync",
+            "--upload-only",
+            "--identities",
+            "first-last",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no completed local run found for any selected identity",
+        ));
 }
 
 #[test]
@@ -395,9 +427,41 @@ fn job_run_email_pull_help_shows_identities_and_concurrency_flags() {
         .stdout(predicate::str::contains("--remote-output"))
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--max-connections-per-identity"))
+        .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0081 §4: email-pull never offers encryption, at all.
         .stdout(predicate::str::contains("--encryption-key").not());
+}
+
+#[test]
+fn job_run_email_pull_upload_only_without_a_completed_run_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+
+    // The identity resolves fine (it's configured), but its local output
+    // tree was never populated: the per-identity preflight check
+    // (ADR-0090) must skip it and, with no other identity selected, fail
+    // the whole command -- before ever touching IMAP credentials or
+    // --remote-output.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email-pull",
+            "--upload-only",
+            "--identities",
+            "first-last",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no completed local run found for any selected identity",
+        ));
 }
 
 #[test]
@@ -546,7 +610,35 @@ fn job_run_pull_transform_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--remote-output"))
         .stdout(predicate::str::contains("--encryption-key"))
-        .stdout(predicate::str::contains("--concurrency"));
+        .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--upload-only"));
+}
+
+#[test]
+fn job_run_pull_transform_upload_only_without_a_completed_run_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    // No --source-bucket, no --remote-output, and no ffmpeg on PATH needed:
+    // the preflight check (ADR-0090) must fail before any of those would
+    // ever be resolved/checked, since this empty --local-output never ran
+    // a pull-transform pass at all.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "pull-transform",
+            "--upload-only",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no completed pull-transform run found",
+        ));
 }
 
 #[test]
@@ -618,12 +710,37 @@ fn job_run_sort_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--remote-output"))
         .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0083: sort never offers encryption, file-type selection, or
         // zip-expansion selection.
         .stdout(predicate::str::contains("--encryption-key").not())
         .stdout(predicate::str::contains("--file-types").not())
         .stdout(predicate::str::contains("--expand-zips").not());
+}
+
+#[test]
+fn job_run_sort_upload_only_without_a_completed_run_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    // No --source-bucket, no --remote-output: the preflight check (ADR-0090)
+    // must fail before either would ever be resolved, since this empty
+    // --local-output never ran a sort pass at all.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "sort",
+            "--upload-only",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no completed sort run found"));
 }
 
 #[test]
