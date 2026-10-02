@@ -41,3 +41,9 @@ run = "cargo publish"
 
 [tasks.adr-issue]
 run = ".github/scripts/adr-issue.sh \"$@\""
+
+[tasks.docker-build]
+run = "docker build --platform linux/arm64 -t pigeon-cli ."
+
+[tasks.docker-run]
+run = "docker run --platform linux/arm64 --rm -it -v pigeon-data:/data pigeon-cli \"$@\""

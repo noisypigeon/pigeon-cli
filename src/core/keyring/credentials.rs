@@ -17,8 +17,33 @@ pub fn set_secret(alias: &str, secret: &str) -> Result<(), String> {
         .map_err(|err| format!("failed to store secret for '{alias}': {err}"))
 }
 
-/// Reads back the secret stored for `alias` via `set_secret`.
+/// Env var name checked by `get_secret` before it falls back to the OS
+/// keyring (ADR-0087) -- `PIGEON_SECRET_` plus `alias` uppercased, with every
+/// character outside `[A-Z0-9_]` replaced by `_`. Lets a secret be injected
+/// directly (no OS keyring involved at all), which is what makes a
+/// non-interactive or restarted container usable: the Linux kernel-keyutils
+/// backend (ADR-0085) doesn't survive a process/session reset, and a
+/// container restart is exactly that.
+fn env_var_name(alias: &str) -> String {
+    let mut name = String::from("PIGEON_SECRET_");
+    for ch in alias.chars() {
+        let upper = ch.to_ascii_uppercase();
+        name.push(if upper.is_ascii_alphanumeric() || upper == '_' {
+            upper
+        } else {
+            '_'
+        });
+    }
+    name
+}
+
+/// Reads back the secret stored for `alias` via `set_secret`, unless
+/// `env_var_name(alias)` is set in the environment, in which case that value
+/// is returned directly and the OS keyring is never consulted (ADR-0087).
 pub fn get_secret(alias: &str) -> Result<String, String> {
+    if let Ok(secret) = std::env::var(env_var_name(alias)) {
+        return Ok(secret);
+    }
     let entry = keyring::Entry::new(SERVICE_NAME, alias)
         .map_err(|err| format!("failed to open keychain entry for '{alias}': {err}"))?;
     entry
@@ -37,5 +62,32 @@ pub fn delete_secret(alias: &str) -> Result<(), String> {
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(err) => Err(format!("failed to delete secret for '{alias}': {err}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn env_var_name_uppercases_and_sanitizes_the_alias() {
+        assert_eq!(env_var_name("gmail-work"), "PIGEON_SECRET_GMAIL_WORK");
+        assert_eq!(env_var_name("My.Bucket"), "PIGEON_SECRET_MY_BUCKET");
+    }
+
+    #[test]
+    fn get_secret_prefers_the_env_var_over_the_os_keyring() {
+        let alias = "adr-0087-test-alias";
+        let var = env_var_name(alias);
+        // SAFETY: tests run single-threaded within this process for this env var
+        // (no other test reads/writes a PIGEON_SECRET_* var concurrently).
+        unsafe {
+            std::env::set_var(&var, "injected-secret");
+        }
+        let result = get_secret(alias);
+        unsafe {
+            std::env::remove_var(&var);
+        }
+        assert_eq!(result.unwrap(), "injected-secret");
     }
 }

@@ -1,0 +1,9 @@
+target/
+docs/
+.claude/
+.git/
+.gitignore
+CLAUDE.md
+CHANGELOG.md
+README.md
+LICENSE.md
