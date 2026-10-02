@@ -36,6 +36,43 @@ cargo install pigeon-cli
 
 This installs a binary named `pigeon`.
 
+## Run via Docker
+
+An alternative to installing Rust/ffmpeg locally: build and run `pigeon`
+in a container that bundles everything it needs (see ADR-0087). Image
+targets `linux/arm64` only.
+
+```sh
+mise run docker-build                       # docker build --platform linux/arm64 -t pigeon-cli .
+mise run docker-run -- keyring list         # docker run ... pigeon-cli keyring list
+```
+
+`/data` inside the container is the single mount point for config,
+logs, and job output — `docker-run`'s named volume (`pigeon-data`)
+persists it across runs. `PIGEON_CONFIG_DIR` and `PIGEON_LOG_DIR` are
+pre-set to `/data/config`/`/data/logs`.
+
+Because a container restart doesn't preserve the OS keyring (see
+ADR-0085's Linux caveat), non-interactive/restarted use works in two
+phases:
+
+1. **One-time setup**: run `pigeon keyring add <kind> <alias>` once to
+   populate `keyring.toml`'s non-secret metadata — it persists in the
+   `/data` volume.
+2. **Per-run**: supply the actual secret via a `PIGEON_SECRET_<ALIAS>`
+   environment variable (alias uppercased, non-alphanumeric characters
+   replaced with `_`) — `pigeon` reads it directly instead of the OS
+   keyring, e.g.:
+
+   ```sh
+   docker run --platform linux/arm64 --rm -v pigeon-data:/data \
+     -e PIGEON_SECRET_MY_ALIAS=<secret> \
+     pigeon-cli job run email-sync
+   ```
+
+How that env var gets populated (a secrets manager, CI variable, etc.)
+is left to your own infrastructure.
+
 ## Commands
 
 - `pigeon keyring add [email|bucket|encryption-key]` — authenticate an email identity, configure an S3-compatible bucket, or register a symmetric encryption key.
