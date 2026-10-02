@@ -18,6 +18,23 @@ fi
 exec target/debug/pigeon "$@"
 """
 
+[tasks.build-release]
+run = """
+cargo build --release
+if [ "$(uname)" = "Darwin" ]; then
+  codesign --force -s - --identifier "dev.pigeon.cli" target/release/pigeon
+fi
+"""
+
+[tasks.pigeon-release]
+run = """
+cargo build --release
+if [ "$(uname)" = "Darwin" ]; then
+  codesign --force -s - --identifier "dev.pigeon.cli" target/release/pigeon
+fi
+exec target/release/pigeon "$@"
+"""
+
 [tasks.test]
 run = "cargo test"
 

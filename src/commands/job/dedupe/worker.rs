@@ -92,14 +92,17 @@ enum ItemOutcome {
 
 /// Downloads (if not already on disk) then either expands `item` (a zip --
 /// its own bytes are discarded, never hashed or placed, per ADR-0082 §4) or
-/// hashes it for the placement pass.
+/// hashes it for the placement pass. The expansion/hash itself runs via
+/// `tokio::task::spawn_blocking` (ADR-0088) -- both are CPU-bound, so they're
+/// handed to tokio's blocking-thread pool rather than occupying one of the
+/// runtime's own async worker threads for the whole call.
 async fn process_item(
     bucket_config: &BucketConfig,
     secret: &str,
     item: QueueItem,
     raw_dir: &Path,
-    counter: &AtomicU64,
-    extracted_bytes: &AtomicU64,
+    counter: &Arc<AtomicU64>,
+    extracted_bytes: &Arc<AtomicU64>,
     multi_progress: &MultiProgress,
 ) -> ItemOutcome {
     let depth = item.depth;
@@ -160,8 +163,21 @@ async fn process_item(
                 category: FailureCategory::Archive,
             };
         }
-        return match archive::expand_to_dir(&path, raw_dir, counter, extracted_bytes) {
-            Ok(raw_members) => {
+        let expand_path = path.clone();
+        let expand_raw_dir = raw_dir.to_path_buf();
+        let expand_counter = Arc::clone(counter);
+        let expand_extracted_bytes = Arc::clone(extracted_bytes);
+        let expand_result = tokio::task::spawn_blocking(move || {
+            archive::expand_to_dir(
+                &expand_path,
+                &expand_raw_dir,
+                &expand_counter,
+                &expand_extracted_bytes,
+            )
+        })
+        .await;
+        return match expand_result {
+            Ok(Ok(raw_members)) => {
                 // The zip container itself is never hashed or placed -- only
                 // its extracted members are (ADR-0082 §4).
                 let _ = fs::remove_file(&path);
@@ -181,8 +197,15 @@ async fn process_item(
                     members,
                 }
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 tracing::warn!(key = %item.display_key, step = "archive", error = %err, "failed to open zip archive");
+                let _ = fs::remove_file(&path);
+                ItemOutcome::Failed {
+                    category: FailureCategory::Archive,
+                }
+            }
+            Err(err) => {
+                tracing::error!(key = %item.display_key, step = "archive", error = %err, "zip expansion task panicked");
                 let _ = fs::remove_file(&path);
                 ItemOutcome::Failed {
                     category: FailureCategory::Archive,
@@ -191,8 +214,10 @@ async fn process_item(
         };
     }
 
-    match download::sha256_file(&path) {
-        Ok(content_hash) => ItemOutcome::Hashed {
+    let hash_path = path.clone();
+    let hash_result = tokio::task::spawn_blocking(move || download::sha256_file(&hash_path)).await;
+    match hash_result {
+        Ok(Ok(content_hash)) => ItemOutcome::Hashed {
             depth,
             file: HashedFile {
                 original_key: item.display_key,
@@ -201,8 +226,15 @@ async fn process_item(
                 content_hash,
             },
         },
-        Err(err) => {
+        Ok(Err(err)) => {
             tracing::warn!(key = %item.display_key, step = "hash", error = %err, "failed to hash file");
+            let _ = fs::remove_file(&path);
+            ItemOutcome::Failed {
+                category: FailureCategory::Hash,
+            }
+        }
+        Err(err) => {
+            tracing::error!(key = %item.display_key, step = "hash", error = %err, "hash task panicked");
             let _ = fs::remove_file(&path);
             ItemOutcome::Failed {
                 category: FailureCategory::Hash,
