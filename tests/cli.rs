@@ -751,6 +751,7 @@ fn job_run_dedupe_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--remote-output"))
         .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0082 §0/§1: dedupe never offers encryption or file-type/
         // zip-expansion selection -- every file is always processed and
@@ -782,6 +783,30 @@ fn job_run_dedupe_without_source_bucket_fails_fast_non_interactively() {
         .stderr(predicate::str::contains(
             "--source-bucket is required when not running interactively",
         ));
+}
+
+#[test]
+fn job_run_dedupe_upload_only_without_a_completed_run_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    // No --source-bucket, no --remote-output: the preflight check (ADR-0089)
+    // must fail before either would ever be resolved, since this empty
+    // --local-output never ran a dedupe pass at all.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "dedupe",
+            "--upload-only",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no completed dedupe run found"));
 }
 
 #[test]

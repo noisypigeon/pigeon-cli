@@ -400,16 +400,31 @@ pub(crate) async fn run_dedupe_job(
         .into_inner()
         .map_err(|_| "internal error: failure breakdown lock poisoned".to_string())?;
 
-    let mut dedup_index = DedupeDedup(ContentIndex::load(
-        &staging_dir,
-        dedup::CONTENT_HASHES_FILE,
-    )?);
-    let (placement_summary, merge_records, placed_keys) =
-        dedup::place_and_report(&result_dir, files, &mut dedup_index, &multi_progress);
-    dedup::write_report(local_output, &merge_records)?;
+    // `dedup_index` (the full hash->path map), `merge_records` (the
+    // human-readable report -- can run well into the GB range for a large,
+    // duplicate-heavy bucket), and `placed_keys` all live only inside this
+    // block, so they're dropped here, before the upload phase runs, instead
+    // of surviving in `run_dedupe_job`'s own scope through the whole upload
+    // phase afterward (ADR-0089 -- this is what let a real run's RSS keep
+    // climbing well past the fetch+hash phase and eventually get OOM-killed
+    // partway through upload).
+    let placement_summary = {
+        let mut dedup_index = DedupeDedup(ContentIndex::load(
+            &staging_dir,
+            dedup::CONTENT_HASHES_FILE,
+        )?);
+        let (placement_summary, merge_records, placed_keys) =
+            dedup::place_and_report(&result_dir, files, &mut dedup_index, &multi_progress);
+        dedup::write_report(local_output, &merge_records)?;
 
-    let placed_keys: std::collections::HashSet<String> = placed_keys.into_iter().collect();
-    finished_root_keys.retain(|key| placed_keys.contains(key) || is_zip_key(key));
+        let placed_keys: std::collections::HashSet<String> = placed_keys.into_iter().collect();
+        finished_root_keys.retain(|key| placed_keys.contains(key) || is_zip_key(key));
+        for key in &finished_root_keys {
+            manifest::append_checkpoint(&staging_dir, key)?;
+        }
+        placement_summary
+    };
+
     let mut summary = DedupeSummary {
         processed: placement_summary.placed,
         failed: failure_breakdown.download + failure_breakdown.archive + failure_breakdown.hash,
@@ -418,36 +433,70 @@ pub(crate) async fn run_dedupe_job(
     };
     summary.failure_breakdown.merge(&failure_breakdown);
 
-    for key in &finished_root_keys {
-        manifest::append_checkpoint(&staging_dir, key)?;
-    }
-
     if let Some((remote_bucket, remote_secret)) = remote {
-        let (upload_tasks, uploaded_index) = upload::pending_upload_tasks(
+        let upload_summary = upload_result(
             &bucket_config.alias,
-            &staging_dir,
-            &result_dir,
-            &result_dir,
-            false,
-        )?;
-        let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
-        uploaded_indexes.insert(staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
-        let upload_summary = upload::run_upload_phase(
-            upload_tasks,
-            &uploaded_indexes,
-            remote_bucket,
-            remote_secret,
-            None,
+            local_output,
+            (remote_bucket, remote_secret),
             concurrency,
             &multi_progress,
         )
-        .await;
+        .await?;
         summary.uploaded = upload_summary.uploaded;
         summary.unchanged = upload_summary.unchanged;
         summary.upload_failed = upload_summary.upload_failed;
     }
 
     Ok(summary)
+}
+
+/// Uploads `local_output/result/` to `remote`, resuming via the existing
+/// `.staging/.uploaded` index (ADR-0019/ADR-0024) -- the shared upload tail
+/// both `run_dedupe_job` and `run_upload_only` call, so there's one code
+/// path and one resume mechanism between a fresh run and a resumed
+/// `--upload-only` one (ADR-0089). `label` is purely descriptive
+/// (tracing/log context): `run_dedupe_job` passes the source bucket's
+/// alias (its historical behavior); `run_upload_only`, which never touches
+/// a source bucket at all, passes the remote's own alias instead.
+async fn upload_result(
+    label: &str,
+    local_output: &Path,
+    remote: (&BucketConfig, &str),
+    concurrency: usize,
+    multi_progress: &MultiProgress,
+) -> Result<upload::UploadSummary, String> {
+    let staging_dir = local_output.join(".staging");
+    let result_dir = local_output.join("result");
+    let (remote_bucket, remote_secret) = remote;
+
+    let (upload_tasks, uploaded_index) =
+        upload::pending_upload_tasks(label, &staging_dir, &result_dir, &result_dir, false)?;
+    let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
+    uploaded_indexes.insert(staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
+    Ok(upload::run_upload_phase(
+        upload_tasks,
+        &uploaded_indexes,
+        remote_bucket,
+        remote_secret,
+        None,
+        concurrency,
+        multi_progress,
+    )
+    .await)
+}
+
+/// Resumes uploading an already-completed local dedupe run, skipping the
+/// bucket listing/download/hash/placement phases entirely (ADR-0089's
+/// `--upload-only`). Reuses `upload_result`, the same helper
+/// `run_dedupe_job`'s own upload tail calls.
+pub(crate) async fn run_upload_only(
+    local_output: &Path,
+    remote: (&BucketConfig, &str),
+    concurrency: usize,
+) -> Result<upload::UploadSummary, String> {
+    let multi_progress = MultiProgress::new();
+    let label = remote.0.alias.clone();
+    upload_result(&label, local_output, remote, concurrency, &multi_progress).await
 }
 
 #[cfg(test)]

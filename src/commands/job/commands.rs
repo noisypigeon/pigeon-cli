@@ -57,12 +57,14 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     local_output,
                     remote_output,
                     concurrency,
+                    upload_only,
                     yes,
                 } => dedupe::wizard::dispatch(
                     source_bucket,
                     local_output,
                     remote_output,
                     concurrency,
+                    upload_only,
                     yes,
                 ),
                 JobType::DecryptFiles {

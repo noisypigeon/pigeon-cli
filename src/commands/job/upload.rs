@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bytes::Bytes;
 use futures::{StreamExt, stream};
 use indicatif::{MultiProgress, ProgressBar};
 
@@ -181,18 +182,31 @@ async fn upload_one(
     bar: &ProgressBar,
     multi_progress: &MultiProgress,
 ) -> UploadOutcomeKind {
+    let bytes_for_log = fs::metadata(&task.path).map(|meta| meta.len()).unwrap_or(0);
+    tracing::info!(file = %task.path.display(), bytes = bytes_for_log, "upload started");
+
     let outcome = async {
-        let data = fs::read(&task.path)
-            .map_err(|err| format!("failed to read {}: {err}", task.path.display()))?;
-        // Deterministic encryption (ADR-0025): identical plaintext always
-        // yields identical ciphertext under the same key, so
-        // `upload_if_changed`'s MD5-vs-ETag dedup below needs no changes.
-        let data = match encryptor {
-            Some(encryptor) => encryptor.encrypt(&data)?,
-            None => data,
+        // No encryptor: hand the client a bare path (ADR-0089) -- it streams
+        // the file straight off disk, so each retry below reopens it fresh
+        // instead of holding a full-file buffer across attempts. With an
+        // encryptor: ADR-0025's AES-256-GCM-SIV is whole-buffer and only
+        // ever sees email-sized files, so read+encrypt once here; a retry
+        // then clones the cheap ref-counted `Bytes` handle, not the buffer.
+        let body = match encryptor {
+            Some(encryptor) => {
+                let data = fs::read(&task.path)
+                    .map_err(|err| format!("failed to read {}: {err}", task.path.display()))?;
+                // Deterministic encryption (ADR-0025): identical plaintext
+                // always yields identical ciphertext under the same key, so
+                // `upload_if_changed`'s ETag-based dedup below needs no
+                // changes.
+                let encrypted = encryptor.encrypt(&data)?;
+                client::UploadBody::Bytes(Bytes::from(encrypted))
+            }
+            None => client::UploadBody::Path(task.path.clone()),
         };
         retry_with_backoff(UPLOAD_RETRIES, UPLOAD_RETRY_BACKOFF, || {
-            client::upload_if_changed(bucket_config, secret, &task.key, data.clone())
+            client::upload_if_changed(bucket_config, secret, &task.key, body.clone())
         })
         .await
     }
@@ -280,6 +294,41 @@ pub(crate) async fn run_upload_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pending_upload_tasks_with_a_pre_seeded_uploaded_index_matches_the_dedupe_layout() {
+        // `dedupe`/`sort`'s own `upload_result` calls `pending_upload_tasks`
+        // with `walk_dir == key_root` (both `result_dir`), unlike
+        // `email_sync`'s nested-identity-subdirectory layout the other
+        // fixtures here use (ADR-0089).
+        let staging = tempfile::tempdir().unwrap();
+        let result_dir = tempfile::tempdir().unwrap();
+        fs::write(result_dir.path().join("a.jpg"), b"a").unwrap();
+        fs::write(result_dir.path().join("b.jpg"), b"b").unwrap();
+
+        let key_a = upload_key(result_dir.path(), &result_dir.path().join("a.jpg"), false).unwrap();
+        fs::write(
+            staging.path().join(UPLOADED_FILE_NAME),
+            format!("{key_a}\n"),
+        )
+        .unwrap();
+
+        let (tasks, index) = pending_upload_tasks(
+            "dedupe-alias",
+            staging.path(),
+            result_dir.path(),
+            result_dir.path(),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(
+            tasks[0].key,
+            upload_key(result_dir.path(), &result_dir.path().join("b.jpg"), false).unwrap()
+        );
+        assert!(index.contains(&key_a));
+    }
 
     #[test]
     fn pending_upload_tasks_includes_every_file_when_index_is_empty() {

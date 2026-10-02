@@ -16,12 +16,24 @@ time. Follow it in full; don't skip straight to guessing a cause.
 ## Steps
 
 1. **Locate the log.** Default path:
-   `~/Library/Application Support/pigeon/logs/pigeon.jsonl` (macOS; via
-   `directories::ProjectDirs`). Overridable two ways -- check both before
-   assuming the default: the `PIGEON_LOG_DIR` environment variable, or a
-   `--log-file <path>` flag passed to the command itself. If the user
-   pasted a terminal transcript, look for either of these before reading
-   anything.
+   `~/Library/Application Support/pigeon/logs/pigeon.jsonl` (macOS) or
+   `~/.local/share/pigeon/logs/pigeon.jsonl` (Linux -- `directories`'
+   `data_local_dir()`, i.e. `$XDG_DATA_HOME` or `~/.local/share` by
+   default; this is the path a headless Linux box running a long `job run
+   dedupe`/`pull-transform` will actually have, ADR-0089). Overridable two
+   ways -- check both before assuming the default: the `PIGEON_LOG_DIR`
+   environment variable, or a `--log-file <path>` flag passed to the
+   command itself. If the user pasted a terminal transcript, look for
+   either of these before reading anything.
+
+   **If the symptom is a SIGKILL/crash with no graceful exit, check for an
+   OOM kill before reading the JSONL at all**: `dmesg | grep -i oom` or
+   `journalctl -k | grep -i oom` (Linux). The kernel's own OOM-killer log
+   line (timestamp + `anon-rss:<kB>`) is faster to get to than reconstructing
+   the same conclusion from `resource_sample` climbing, and dates/correlates
+   directly against the JSONL timeline from step 3 once you have it
+   (ADR-0089 -- this is exactly how a real `dedupe` OOM mid-upload was
+   first confirmed).
 
 2. **Isolate the run.** The log is **append-only across every past
    invocation** -- one file accumulates lines from every run of every
@@ -119,7 +131,7 @@ time. Follow it in full; don't skip straight to guessing a cause.
 
 ## Reference: field and vocabulary cheat sheet
 
-Reflects the schema as of ADR-0073/0074/0075/0076/0077 (2026-09-28). If a
+Reflects the schema as of ADR-0073/0074/0075/0076/0077/0089 (2026-10-02). If a
 filter below unexpectedly returns nothing for a run that should have
 matching lines, the schema may have drifted -- fall back to
 `jq 'select(.target | startswith("pigeon::"))'` to see everything, or
@@ -142,8 +154,9 @@ let it go stale silently.
 
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
-`job.email-sync`, `job.pull-transform`, `job.decrypt-files`, `keyring.add`,
-`keyring.modify`, `keyring.delete`, `keyring.list`.
+`job.email-sync`, `job.pull-transform`, `job.decrypt-files`, `job.dedupe`,
+`job.sort`, `job.email-pull`, `keyring.add`, `keyring.modify`,
+`keyring.delete`, `keyring.list`.
 
 **Keyring commands emit no per-operation tracing at all** -- only the two
 boilerplate `"command finished"`/`"close"` events for the outer span. A
@@ -157,6 +170,26 @@ the user for the terminal output instead.
   (also `upload`, shared with every job's upload phase).
 - `email-sync`: `connect`, `examine`, `batch`, `fetch`, `transform`,
   `verify` (also `upload`).
+- `dedupe`: `download`, `archive` (zip expansion), `hash` (SHA-256 content
+  hashing), `place` (also `upload`). The fetch+hash phase is CPU-bound
+  (ADR-0088) -- a slow `dedupe` run with normal-looking `resource_sample`
+  CPU and a thin WARN/ERROR tail is more likely genuinely waiting on a slow
+  source bucket than failing; a `dedupe` run OOM-killed specifically
+  partway through the upload phase (last JSONL lines are `step = "upload"`
+  or a run of `"upload started"` events with no matching `"command
+  finished"`) matches the known ADR-0089 failure mode -- check whether
+  `--upload-only` (resumes uploading an already-completed local run without
+  repeating download/hash/placement) is available on the installed version
+  before suggesting a full rerun.
+- `sort`: `download`, `place` (also `upload`).
+
+**`"upload started"` event** (`upload.rs::upload_one`, ADR-0089, INFO
+level, every job's upload phase): `fields.file` (the local path) and
+`fields.bytes` (its size), logged right before the upload attempt begins --
+since there's no matching `"command finished"`/per-file completion event on
+a crash, the *last* `"upload started"` line(s) before the log goes silent
+name whichever file(s) were actually in flight when the process died
+(`jq 'select(.fields.message == "upload started")' pigeon.jsonl | tail`).
 
 **Each job's printed completion summary** (not in the JSONL -- this is
 what step 5 cross-checks the log's tally against; ask for it if the user
@@ -175,9 +208,19 @@ hasn't already pasted it):
   {uploaded} uploaded, {unchanged} unchanged, {upload_failed} upload
   failed."`
 - `decrypt-files`: `"Decrypted {decrypted} file(s), {failed} failed."`
+- `dedupe`: `"Processed {processed} file(s), {failed} failed ({download}
+  download, {archive} archive, {hash} hash), {duplicates_skipped}
+  duplicate(s) skipped, {uploaded} uploaded, {unchanged} unchanged,
+  {upload_failed} upload failed."` -- a `--upload-only` resumed run instead
+  prints `"Uploaded {uploaded} file(s), {unchanged} unchanged,
+  {upload_failed} upload failed."` (no `processed`/`failed`/dedup counts --
+  it never re-touches download/hash/placement, ADR-0089).
+- `sort`: `"Placed {placed} file(s), {failed} failed ({download} download,
+  {placement} placement), {uploaded} uploaded, {unchanged} unchanged,
+  {upload_failed} upload failed."`
 
-All three: a nonzero `failed`/`upload_failed` means the process exited
-with `FAILURE_EXIT_CODE`, not `0`.
+Every job above: a nonzero `failed`/`upload_failed` means the process
+exited with `FAILURE_EXIT_CODE`, not `0`.
 
 ## Known limitations
 

@@ -254,6 +254,19 @@ pub enum JobType {
         #[arg(long)]
         concurrency: Option<usize>,
 
+        /// Resumes uploading an already-completed local dedupe run instead
+        /// of starting a new one: skips the bucket listing/download/hash/
+        /// placement phases entirely (and the source bucket credentials
+        /// they'd otherwise need) and uploads straight from an existing
+        /// `--local-output`'s `result/` tree, picking up where a prior
+        /// run's upload phase left off via the same `.staging/.uploaded`
+        /// index (ADR-0089). Requires a `--local-output` from a completed
+        /// prior run (its `.staging/.processed` checkpoint must exist and
+        /// its `result/` must be non-empty) and a mandatory
+        /// `--remote-output`.
+        #[arg(long)]
+        upload_only: bool,
+
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
         yes: bool,
