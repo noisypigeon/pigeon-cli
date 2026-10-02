@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
@@ -5,7 +6,9 @@ use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::email_sync::wizard::print_manifest_summary;
 use crate::commands::job::email_sync::{DEFAULT_MAX_CONNECTIONS_PER_IDENTITY, IdentityContext};
-use crate::commands::job::shared_wizard::{ConfirmInput, UploadTargetInput};
+use crate::commands::job::shared_wizard::{
+    ConcurrencyInput as SharedConcurrencyInput, ConfirmInput, UploadTargetInput,
+};
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
 use crate::core::job::Job;
@@ -13,6 +16,7 @@ use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
 
 use super::PullJob;
+use super::worker;
 
 /// Resolves `--identities` (every alias must exist in the store) or an
 /// interactive `MultiSelect`, else errors non-interactively. Own local
@@ -176,12 +180,14 @@ impl WizardInput for ConcurrencyInput {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     identities: Option<Vec<String>>,
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
     max_connections_per_identity: Option<usize>,
+    upload_only: bool,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -197,16 +203,19 @@ pub fn dispatch(
         remote_output,
         concurrency,
         max_connections_per_identity,
+        upload_only,
         yes,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_async(
     identities: Option<Vec<String>>,
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
     max_connections_per_identity: Option<usize>,
+    upload_only: bool,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as
@@ -222,6 +231,19 @@ async fn dispatch_async(
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+
+    if upload_only {
+        return dispatch_upload_only(
+            identities,
+            local_output,
+            remote_output,
+            concurrency,
+            yes,
+            &keyring_store,
+        )
+        .await;
+    }
+
     let selected_identities = match (IdentitiesInput {
         flag: identities,
         store: &keyring_store,
@@ -357,9 +379,166 @@ fn fail(message: impl std::fmt::Display) -> i32 {
     FAILURE_EXIT_CODE
 }
 
+/// Whether `ctx`'s identity has a completed local run `--upload-only` can
+/// resume uploading from -- same check as `email_sync::wizard`'s version
+/// (ADR-0090).
+fn identity_has_completed_run(ctx: &IdentityContext) -> bool {
+    fs::read_dir(&ctx.output_dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false)
+}
+
+/// `--upload-only` branch of `dispatch_async` (ADR-0090): resumes uploading
+/// already-completed local runs for the selected identities, skipping the
+/// IMAP connect/fetch/dedup phases -- and the per-identity IMAP
+/// credentials they'd otherwise need -- entirely. An identity whose local
+/// state isn't ready is skipped with a warning rather than failing the
+/// whole command, same as `email_sync::wizard`'s version.
+async fn dispatch_upload_only(
+    identities: Option<Vec<String>>,
+    local_output: Option<PathBuf>,
+    remote_output: Option<String>,
+    concurrency: Option<usize>,
+    yes: bool,
+    keyring_store: &Store,
+) -> i32 {
+    let selected_identities = match (IdentitiesInput {
+        flag: identities,
+        store: keyring_store,
+    })
+    .resolve()
+    {
+        Ok(identities) => identities,
+        Err(err) => return fail(err),
+    };
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+
+    let mut ready_contexts = Vec::new();
+    for identity in &selected_identities {
+        let identity_root = local_output.join(&identity.alias);
+        let ctx = IdentityContext {
+            identity: identity.clone(),
+            // No IMAP secret lookup here -- this mode never connects
+            // (same reasoning as `email_sync::wizard`'s version).
+            secret: String::new(),
+            staging_dir: identity_root.join("staging"),
+            output_dir: identity_root.join("result"),
+        };
+        if identity_has_completed_run(&ctx) {
+            ready_contexts.push(ctx);
+        } else {
+            println!(
+                "Warning: skipping '{}': no completed local run found under {}",
+                ctx.identity.alias,
+                ctx.output_dir.display()
+            );
+        }
+    }
+    if ready_contexts.is_empty() {
+        return fail(
+            "no completed local run found for any selected identity; run without --upload-only first",
+        );
+    }
+
+    let remote_alias = match (UploadTargetInput {
+        flag: remote_output,
+        store: keyring_store,
+    })
+    .resolve()
+    {
+        Ok(Some(alias)) => alias,
+        Ok(None) => return fail("--remote-output is required with --upload-only"),
+        Err(err) => return fail(err),
+    };
+    let remote_bucket_config = match keyring_store
+        .bucket_configs()
+        .find(|bucket_config| bucket_config.alias == remote_alias)
+    {
+        Some(bucket_config) => bucket_config.clone(),
+        None => return fail(format!("no bucket-config named '{remote_alias}'")),
+    };
+    let remote_secret = match credentials::get_secret(&remote_bucket_config.alias) {
+        Ok(secret) => secret,
+        Err(err) => return fail(err),
+    };
+
+    // Plain flat-4 default, not this job's own message-count-estimate
+    // `ConcurrencyInput` -- same reasoning as `email_sync::wizard`'s
+    // version (ADR-0090).
+    let concurrency = match (SharedConcurrencyInput { flag: concurrency }).resolve() {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    match (ConfirmInput { yes }).resolve() {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("Cancelled.");
+            return 0;
+        }
+        Err(err) => return fail(err),
+    }
+
+    match worker::run_upload_only(
+        &ready_contexts,
+        (&remote_bucket_config, &remote_secret),
+        concurrency,
+    )
+    .await
+    {
+        Ok(summary) => {
+            println!(
+                "Uploaded {} file(s), {} unchanged, {} upload failed.",
+                summary.uploaded, summary.unchanged, summary.upload_failed
+            );
+            if summary.upload_failed > 0 {
+                FAILURE_EXIT_CODE
+            } else {
+                0
+            }
+        }
+        Err(err) => fail(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::keyring::email::provider::Provider;
+
+    fn identity_ctx(output_dir: PathBuf) -> IdentityContext {
+        IdentityContext {
+            identity: Identity {
+                alias: "work".to_string(),
+                email: "willow@example.com".to_string(),
+                provider: Provider::Gmail,
+                host: "imap.gmail.com".to_string(),
+                port: 993,
+                max_imap_connections: None,
+            },
+            secret: "unused".to_string(),
+            staging_dir: PathBuf::from("/unused/staging"),
+            output_dir,
+        }
+    }
+
+    #[test]
+    fn identity_has_completed_run_is_false_for_a_missing_output_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = identity_ctx(dir.path().join("does-not-exist"));
+        assert!(!identity_has_completed_run(&ctx));
+    }
+
+    #[test]
+    fn identity_has_completed_run_is_true_once_something_was_placed() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("willow-example.com")).unwrap();
+        let ctx = identity_ctx(dir.path().to_path_buf());
+        assert!(identity_has_completed_run(&ctx));
+    }
 
     #[test]
     fn default_local_output_is_under_temp_dir() {

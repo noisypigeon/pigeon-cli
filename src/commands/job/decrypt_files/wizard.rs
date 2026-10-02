@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use dialoguer::Input;
 
 use crate::commands::FAILURE_EXIT_CODE;
-use crate::commands::job::shared_wizard::{ConcurrencyInput, ConfirmInput};
+use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput};
 use crate::commands::keyring::store::Store;
 use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
@@ -189,7 +189,7 @@ async fn dispatch_async(
     }
     println!("{} encrypted file(s) found.", plan.len());
 
-    let concurrency = match (ConcurrencyInput { flag: concurrency }).resolve() {
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
         Ok(value) => value,
         Err(err) => return fail(err),
     };

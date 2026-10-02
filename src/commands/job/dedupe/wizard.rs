@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use dialoguer::Input;
 
 use crate::commands::FAILURE_EXIT_CODE;
-use crate::commands::job::shared_wizard::{ConfirmInput, UploadTargetInput};
+use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput, UploadTargetInput};
 use crate::commands::keyring::store::Store;
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
@@ -68,49 +68,6 @@ impl WizardInput for LocalOutputInput {
 
     fn non_interactive_fallback(&self) -> Result<PathBuf, String> {
         Ok(default_local_output())
-    }
-}
-
-/// The machine's available core count, or `4` if it can't be determined --
-/// `dedupe`'s fetch+hash phase (ADR-0082 §4) is CPU-bound (SHA-256 hashing,
-/// zip inflation), unlike the I/O-bound jobs (IMAP, S3 uploads) the shared
-/// `shared_wizard::ConcurrencyInput`'s flat default of 4 is tuned for
-/// (ADR-0088).
-fn default_concurrency() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4)
-}
-
-/// Resolves the concurrency to run at -- own local copy of
-/// `shared_wizard::ConcurrencyInput` (same precedent as `email_sync`'s and
-/// `email_pull`'s own copies) so the interactive default can be the
-/// machine's core count instead of a flat `4`: this job's work is CPU-bound,
-/// not I/O-bound, so the right default scales with the hardware (ADR-0088).
-/// `--concurrency <N>` and the non-interactive fallback behavior are
-/// unchanged.
-struct ConcurrencyInput {
-    flag: Option<usize>,
-}
-
-impl WizardInput for ConcurrencyInput {
-    type Value = usize;
-
-    fn flag_value(&self) -> Option<Result<usize, String>> {
-        self.flag.map(|value| Ok(value.max(1)))
-    }
-
-    fn prompt(&self) -> Result<usize, String> {
-        let value = Input::<usize>::new()
-            .with_prompt("Concurrency")
-            .default(default_concurrency())
-            .interact_text()
-            .map_err(|err| format!("failed to read concurrency: {err}"))?;
-        Ok(value.max(1))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Err("--concurrency is required when not running interactively".to_string())
     }
 }
 
@@ -278,7 +235,7 @@ async fn dispatch_async(
         None => None,
     };
 
-    let concurrency = match (ConcurrencyInput { flag: concurrency }).resolve() {
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -379,7 +336,7 @@ async fn dispatch_upload_only(
         Err(err) => return fail(err),
     };
 
-    let concurrency = match (ConcurrencyInput { flag: concurrency }).resolve() {
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -459,23 +416,6 @@ mod tests {
         fs::write(dir.path().join("result").join("a.txt"), b"a").unwrap();
 
         assert!(upload_only_preflight_ok(dir.path()));
-    }
-
-    #[test]
-    fn default_concurrency_is_at_least_one() {
-        assert!(default_concurrency() >= 1);
-    }
-
-    #[test]
-    fn concurrency_input_flag_value_overrides_the_default() {
-        let input = ConcurrencyInput { flag: Some(7) };
-        assert_eq!(input.flag_value(), Some(Ok(7)));
-    }
-
-    #[test]
-    fn concurrency_input_requires_a_flag_when_not_interactive() {
-        let input = ConcurrencyInput { flag: None };
-        assert!(input.non_interactive_fallback().is_err());
     }
 
     #[test]

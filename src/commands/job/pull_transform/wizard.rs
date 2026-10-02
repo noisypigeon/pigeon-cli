@@ -1,12 +1,13 @@
 use std::collections::HashSet;
+use std::fs;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 
 use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
-    ConcurrencyInput, ConfirmInput, EncryptionKeyInput, UploadTargetInput,
+    ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, UploadTargetInput,
 };
 use crate::commands::keyring::store::Store;
 use crate::core::crypto::Aes256GcmSivEncryptor;
@@ -14,8 +15,9 @@ use crate::core::job::Job;
 use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
 
-use super::manifest::{self, PullTask};
+use super::manifest::{self, PROCESSED_FILE_NAME, PullTask};
 use super::media::{self, TranscodeTargets, check_ffmpeg_available};
+use super::worker;
 use super::{PullTransformJob, TypeSummary};
 
 /// Resolves which bucket-config to pull from -- mandatory (unlike
@@ -334,6 +336,7 @@ pub fn dispatch(
     video_format: Option<String>,
     audio_format: Option<String>,
     concurrency: Option<usize>,
+    upload_only: bool,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -354,6 +357,7 @@ pub fn dispatch(
         video_format,
         audio_format,
         concurrency,
+        upload_only,
         yes,
     ))
 }
@@ -370,6 +374,7 @@ async fn dispatch_async(
     video_format: Option<String>,
     audio_format: Option<String>,
     concurrency: Option<usize>,
+    upload_only: bool,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return
@@ -377,13 +382,6 @@ async fn dispatch_async(
     // (ADR-0073).
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
-
-    // Checked once, up front: a missing ffmpeg/ffprobe fails the whole job
-    // immediately with one clear error, instead of failing per-file deep
-    // into a long run (ADR-0074 §4).
-    if let Err(err) = check_ffmpeg_available().await {
-        return fail(err);
-    }
 
     let keyring_store_path = match Store::default_path() {
         Ok(path) => path,
@@ -393,6 +391,26 @@ async fn dispatch_async(
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+
+    if upload_only {
+        return dispatch_upload_only(
+            local_output,
+            remote_output,
+            encryption_key,
+            concurrency,
+            yes,
+            &keyring_store,
+        )
+        .await;
+    }
+
+    // Checked once, up front: a missing ffmpeg/ffprobe fails the whole job
+    // immediately with one clear error, instead of failing per-file deep
+    // into a long run (ADR-0074 §4). Skipped in `--upload-only` mode above
+    // -- that mode never recodes anything, so ffmpeg isn't needed.
+    if let Err(err) = check_ffmpeg_available().await {
+        return fail(err);
+    }
 
     let source_alias = match (SourceBucketInput {
         flag: source_bucket,
@@ -529,7 +547,7 @@ async fn dispatch_async(
         None => None,
     };
 
-    let concurrency = match (ConcurrencyInput { flag: concurrency }).resolve() {
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -571,9 +589,164 @@ async fn dispatch_async(
     }
 }
 
+/// Whether `local_output` holds a completed prior pull-transform run that
+/// `--upload-only` can resume uploading from: its `.processed` checkpoint
+/// must exist directly under `local_output` (not under `.staging/` --
+/// unlike `dedupe`/`sort`, this job never adopted that split) and at least
+/// one placed-content subdirectory (`local_output/<extension>/...`, where
+/// every real file lives) must exist besides `.staging` itself (ADR-0090).
+fn upload_only_preflight_ok(local_output: &Path) -> bool {
+    if !local_output.join(PROCESSED_FILE_NAME).exists() {
+        return false;
+    }
+    fs::read_dir(local_output)
+        .map(|entries| {
+            entries
+                .filter_map(|entry| entry.ok())
+                .any(|entry| entry.file_name() != ".staging" && entry.path().is_dir())
+        })
+        .unwrap_or(false)
+}
+
+/// `--upload-only` branch of `dispatch_async` (ADR-0090): resumes uploading
+/// an already-completed local pull-transform run, skipping the bucket
+/// listing/download/classify/recode/placement phases -- and the source
+/// bucket credentials and `ffmpeg`/`ffprobe` check they'd otherwise need --
+/// entirely.
+async fn dispatch_upload_only(
+    local_output: Option<PathBuf>,
+    remote_output: Option<String>,
+    encryption_key: Option<String>,
+    concurrency: Option<usize>,
+    yes: bool,
+    keyring_store: &Store,
+) -> i32 {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+
+    if !upload_only_preflight_ok(&local_output) {
+        return fail(format!(
+            "no completed pull-transform run found under {}; run without --upload-only first",
+            local_output.display()
+        ));
+    }
+
+    let remote_alias = match (UploadTargetInput {
+        flag: remote_output,
+        store: keyring_store,
+    })
+    .resolve()
+    {
+        Ok(Some(alias)) => alias,
+        Ok(None) => return fail("--remote-output is required with --upload-only"),
+        Err(err) => return fail(err),
+    };
+    let remote_bucket_config = match keyring_store
+        .bucket_configs()
+        .find(|bucket_config| bucket_config.alias == remote_alias)
+    {
+        Some(bucket_config) => bucket_config.clone(),
+        None => return fail(format!("no bucket-config named '{remote_alias}'")),
+    };
+    let remote_secret = match credentials::get_secret(&remote_bucket_config.alias) {
+        Ok(secret) => secret,
+        Err(err) => return fail(err),
+    };
+
+    let resolved_encryption_key_alias = match (EncryptionKeyInput {
+        flag: encryption_key,
+        store: keyring_store,
+        uploading: true,
+        bucket_default: remote_bucket_config.encryption_key_alias.clone(),
+    })
+    .resolve()
+    {
+        Ok(alias) => alias,
+        Err(err) => return fail(err),
+    };
+    let encryptor = match resolved_encryption_key_alias {
+        Some(alias) => {
+            let key_hex = match credentials::get_secret(&alias) {
+                Ok(secret) => secret,
+                Err(err) => return fail(err),
+            };
+            match Aes256GcmSivEncryptor::from_hex_key(&key_hex) {
+                Ok(encryptor) => Some(encryptor),
+                Err(err) => return fail(err),
+            }
+        }
+        None => None,
+    };
+
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    match (ConfirmInput { yes }).resolve() {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("Cancelled.");
+            return 0;
+        }
+        Err(err) => return fail(err),
+    }
+
+    match worker::run_upload_only(
+        &local_output,
+        (&remote_bucket_config, &remote_secret),
+        encryptor.as_ref(),
+        concurrency,
+    )
+    .await
+    {
+        Ok(summary) => {
+            println!(
+                "Uploaded {} file(s), {} unchanged, {} upload failed.",
+                summary.uploaded, summary.unchanged, summary.upload_failed
+            );
+            if summary.upload_failed > 0 {
+                FAILURE_EXIT_CODE
+            } else {
+                0
+            }
+        }
+        Err(err) => fail(err),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_only_preflight_fails_without_a_processed_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("jpg")).unwrap();
+
+        assert!(!upload_only_preflight_ok(dir.path()));
+    }
+
+    #[test]
+    fn upload_only_preflight_fails_with_no_placed_content_subdirectory() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(PROCESSED_FILE_NAME), b"a.jpg\n").unwrap();
+        fs::create_dir_all(dir.path().join(".staging")).unwrap();
+
+        assert!(!upload_only_preflight_ok(dir.path()));
+    }
+
+    #[test]
+    fn upload_only_preflight_passes_for_a_completed_run() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(PROCESSED_FILE_NAME), b"a.jpg\n").unwrap();
+        fs::create_dir_all(dir.path().join(".staging")).unwrap();
+        fs::create_dir_all(dir.path().join("jpg")).unwrap();
+
+        assert!(upload_only_preflight_ok(dir.path()));
+    }
 
     #[test]
     fn default_local_output_is_under_the_os_temp_dir() {

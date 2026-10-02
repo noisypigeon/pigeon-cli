@@ -154,6 +154,49 @@ impl WizardInput for ConcurrencyInput {
     }
 }
 
+/// The machine's available core count, or `4` if it can't be determined --
+/// shared by every job whose per-item work is CPU-bound (hashing,
+/// decompression, decryption) rather than I/O-bound, where
+/// `ConcurrencyInput`'s flat `4` (tuned for IMAP/S3-bound jobs) is the
+/// wrong default. Originated in `dedupe/wizard.rs` (ADR-0088); hoisted here
+/// once `pull-transform` and `decrypt-files` needed the identical logic
+/// (ADR-0090, this codebase's usual "duplicate until the third consumer"
+/// precedent).
+pub(crate) fn default_concurrency() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+}
+
+/// `ConcurrencyInput`'s CPU-bound-job counterpart: identical shape, just a
+/// cores-based interactive default via `default_concurrency()` instead of a
+/// flat `4`. `--concurrency <N>` and the non-interactive fallback are
+/// unchanged (ADR-0088/ADR-0090).
+pub(crate) struct CpuConcurrencyInput {
+    pub flag: Option<usize>,
+}
+
+impl WizardInput for CpuConcurrencyInput {
+    type Value = usize;
+
+    fn flag_value(&self) -> Option<Result<usize, String>> {
+        self.flag.map(|value| Ok(value.max(1)))
+    }
+
+    fn prompt(&self) -> Result<usize, String> {
+        let value = Input::<usize>::new()
+            .with_prompt("Concurrency")
+            .default(default_concurrency())
+            .interact_text()
+            .map_err(|err| format!("failed to read concurrency: {err}"))?;
+        Ok(value.max(1))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<usize, String> {
+        Err("--concurrency is required when not running interactively".to_string())
+    }
+}
+
 /// The final "proceed?" gate, identical across every job: `--yes` skips it
 /// outright; otherwise prompts on a TTY, and errors outside one (there's no
 /// sane way to read a yes/no answer from a pipe without an established
@@ -183,5 +226,27 @@ impl WizardInput for ConfirmInput {
             "confirmation is required when not running interactively (pass --yes to skip)"
                 .to_string(),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_concurrency_is_at_least_one() {
+        assert!(default_concurrency() >= 1);
+    }
+
+    #[test]
+    fn cpu_concurrency_input_flag_value_overrides_the_default() {
+        let input = CpuConcurrencyInput { flag: Some(7) };
+        assert_eq!(input.flag_value(), Some(Ok(7)));
+    }
+
+    #[test]
+    fn cpu_concurrency_input_requires_a_flag_when_not_interactive() {
+        let input = CpuConcurrencyInput { flag: None };
+        assert!(input.non_interactive_fallback().is_err());
     }
 }

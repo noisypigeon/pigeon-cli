@@ -45,6 +45,26 @@ pub(crate) fn collect_decrypt_tasks(
     Ok(tasks)
 }
 
+/// Reads, decrypts, and writes one file synchronously -- the actual work
+/// `decrypt_one` hands to `tokio::task::spawn_blocking` (ADR-0090, same
+/// precedent as ADR-0088's `sha256_file`/`archive::expand_to_dir` wraps):
+/// CPU-bound AES-256-GCM-SIV decryption plus disk I/O, so it shouldn't tie
+/// up one of the runtime's own async worker threads for its duration.
+fn decrypt_one_blocking(
+    task: &DecryptTask,
+    encryptor: &Aes256GcmSivEncryptor,
+) -> Result<(), String> {
+    let data = fs::read(&task.input_path)
+        .map_err(|err| format!("failed to read {}: {err}", task.input_path.display()))?;
+    let plaintext = encryptor.decrypt(&data)?;
+    if let Some(parent) = task.output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&task.output_path, plaintext)
+        .map_err(|err| format!("failed to write {}: {err}", task.output_path.display()))
+}
+
 /// Reads, decrypts, and writes one file. `false` on any failure (bad key,
 /// truncated, tampered ciphertext) -- warned about via
 /// `multi_progress.println`, never fatal to the whole run.
@@ -54,18 +74,13 @@ async fn decrypt_one(
     bar: &ProgressBar,
     multi_progress: &MultiProgress,
 ) -> bool {
-    let outcome = async {
-        let data = fs::read(&task.input_path)
-            .map_err(|err| format!("failed to read {}: {err}", task.input_path.display()))?;
-        let plaintext = encryptor.decrypt(&data)?;
-        if let Some(parent) = task.output_path.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-        }
-        fs::write(&task.output_path, plaintext)
-            .map_err(|err| format!("failed to write {}: {err}", task.output_path.display()))
-    }
-    .await;
+    let input_path = task.input_path.clone();
+    let encryptor = encryptor.clone();
+    let outcome =
+        match tokio::task::spawn_blocking(move || decrypt_one_blocking(&task, &encryptor)).await {
+            Ok(result) => result,
+            Err(err) => Err(format!("decrypt task panicked: {err}")),
+        };
 
     bar.inc(1);
     match outcome {
@@ -73,7 +88,7 @@ async fn decrypt_one(
         Err(err) => {
             let _ = multi_progress.println(format!(
                 "Warning: failed to decrypt {}: {err}",
-                task.input_path.display()
+                input_path.display()
             ));
             false
         }
