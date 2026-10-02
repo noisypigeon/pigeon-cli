@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Updates the transitive `yoke-derive` dependency 0.8.3 → 0.8.4 (pulled in via `idna`/ICU4X through `url`, itself depended on by `async-native-tls`/`minio`) — 0.8.3 was yanked from crates.io with no reason given; `cargo update -p yoke-derive` confirmed an isolated bump with no other package changes.
+
 ## [0.3.0] - 2026-10-02
 
 - ADR-0090: generalizes ADR-0088/0089's dedupe-only fixes to the rest of the job types per a per-job audit (not uniformly): `pull-transform`/`decrypt-files` get the CPU-aware `CpuConcurrencyInput` default and `spawn_blocking`-wrapped CPU-bound calls; `pull-transform`/`sort` get their in-memory dedup/placement state scoped to drop before the upload phase; `pull-transform`, `sort`, `email-sync`, and `email-pull` all gain `--upload-only` (the email jobs' version is per-identity, skipping an incomplete identity with a warning rather than failing the whole command); `sort`/`email-sync`/`email-pull`'s concurrency defaults are deliberately left untouched. Flags (without fixing) a pre-existing bug in `pull-transform`'s upload walk sweeping up its own bookkeeping dotfiles, filed as [#7](https://github.com/noisypigeon/pigeon-cli/issues/7) ([#8](https://github.com/noisypigeon/pigeon-cli/pull/8)).
