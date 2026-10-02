@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-02
+
 - Updates the transitive `yoke-derive` dependency 0.8.3 → 0.8.4 (pulled in via `idna`/ICU4X through `url`, itself depended on by `async-native-tls`/`minio`) — 0.8.3 was yanked from crates.io with no reason given; `cargo update -p yoke-derive` confirmed an isolated bump with no other package changes.
 
 ## [0.3.0] - 2026-10-02
