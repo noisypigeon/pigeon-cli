@@ -224,6 +224,7 @@ async fn upload_one(
 ) -> UploadOutcomeKind {
     let bytes_for_log = fs::metadata(&task.path).map(|meta| meta.len()).unwrap_or(0);
     tracing::info!(file = %task.path.display(), bytes = bytes_for_log, "upload started");
+    let upload_started = std::time::Instant::now();
 
     let outcome = async {
         // No encryptor: hand the client a bare path (ADR-0089) -- it streams
@@ -255,11 +256,14 @@ async fn upload_one(
         .await
     }
     .await;
+    metrics::histogram!("pigeon_upload_duration_seconds")
+        .record(upload_started.elapsed().as_secs_f64());
 
     bar.inc(1);
     match outcome {
         Ok(client::UploadOutcome::Uploaded) => {
             let _ = commit_uploaded(uploaded_indexes, &task);
+            metrics::counter!("pigeon_upload_bytes_total").increment(bytes_for_log);
             UploadOutcomeKind::Uploaded
         }
         Ok(client::UploadOutcome::Unchanged) => {
@@ -278,6 +282,7 @@ async fn upload_one(
                 "Warning: upload failed for {}: {err}",
                 task.path.display()
             ));
+            metrics::counter!("pigeon_upload_failures_total").increment(1);
             UploadOutcomeKind::Failed
         }
     }

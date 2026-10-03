@@ -475,6 +475,14 @@ async fn dispatch_async(
                 "Attachments: {} estimated pre-run, {} actually staged.",
                 estimated_pending_attachments, summary.attachments_staged
             );
+            crate::observability::metrics::record_job_summary(
+                "email-sync",
+                summary.synced as u64,
+                summary.failed as u64,
+                summary.uploaded as u64,
+                summary.unchanged as u64,
+                summary.upload_failed as u64,
+            );
             // A worker absorbing a connect/fetch failure into `failed`
             // (ADR-0021 §6 addendum) lets the run complete and checkpoint
             // everything that succeeded, but that must still be visible to

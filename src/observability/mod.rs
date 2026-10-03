@@ -1,3 +1,4 @@
+pub mod metrics;
 pub(crate) mod panic;
 pub(crate) mod resources;
 
@@ -112,11 +113,17 @@ pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i
     let _guard = span.enter();
     let start = std::time::Instant::now();
     let exit_code = f();
+    let elapsed = start.elapsed();
     tracing::info!(
         exit_code,
-        elapsed_ms = start.elapsed().as_millis() as u64,
+        elapsed_ms = elapsed.as_millis() as u64,
         "command finished"
     );
+    let status = if exit_code == 0 { "success" } else { "failure" };
+    ::metrics::histogram!("pigeon_command_duration_seconds", "command" => command_name)
+        .record(elapsed.as_secs_f64());
+    ::metrics::counter!("pigeon_command_runs_total", "command" => command_name, "status" => status)
+        .increment(1);
     exit_code
 }
 

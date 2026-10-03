@@ -42,6 +42,8 @@ keyring = "4.2.0"
 lopdf = "0.45.0"
 mail-parser = "0.11.9"
 md5 = "0.8.1"
+metrics = "0.24.6"
+metrics-exporter-prometheus = "0.18.3"
 minio = "0.4.0"
 quick-xml = "0.42.0"
 serde = { version = "1.0.229", features = ["derive"] }

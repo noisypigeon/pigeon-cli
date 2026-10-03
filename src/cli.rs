@@ -23,6 +23,16 @@ pub struct Cli {
     /// directory for `pigeon` if that isn't set either (ADR-0073).
     #[arg(long, global = true)]
     pub log_file: Option<PathBuf>,
+
+    /// Port for the local Prometheus metrics endpoint an on-host
+    /// observability agent (e.g. Grafana Alloy) can scrape (ADR-0092).
+    /// Defaults to $PIGEON_METRICS_PORT, or 9091 if that isn't set either.
+    #[arg(long, global = true)]
+    pub metrics_port: Option<u16>,
+
+    /// Disables the local Prometheus metrics endpoint entirely (ADR-0092).
+    #[arg(long, global = true)]
+    pub no_metrics: bool,
 }
 
 #[derive(Subcommand, Debug)]
