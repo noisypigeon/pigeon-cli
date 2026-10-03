@@ -76,6 +76,10 @@ pub(crate) struct UploadTask {
     staging_dir: PathBuf,
     path: PathBuf,
     key: String,
+    /// Which job this task belongs to (e.g. "sort", "dedupe") -- a static
+    /// job-type name, not a per-caller label like `label` above. Used only
+    /// to tag metrics (ADR-0093) with `pigeon_job`.
+    job: &'static str,
 }
 
 /// Tracks which output files (by their S3 key, per `upload_key`) have
@@ -159,6 +163,7 @@ pub(crate) struct UploadSummary {
 /// under its output root); for a single flat tree like `pull_transform`'s
 /// they're the same directory.
 pub(crate) fn pending_upload_tasks(
+    job: &'static str,
     label: &str,
     staging_dir: &Path,
     walk_dir: &Path,
@@ -175,6 +180,7 @@ pub(crate) fn pending_upload_tasks(
                 staging_dir: staging_dir.to_path_buf(),
                 path,
                 key,
+                job,
             });
         }
     }
@@ -223,7 +229,10 @@ async fn upload_one(
     multi_progress: &MultiProgress,
 ) -> UploadOutcomeKind {
     let bytes_for_log = fs::metadata(&task.path).map(|meta| meta.len()).unwrap_or(0);
-    tracing::info!(file = %task.path.display(), bytes = bytes_for_log, "upload started");
+    // Metrics only, no log line (ADR-0093) -- "upload started" carried no
+    // error/context beyond file/bytes, the same telemetry-not-diagnostic
+    // shape as the resource sampler's old log line.
+    metrics::counter!("pigeon_upload_attempts_total", "pigeon_job" => task.job).increment(1);
     let upload_started = std::time::Instant::now();
 
     let outcome = async {
@@ -256,18 +265,23 @@ async fn upload_one(
         .await
     }
     .await;
-    metrics::histogram!("pigeon_upload_duration_seconds")
+    metrics::histogram!("pigeon_upload_duration_seconds", "pigeon_job" => task.job)
         .record(upload_started.elapsed().as_secs_f64());
 
     bar.inc(1);
     match outcome {
         Ok(client::UploadOutcome::Uploaded) => {
             let _ = commit_uploaded(uploaded_indexes, &task);
-            metrics::counter!("pigeon_upload_bytes_total").increment(bytes_for_log);
+            metrics::counter!("pigeon_upload_bytes_total", "pigeon_job" => task.job)
+                .increment(bytes_for_log);
+            metrics::counter!("pigeon_upload_outcomes_total", "pigeon_job" => task.job, "outcome" => "uploaded")
+                .increment(1);
             UploadOutcomeKind::Uploaded
         }
         Ok(client::UploadOutcome::Unchanged) => {
             let _ = commit_uploaded(uploaded_indexes, &task);
+            metrics::counter!("pigeon_upload_outcomes_total", "pigeon_job" => task.job, "outcome" => "unchanged")
+                .increment(1);
             UploadOutcomeKind::Unchanged
         }
         Err(err) => {
@@ -282,7 +296,8 @@ async fn upload_one(
                 "Warning: upload failed for {}: {err}",
                 task.path.display()
             ));
-            metrics::counter!("pigeon_upload_failures_total").increment(1);
+            metrics::counter!("pigeon_upload_outcomes_total", "pigeon_job" => task.job, "outcome" => "failed")
+                .increment(1);
             UploadOutcomeKind::Failed
         }
     }
@@ -308,6 +323,12 @@ pub(crate) async fn run_upload_phase(
     if tasks.is_empty() {
         return UploadSummary::default();
     }
+    // Every task in one call always shares the same job (ADR-0093) -- this
+    // is the single choke point all 5 jobs' upload phases funnel through,
+    // so it's the one place that needs to mark the local-work-to-uploading
+    // transition, rather than each of their 7 call sites doing it
+    // separately.
+    crate::observability::metrics::set_macro_phase(tasks[0].job, true);
     let bar = sink::new_progress_bar("upload".to_string(), tasks.len() as u64, multi_progress);
 
     let summary = stream::iter(tasks)
@@ -393,6 +414,7 @@ mod tests {
         .unwrap();
 
         let (tasks, index) = pending_upload_tasks(
+            "dedupe",
             "dedupe-alias",
             staging.path(),
             result_dir.path(),
@@ -418,9 +440,15 @@ mod tests {
         fs::write(identity_dir.join("a.md"), b"a").unwrap();
         fs::write(identity_dir.join("b.md"), b"b").unwrap();
 
-        let (tasks, index) =
-            pending_upload_tasks("alias", staging.path(), &identity_dir, output.path(), false)
-                .unwrap();
+        let (tasks, index) = pending_upload_tasks(
+            "test-job",
+            "alias",
+            staging.path(),
+            &identity_dir,
+            output.path(),
+            false,
+        )
+        .unwrap();
 
         let mut keys: Vec<String> = tasks.iter().map(|task| task.key.clone()).collect();
         keys.sort();
@@ -447,9 +475,15 @@ mod tests {
         )
         .unwrap();
 
-        let (tasks, index) =
-            pending_upload_tasks("alias", staging.path(), &identity_dir, output.path(), false)
-                .unwrap();
+        let (tasks, index) = pending_upload_tasks(
+            "test-job",
+            "alias",
+            staging.path(),
+            &identity_dir,
+            output.path(),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(tasks.len(), 1);
         assert_eq!(
@@ -482,9 +516,15 @@ mod tests {
         fs::create_dir_all(&identity_dir).unwrap();
         fs::write(identity_dir.join("a.md"), b"a").unwrap();
 
-        let (tasks, _index) =
-            pending_upload_tasks("alias", staging.path(), &identity_dir, output.path(), true)
-                .unwrap();
+        let (tasks, _index) = pending_upload_tasks(
+            "test-job",
+            "alias",
+            staging.path(),
+            &identity_dir,
+            output.path(),
+            true,
+        )
+        .unwrap();
 
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].key, "alias-out/a.md.enc");

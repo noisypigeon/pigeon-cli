@@ -109,7 +109,15 @@ pub fn install_panic_hook() {
 }
 
 pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i32) -> i32 {
-    let span = tracing::info_span!("command", command = command_name);
+    // Resolved once per process; `sysinfo` is already a dependency (used by
+    // `resources::ResourceSampler`), so no new crate is needed for this.
+    // Every event in this run inherits both fields via `spans[]` (ADR-0093)
+    // -- "what job" (`command`) and "what instance" (`instance`), closing
+    // the gap a shared, multi-instance Cockpit store otherwise has no way
+    // to disambiguate on the logs side (Prometheus's scrape-level `job`/
+    // `instance` labels have no log-side equivalent).
+    let instance = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
+    let span = tracing::info_span!("command", command = command_name, instance = %instance);
     let _guard = span.enter();
     let start = std::time::Instant::now();
     let exit_code = f();

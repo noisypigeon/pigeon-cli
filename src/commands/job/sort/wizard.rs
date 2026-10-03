@@ -320,14 +320,6 @@ async fn dispatch_async(
                 summary.unchanged,
                 summary.upload_failed
             );
-            crate::observability::metrics::record_job_summary(
-                "sort",
-                summary.placed as u64,
-                summary.failed as u64,
-                summary.uploaded as u64,
-                summary.unchanged as u64,
-                summary.upload_failed as u64,
-            );
             if summary.failed > 0 || summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {

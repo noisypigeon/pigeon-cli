@@ -375,14 +375,6 @@ async fn dispatch_async(
                 "Attachments: {} estimated pre-run, {} actually staged.",
                 estimated_pending_attachments, summary.attachments_staged
             );
-            crate::observability::metrics::record_job_summary(
-                "email-pull",
-                summary.synced as u64,
-                summary.failed as u64,
-                summary.uploaded as u64,
-                summary.unchanged as u64,
-                summary.upload_failed as u64,
-            );
             if summary.failed > 0 || summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {

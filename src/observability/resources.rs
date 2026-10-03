@@ -27,19 +27,14 @@ impl ResourceSampler {
                     continue;
                 };
                 let disk = process.disk_usage();
-                tracing::info!(
-                    kind = "resource_sample",
-                    cpu_percent = process.cpu_usage(),
-                    mem_bytes = process.memory(),
-                    disk_read_bytes = disk.total_read_bytes,
-                    disk_written_bytes = disk.total_written_bytes,
-                    "resource sample"
-                );
-                // Same values as a Prometheus gauge/counter pair (ADR-0092),
-                // for an on-host agent to scrape -- `total_*_bytes` are
-                // already cumulative-since-process-start per `sysinfo`, so
-                // `.absolute()` (not `.increment()`) keeps the counter
-                // monotonic without double-counting between samples.
+                // Metrics only, no log line (ADR-0093) -- a periodic
+                // measurement isn't a diagnosis, and this fired every 5s for
+                // a run's whole lifetime, drowning out genuine error/failure
+                // logs for no benefit once a real Prometheus scrape exists.
+                // `total_*_bytes` are already cumulative-since-process-start
+                // per `sysinfo`, so `.absolute()` (not `.increment()`) keeps
+                // the counter monotonic without double-counting between
+                // samples.
                 metrics::gauge!("pigeon_resource_cpu_percent").set(process.cpu_usage() as f64);
                 metrics::gauge!("pigeon_resource_mem_bytes").set(process.memory() as f64);
                 metrics::counter!("pigeon_resource_disk_read_bytes_total")

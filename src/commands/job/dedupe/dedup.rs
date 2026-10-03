@@ -47,6 +47,7 @@ pub(crate) struct MergeRecord {
 pub(crate) struct PlacementSummary {
     pub placed: usize,
     pub duplicates_skipped: usize,
+    pub failed: usize,
 }
 
 /// Places every entry in `files` under `result_dir/<extension>/`,
@@ -93,9 +94,12 @@ pub(crate) fn place_and_report(
                         error = %err,
                         "failed to place file"
                     );
+                    summary.failed += 1;
+                    crate::observability::metrics::record_phase("dedupe", "placement", "failed");
                     continue;
                 }
                 summary.placed += 1;
+                crate::observability::metrics::record_phase("dedupe", "placement", "ok");
                 finished_keys.push(file.original_key);
             }
         }

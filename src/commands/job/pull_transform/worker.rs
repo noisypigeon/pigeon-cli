@@ -500,6 +500,7 @@ async fn process_item(
                     category: FailureCategory::Download,
                 };
             }
+            crate::observability::metrics::record_phase("pull-transform", "download", "ok");
             raw_path
         }
     };
@@ -647,6 +648,7 @@ pub(crate) async fn run_pull_transform_job(
     expand_zip_keys: HashSet<String>,
     transcode_targets: TranscodeTargets,
 ) -> Result<PullTransformSummary, String> {
+    crate::observability::metrics::set_macro_phase("pull-transform", false);
     // Everything downloaded/extracted lands here first (ADR-0076); a file
     // only leaves this directory once it's either renamed into
     // `scratch_dir` as final output or deleted (a consumed zip, a
@@ -746,6 +748,11 @@ pub(crate) async fn run_pull_transform_job(
                         depth,
                         members,
                     } => {
+                        crate::observability::metrics::record_phase(
+                            "pull-transform",
+                            "archive",
+                            "ok",
+                        );
                         bar.inc_length(members.len() as u64);
                         queue.lock().unwrap().extend(members);
                         if depth == 0 {
@@ -754,6 +761,11 @@ pub(crate) async fn run_pull_transform_job(
                     }
                     ItemOutcome::Skipped => {
                         skipped_type_count.fetch_add(1, Ordering::SeqCst);
+                        crate::observability::metrics::record_phase(
+                            "pull-transform",
+                            "classify",
+                            "skipped_type",
+                        );
                     }
                     ItemOutcome::Processed {
                         depth,
@@ -767,21 +779,56 @@ pub(crate) async fn run_pull_transform_job(
                                 .unwrap()
                                 .push(file.original_key.clone());
                         }
+                        // `FailureBreakdown.recode` is deliberately never
+                        // incremented anywhere (ADR-0093) -- a failed recode
+                        // falls back to the original file rather than
+                        // failing the item, so "recoded" vs "fallback" are
+                        // this phase's real outcomes, not a success/failure
+                        // binary.
                         if recoded {
                             recoded_count.fetch_add(1, Ordering::SeqCst);
+                            crate::observability::metrics::record_phase(
+                                "pull-transform",
+                                "recode",
+                                "recoded",
+                            );
                         }
                         if fell_back_to_original {
                             fallback_count.fetch_add(1, Ordering::SeqCst);
+                            crate::observability::metrics::record_phase(
+                                "pull-transform",
+                                "recode",
+                                "fallback",
+                            );
                         }
                         processed_files.lock().unwrap().push(file);
+                        crate::observability::metrics::record_phase(
+                            "pull-transform",
+                            "classify",
+                            "ok",
+                        );
                     }
                     ItemOutcome::Failed { category, .. } => {
                         let mut breakdown = failure_breakdown.lock().unwrap();
-                        match category {
-                            FailureCategory::Download => breakdown.download += 1,
-                            FailureCategory::Archive => breakdown.archive += 1,
-                            FailureCategory::Classify => breakdown.classify += 1,
-                        }
+                        let phase = match category {
+                            FailureCategory::Download => {
+                                breakdown.download += 1;
+                                "download"
+                            }
+                            FailureCategory::Archive => {
+                                breakdown.archive += 1;
+                                "archive"
+                            }
+                            FailureCategory::Classify => {
+                                breakdown.classify += 1;
+                                "classify"
+                            }
+                        };
+                        crate::observability::metrics::record_phase(
+                            "pull-transform",
+                            phase,
+                            "failed",
+                        );
                     }
                 }
 
@@ -902,6 +949,7 @@ async fn upload_result(
 ) -> Result<upload::UploadSummary, String> {
     let (remote_bucket, remote_secret) = remote;
     let (tasks, uploaded_index) = upload::pending_upload_tasks(
+        "pull-transform",
         label,
         local_output,
         local_output,
