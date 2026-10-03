@@ -176,7 +176,7 @@ let it go stale silently.
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
 `job.email-sync`, `job.pull-transform`, `job.decrypt-files`, `job.dedupe`,
-`job.sort`, `job.email-pull`, `keyring.add`, `keyring.modify`,
+`job.email-pull`, `keyring.add`, `keyring.modify`,
 `keyring.delete`, `keyring.list`.
 
 **Keyring commands emit no per-operation tracing at all** -- only the two
@@ -201,7 +201,6 @@ the user for the terminal output instead.
   failure mode -- check whether `--upload-only` (resumes uploading an
   already-completed local run without repeating download/hash/placement)
   is available on the installed version before suggesting a full rerun.
-- `sort`: `download`, `place` (also `upload`).
 
 **`pigeon_upload_attempts_total` metric** (`upload.rs::upload_one`,
 ADR-0093, replaces the old `"upload started"` log event removed in the
@@ -235,9 +234,6 @@ hasn't already pasted it):
   prints `"Uploaded {uploaded} file(s), {unchanged} unchanged,
   {upload_failed} upload failed."` (no `processed`/`failed`/dedup counts --
   it never re-touches download/hash/placement, ADR-0089).
-- `sort`: `"Placed {placed} file(s), {failed} failed ({download} download,
-  {placement} placement), {uploaded} uploaded, {unchanged} unchanged,
-  {upload_failed} upload failed."`
 
 Every job above: a nonzero `failed`/`upload_failed` means the process
 exited with `FAILURE_EXIT_CODE`, not `0`.

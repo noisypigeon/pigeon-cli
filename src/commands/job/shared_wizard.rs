@@ -2,10 +2,9 @@
 //! Extracted once a second/third job needed the exact same prompt, not
 //! written generically up front -- `email_sync::wizard` originated
 //! `UploadTargetInput`/`EncryptionKeyInput`; `decrypt_files::wizard`
-//! originated this `ConcurrencyInput`/`ConfirmInput` pair. Each job keeps
-//! any wizard input that's genuinely its own (e.g. `email_sync`'s own
-//! `ConcurrencyInput`, which prints a message-count time estimate no other
-//! job has data for).
+//! originated `ConfirmInput`. Each job keeps any wizard input that's
+//! genuinely its own (e.g. `email_sync`'s own `ConcurrencyInput`, which
+//! prints a message-count time estimate no other job has data for).
 
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
@@ -125,53 +124,23 @@ impl WizardInput for EncryptionKeyInput<'_> {
     }
 }
 
-/// Resolves a plain concurrency value with no time-estimate table
-/// (originally `decrypt_files`'s `ConcurrencyInput`) -- `email_sync` keeps
-/// its own version that prints a message-count-based estimate, since no
-/// other job has comparable throughput data to estimate from (ADR-0021 §9).
-pub(crate) struct ConcurrencyInput {
-    pub flag: Option<usize>,
-}
-
-impl WizardInput for ConcurrencyInput {
-    type Value = usize;
-
-    fn flag_value(&self) -> Option<Result<usize, String>> {
-        self.flag.map(|value| Ok(value.max(1)))
-    }
-
-    fn prompt(&self) -> Result<usize, String> {
-        let value = Input::<usize>::new()
-            .with_prompt("Concurrency")
-            .default(4)
-            .interact_text()
-            .map_err(|err| format!("failed to read concurrency: {err}"))?;
-        Ok(value.max(1))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Err("--concurrency is required when not running interactively".to_string())
-    }
-}
-
 /// The machine's available core count, or `4` if it can't be determined --
 /// shared by every job whose per-item work is CPU-bound (hashing,
-/// decompression, decryption) rather than I/O-bound, where
-/// `ConcurrencyInput`'s flat `4` (tuned for IMAP/S3-bound jobs) is the
-/// wrong default. Originated in `dedupe/wizard.rs` (ADR-0088); hoisted here
-/// once `pull-transform` and `decrypt-files` needed the identical logic
-/// (ADR-0090, this codebase's usual "duplicate until the third consumer"
-/// precedent).
+/// decompression, decryption) rather than I/O-bound, where a flat `4`
+/// (tuned for IMAP/S3-bound jobs) is the wrong default. Originated in
+/// `dedupe/wizard.rs` (ADR-0088); hoisted here once `pull-transform` and
+/// `decrypt-files` needed the identical logic (ADR-0090, this codebase's
+/// usual "duplicate until the third consumer" precedent).
 pub(crate) fn default_concurrency() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
 }
 
-/// `ConcurrencyInput`'s CPU-bound-job counterpart: identical shape, just a
-/// cores-based interactive default via `default_concurrency()` instead of a
-/// flat `4`. `--concurrency <N>` and the non-interactive fallback are
-/// unchanged (ADR-0088/ADR-0090).
+/// Resolves a plain concurrency value with no time-estimate table, with a
+/// cores-based interactive default via `default_concurrency()` for
+/// CPU-bound jobs. `--concurrency <N>` and the non-interactive fallback
+/// are unchanged (ADR-0088/ADR-0090).
 pub(crate) struct CpuConcurrencyInput {
     pub flag: Option<usize>,
 }
@@ -207,16 +176,16 @@ impl WizardInput for CpuConcurrencyInput {
 const UPLOAD_CONCURRENCY_DEFAULT: usize = 16;
 
 /// Resolves the upload phase's own concurrency, independent of whatever
-/// `ConcurrencyInput`/`CpuConcurrencyInput` resolves for a job's primary
-/// (download/hash/transform/fetch) work (ADR-0091 §3) -- the upload phase
-/// is network-RTT-bound, not CPU-bound, so tying it to core count or to a
-/// flat value tuned for IMAP is wrong in either direction. Unlike
-/// `ConcurrencyInput`'s non-interactive fallback (which errors, requiring
-/// `--concurrency`), this falls back to `UPLOAD_CONCURRENCY_DEFAULT`
-/// rather than erroring: it's a new flag being added to commands that
-/// already run unattended in scripts/cron today, and requiring it
-/// non-interactively would break every existing non-interactive
-/// invocation that predates this flag.
+/// `CpuConcurrencyInput` (or a job's own local `ConcurrencyInput`) resolves
+/// for a job's primary (download/hash/transform/fetch) work (ADR-0091 §3)
+/// -- the upload phase is network-RTT-bound, not CPU-bound, so tying it to
+/// core count or to a flat value tuned for IMAP is wrong in either
+/// direction. Unlike those non-interactive fallbacks (which error,
+/// requiring `--concurrency`), this falls back to
+/// `UPLOAD_CONCURRENCY_DEFAULT` rather than erroring: it's a new flag being
+/// added to commands that already run unattended in scripts/cron today,
+/// and requiring it non-interactively would break every existing
+/// non-interactive invocation that predates this flag.
 pub(crate) struct UploadConcurrencyInput {
     pub flag: Option<usize>,
 }
