@@ -1,5 +1,5 @@
 use crate::commands::job::cli::{JobCommands, JobType};
-use crate::commands::job::{decrypt_files, dedupe, email_pull, email_sync, pull_transform, sort};
+use crate::commands::job::{decrypt_files, dedupe, email_pull, email_sync, pull_transform};
 use crate::core::observability::Observable as _;
 
 pub fn dispatch(command: JobCommands) -> i32 {
@@ -44,23 +44,6 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     concurrency,
                     upload_concurrency,
                     max_connections_per_identity,
-                    upload_only,
-                    yes,
-                ),
-                JobType::Sort {
-                    source_bucket,
-                    local_output,
-                    remote_output,
-                    concurrency,
-                    upload_concurrency,
-                    upload_only,
-                    yes,
-                } => sort::wizard::dispatch(
-                    source_bucket,
-                    local_output,
-                    remote_output,
-                    concurrency,
-                    upload_concurrency,
                     upload_only,
                     yes,
                 ),

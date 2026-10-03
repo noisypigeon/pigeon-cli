@@ -2,7 +2,9 @@
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-30.
-- **Status**: Accepted.
+- **Status**: Reversed by ADR-0094, which removed the job entirely once
+  `dedupe`'s own placement step was confirmed to already cover its one use
+  case.
 
 ## Context
 
