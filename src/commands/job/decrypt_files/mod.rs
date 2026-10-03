@@ -27,6 +27,7 @@ impl Job for DecryptFilesJob {
         self,
         plan: Vec<DecryptTask>,
         concurrency: usize,
+        _upload_concurrency: usize,
     ) -> Result<DecryptSummary, String> {
         Ok(worker::run_decrypt_phase(plan, &self.encryptor, concurrency).await)
     }

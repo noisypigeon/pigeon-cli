@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use dialoguer::Input;
 
 use crate::commands::FAILURE_EXIT_CODE;
-use crate::commands::job::shared_wizard::{ConcurrencyInput, ConfirmInput};
+use crate::commands::job::shared_wizard::{ConcurrencyInput, ConfirmInput, UploadConcurrencyInput};
 use crate::commands::keyring::store::Store;
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
@@ -147,6 +147,7 @@ pub fn dispatch(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     upload_only: bool,
     yes: bool,
 ) -> i32 {
@@ -162,6 +163,7 @@ pub fn dispatch(
         local_output,
         remote_output,
         concurrency,
+        upload_concurrency,
         upload_only,
         yes,
     ))
@@ -172,6 +174,7 @@ async fn dispatch_async(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     upload_only: bool,
     yes: bool,
 ) -> i32 {
@@ -193,7 +196,7 @@ async fn dispatch_async(
         return dispatch_upload_only(
             local_output,
             remote_output,
-            concurrency,
+            upload_concurrency,
             yes,
             &keyring_store,
         )
@@ -280,6 +283,14 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let upload_concurrency = match (UploadConcurrencyInput {
+        flag: upload_concurrency,
+    })
+    .resolve()
+    {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -297,7 +308,7 @@ async fn dispatch_async(
         remote: (remote_bucket_config, remote_secret),
     };
 
-    match job.run(plan, concurrency).await {
+    match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
             println!(
                 "Placed {} file(s), {} failed ({} download, {} placement), {} uploaded, {} unchanged, {} upload failed.",
@@ -345,7 +356,7 @@ fn upload_only_preflight_ok(local_output: &Path) -> bool {
 async fn dispatch_upload_only(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
-    concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     yes: bool,
     keyring_store: &Store,
 ) -> i32 {
@@ -382,7 +393,11 @@ async fn dispatch_upload_only(
         Err(err) => return fail(err),
     };
 
-    let concurrency = match (ConcurrencyInput { flag: concurrency }).resolve() {
+    let upload_concurrency = match (UploadConcurrencyInput {
+        flag: upload_concurrency,
+    })
+    .resolve()
+    {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -399,7 +414,7 @@ async fn dispatch_upload_only(
     match worker::run_upload_only(
         &local_output,
         (&remote_bucket_config, &remote_secret),
-        concurrency,
+        upload_concurrency,
     )
     .await
     {

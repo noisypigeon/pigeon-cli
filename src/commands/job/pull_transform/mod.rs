@@ -55,6 +55,7 @@ impl Job for PullTransformJob {
         self,
         plan: PullTransformPlan,
         concurrency: usize,
+        upload_concurrency: usize,
     ) -> Result<PullTransformSummary, String> {
         let remote_ref = self
             .remote
@@ -66,6 +67,7 @@ impl Job for PullTransformJob {
             &self.local_output,
             plan.tasks,
             concurrency,
+            upload_concurrency,
             remote_ref,
             self.encryptor.as_ref(),
             self.allowed_extensions,

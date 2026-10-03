@@ -477,6 +477,7 @@ pub(crate) async fn run_email_pull_job(
     identities: Vec<IdentityContext>,
     pending_by_identity: Vec<Vec<crate::commands::job::email_sync::PendingMailbox>>,
     concurrency: usize,
+    upload_concurrency: usize,
     max_connections_per_identity: usize,
     remote: Option<(&BucketConfig, &str)>,
 ) -> Result<JobSummary, String> {
@@ -594,7 +595,7 @@ pub(crate) async fn run_email_pull_job(
             bucket_config,
             secret,
             None,
-            concurrency,
+            upload_concurrency,
             &multi_progress,
         )
         .await;
@@ -639,7 +640,7 @@ fn identity_upload_tasks(
 pub(crate) async fn run_upload_only(
     identities: &[IdentityContext],
     remote: (&BucketConfig, &str),
-    concurrency: usize,
+    upload_concurrency: usize,
 ) -> Result<upload::UploadSummary, String> {
     let multi_progress = MultiProgress::new();
     let (bucket_config, secret) = remote;
@@ -661,7 +662,7 @@ pub(crate) async fn run_upload_only(
         bucket_config,
         secret,
         None,
-        concurrency,
+        upload_concurrency,
         &multi_progress,
     )
     .await)

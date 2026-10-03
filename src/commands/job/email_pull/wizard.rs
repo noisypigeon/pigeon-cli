@@ -7,7 +7,7 @@ use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::email_sync::wizard::print_manifest_summary;
 use crate::commands::job::email_sync::{DEFAULT_MAX_CONNECTIONS_PER_IDENTITY, IdentityContext};
 use crate::commands::job::shared_wizard::{
-    ConcurrencyInput as SharedConcurrencyInput, ConfirmInput, UploadTargetInput,
+    ConfirmInput, UploadConcurrencyInput, UploadTargetInput,
 };
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
@@ -186,6 +186,7 @@ pub fn dispatch(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     max_connections_per_identity: Option<usize>,
     upload_only: bool,
     yes: bool,
@@ -202,6 +203,7 @@ pub fn dispatch(
         local_output,
         remote_output,
         concurrency,
+        upload_concurrency,
         max_connections_per_identity,
         upload_only,
         yes,
@@ -214,6 +216,7 @@ async fn dispatch_async(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     max_connections_per_identity: Option<usize>,
     upload_only: bool,
     yes: bool,
@@ -237,7 +240,7 @@ async fn dispatch_async(
             identities,
             local_output,
             remote_output,
-            concurrency,
+            upload_concurrency,
             yes,
             &keyring_store,
         )
@@ -334,6 +337,14 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let upload_concurrency = match (UploadConcurrencyInput {
+        flag: upload_concurrency,
+    })
+    .resolve()
+    {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -344,7 +355,7 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    match job.run(plan, concurrency).await {
+    match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
             println!(
                 "Pulled {} message(s), {} failed ({} connect, {} examine, {} batch-error, {} missing-file), {} attachment extraction warning(s), {} attachment(s) deduped, {} uploaded, {} unchanged, {} upload failed.",
@@ -398,7 +409,7 @@ async fn dispatch_upload_only(
     identities: Option<Vec<String>>,
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
-    concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     yes: bool,
     keyring_store: &Store,
 ) -> i32 {
@@ -465,10 +476,11 @@ async fn dispatch_upload_only(
         Err(err) => return fail(err),
     };
 
-    // Plain flat-4 default, not this job's own message-count-estimate
-    // `ConcurrencyInput` -- same reasoning as `email_sync::wizard`'s
-    // version (ADR-0090).
-    let concurrency = match (SharedConcurrencyInput { flag: concurrency }).resolve() {
+    let upload_concurrency = match (UploadConcurrencyInput {
+        flag: upload_concurrency,
+    })
+    .resolve()
+    {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -485,7 +497,7 @@ async fn dispatch_upload_only(
     match worker::run_upload_only(
         &ready_contexts,
         (&remote_bucket_config, &remote_secret),
-        concurrency,
+        upload_concurrency,
     )
     .await
     {

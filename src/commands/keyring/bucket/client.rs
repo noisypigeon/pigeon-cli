@@ -99,6 +99,30 @@ fn expected_etag_for_file(path: &Path) -> Result<(String, u64), String> {
     expected_etag_with_part_size(path, UPLOAD_PART_SIZE)
 }
 
+/// Whether `upload_if_changed` needs `body`'s full local hash before
+/// deciding whether to upload, or can skip straight to uploading (ADR-0091
+/// §1). Only a `Path` body's hash is expensive (a full streamed file read,
+/// on top of the read the PUT itself does) -- skipping it when there's no
+/// existing object to compare against (`existing_etag.is_none()`) is this
+/// fix's whole point. A `Bytes` body's hash is already free (`md5::compute`
+/// on a buffer that's in memory anyway for encryption), so it's always
+/// computed regardless -- skipping it would buy nothing and would need its
+/// own "hash unknown" case in the comparison below.
+fn needs_hash(existing_etag: &Option<String>, body: &UploadBody) -> bool {
+    matches!(body, UploadBody::Bytes(_)) || existing_etag.is_some()
+}
+
+/// Just `path`'s size, via a metadata-only `stat` -- no file open, no read,
+/// at all. Used in place of `expected_etag_for_file` whenever `needs_hash`
+/// says the hash itself isn't needed (ADR-0091 §1): `size` is still
+/// required afterward for the `size > UPLOAD_PART_SIZE` multipart decision,
+/// but getting it costs nothing close to what hashing the whole file would.
+fn file_size(path: &Path) -> Result<u64, String> {
+    std::fs::metadata(path)
+        .map(|meta| meta.len())
+        .map_err(|err| format!("failed to stat {}: {err}", path.display()))
+}
+
 /// `expected_etag_for_file`'s actual logic, with the part size as a
 /// parameter so a unit test can exercise the multipart branch against a
 /// tiny fixture instead of a real `UPLOAD_PART_SIZE`-plus-sized file.
@@ -299,7 +323,13 @@ pub async fn download_object_to_file(
 /// upload itself goes through `put_object_content`, which streams the file
 /// via `minio`'s own non-blocking async file reader and multipart-uploads
 /// automatically above `UPLOAD_PART_SIZE` -- no 5GB single-PUT cap, and no
-/// full-file buffer ever held in memory.
+/// full-file buffer ever held in memory. The hash is only computed when
+/// `needs_hash` says it's actually needed -- i.e. when an existing object
+/// is there to compare against -- rather than unconditionally, since
+/// there's nothing to compare it to when the key doesn't exist yet
+/// (ADR-0091 §1): that case gets only a cheap `file_size` stat instead,
+/// avoiding a second full read of every file in the common fresh-
+/// destination case.
 pub(crate) async fn upload_if_changed(
     bucket_config: &BucketConfig,
     secret_key: &str,
@@ -330,20 +360,36 @@ pub(crate) async fn upload_if_changed(
         }
     };
 
-    let (local_hash, size) = match &body {
+    let compute_hash = needs_hash(&existing_etag, &body);
+
+    let (local_hash, size): (Option<String>, u64) = match &body {
         UploadBody::Path(path) => {
             let path = path.clone();
-            tokio::task::spawn_blocking(move || expected_etag_for_file(&path))
-                .await
-                .map_err(|err| format!("hash task panicked: {err}"))??
+            if compute_hash {
+                let (hash, size) =
+                    tokio::task::spawn_blocking(move || expected_etag_for_file(&path))
+                        .await
+                        .map_err(|err| format!("hash task panicked: {err}"))??;
+                (Some(hash), size)
+            } else {
+                let size = tokio::task::spawn_blocking(move || file_size(&path))
+                    .await
+                    .map_err(|err| format!("size task panicked: {err}"))??;
+                (None, size)
+            }
         }
         UploadBody::Bytes(bytes) => (
-            format!("{:x}", md5::compute(bytes.as_ref())),
+            Some(format!("{:x}", md5::compute(bytes.as_ref()))),
             bytes.len() as u64,
         ),
     };
 
     if let Some(existing) = existing_etag {
+        // `needs_hash` returns true whenever `existing_etag.is_some()`
+        // (regardless of body variant), so `local_hash` is always `Some`
+        // here -- this documents that invariant, not a real failure path.
+        let local_hash =
+            local_hash.expect("existing_etag.is_some() implies needs_hash(...) was true");
         if existing == local_hash {
             return Ok(UploadOutcome::Unchanged);
         }
@@ -393,6 +439,43 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         file.write_all(bytes).unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn needs_hash_skips_path_bodies_when_nothing_to_compare_against() {
+        let path_body = UploadBody::Path(PathBuf::from("/does/not/matter"));
+        assert!(!needs_hash(&None, &path_body));
+        assert!(needs_hash(&Some("etag".to_string()), &path_body));
+    }
+
+    #[test]
+    fn needs_hash_always_true_for_bytes_bodies() {
+        let bytes_body = UploadBody::Bytes(Bytes::from_static(b"x"));
+        assert!(needs_hash(&None, &bytes_body));
+        assert!(needs_hash(&Some("etag".to_string()), &bytes_body));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_size_does_not_require_read_permission() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_dir, path) = write_fixture(b"some content");
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o000);
+        std::fs::set_permissions(&path, perms).unwrap();
+
+        // What hashing would require (opening the file for reading) now
+        // fails outright, unless the test process runs as root (which
+        // bypasses permission bits -- this assertion documents that
+        // assumption rather than silently passing for the wrong reason).
+        if File::open(&path).is_ok() {
+            return;
+        }
+
+        // `file_size` -- what this fix uses instead whenever there's no
+        // existing object to compare against -- never opens the file for
+        // reading, so it still succeeds.
+        assert_eq!(file_size(&path).unwrap(), 12);
     }
 
     #[test]

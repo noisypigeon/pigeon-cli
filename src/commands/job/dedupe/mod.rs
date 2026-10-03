@@ -50,7 +50,12 @@ impl Job for DedupeJob {
         .await
     }
 
-    async fn run(self, plan: DedupePlan, concurrency: usize) -> Result<DedupeSummary, String> {
+    async fn run(
+        self,
+        plan: DedupePlan,
+        concurrency: usize,
+        upload_concurrency: usize,
+    ) -> Result<DedupeSummary, String> {
         let remote_ref = self
             .remote
             .as_ref()
@@ -61,6 +66,7 @@ impl Job for DedupeJob {
             &self.local_output,
             plan.tasks,
             concurrency,
+            upload_concurrency,
             remote_ref,
         )
         .await

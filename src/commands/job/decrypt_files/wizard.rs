@@ -203,7 +203,14 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    match job.run(plan, concurrency).await {
+    match job
+        .run(
+            plan,
+            concurrency,
+            1, /* ignored -- DecryptFilesJob has no upload phase */
+        )
+        .await
+    {
         Ok(summary) => {
             println!(
                 "Decrypted {} file(s), {} failed.",
