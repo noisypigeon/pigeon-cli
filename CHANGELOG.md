@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0091: fixes three upload-phase performance problems found analyzing a real `job run dedupe` run's logs — `upload_if_changed` skips its pre-upload local hash when the destination key doesn't exist yet (was computed unconditionally, doubling disk reads for a fresh-destination run); a new size-scaled per-attempt upload timeout (60s floor + a 10 MiB/s-floor-throughput allowance) stops a stalled upload from holding a concurrency slot indefinitely (three real uploads each hung exactly 1800s with no timeout at all); and a new `--upload-concurrency` flag (default 16) decouples upload-phase parallelism from each job's unrelated `--concurrency`, generalized to all 5 upload-capable jobs (`dedupe`, `sort`, `pull-transform`, `email-sync`, `email-pull`) — including their `--upload-only` paths, where `--upload-concurrency` now fully replaces `--concurrency`'s effect ([#12](https://github.com/noisypigeon/pigeon-cli/pull/12)).
+
 ## [0.3.1] - 2026-10-02
 
 - Updates the transitive `yoke-derive` dependency 0.8.3 → 0.8.4 (pulled in via `idna`/ICU4X through `url`, itself depended on by `async-native-tls`/`minio`) — 0.8.3 was yanked from crates.io with no reason given; `cargo update -p yoke-derive` confirmed an isolated bump with no other package changes.
