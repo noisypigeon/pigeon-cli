@@ -7,7 +7,8 @@ use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 
 use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
-    ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, UploadTargetInput,
+    ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, UploadConcurrencyInput,
+    UploadTargetInput,
 };
 use crate::commands::keyring::store::Store;
 use crate::core::crypto::Aes256GcmSivEncryptor;
@@ -336,6 +337,7 @@ pub fn dispatch(
     video_format: Option<String>,
     audio_format: Option<String>,
     concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     upload_only: bool,
     yes: bool,
 ) -> i32 {
@@ -357,6 +359,7 @@ pub fn dispatch(
         video_format,
         audio_format,
         concurrency,
+        upload_concurrency,
         upload_only,
         yes,
     ))
@@ -374,6 +377,7 @@ async fn dispatch_async(
     video_format: Option<String>,
     audio_format: Option<String>,
     concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     upload_only: bool,
     yes: bool,
 ) -> i32 {
@@ -397,7 +401,7 @@ async fn dispatch_async(
             local_output,
             remote_output,
             encryption_key,
-            concurrency,
+            upload_concurrency,
             yes,
             &keyring_store,
         )
@@ -551,6 +555,14 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let upload_concurrency = match (UploadConcurrencyInput {
+        flag: upload_concurrency,
+    })
+    .resolve()
+    {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -561,7 +573,7 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    match job.run(plan, concurrency).await {
+    match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
             println!(
                 "Processed {} file(s), {} failed ({} download, {} archive, {} classify, {} placement), {} skipped (type not selected), {} duplicate(s) skipped, {} recoded, {} kept as original (recode did not verify), {} uploaded, {} unchanged, {} upload failed.",
@@ -617,7 +629,7 @@ async fn dispatch_upload_only(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     encryption_key: Option<String>,
-    concurrency: Option<usize>,
+    upload_concurrency: Option<usize>,
     yes: bool,
     keyring_store: &Store,
 ) -> i32 {
@@ -680,7 +692,11 @@ async fn dispatch_upload_only(
         None => None,
     };
 
-    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
+    let upload_concurrency = match (UploadConcurrencyInput {
+        flag: upload_concurrency,
+    })
+    .resolve()
+    {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -698,7 +714,7 @@ async fn dispatch_upload_only(
         &local_output,
         (&remote_bucket_config, &remote_secret),
         encryptor.as_ref(),
-        concurrency,
+        upload_concurrency,
     )
     .await
     {

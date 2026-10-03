@@ -192,7 +192,12 @@ impl Job for PullJob {
         })
     }
 
-    async fn run(self, plan: PullPlan, concurrency: usize) -> Result<JobSummary, String> {
+    async fn run(
+        self,
+        plan: PullPlan,
+        concurrency: usize,
+        upload_concurrency: usize,
+    ) -> Result<JobSummary, String> {
         let PullJob {
             contexts,
             remote,
@@ -205,6 +210,7 @@ impl Job for PullJob {
             contexts,
             plan.pending_by_identity,
             concurrency,
+            upload_concurrency,
             max_connections_per_identity,
             remote_ref,
         )

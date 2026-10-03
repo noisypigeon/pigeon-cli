@@ -140,6 +140,7 @@ pub(crate) async fn run_sort_job(
     local_output: &Path,
     tasks: Vec<SortTask>,
     concurrency: usize,
+    upload_concurrency: usize,
     remote: (&BucketConfig, &str),
 ) -> Result<SortSummary, String> {
     let staging_dir = local_output.join(".staging");
@@ -223,7 +224,7 @@ pub(crate) async fn run_sort_job(
         &bucket_config.alias,
         local_output,
         remote,
-        concurrency,
+        upload_concurrency,
         &multi_progress,
     )
     .await?;
@@ -247,7 +248,7 @@ async fn upload_result(
     label: &str,
     local_output: &Path,
     remote: (&BucketConfig, &str),
-    concurrency: usize,
+    upload_concurrency: usize,
     multi_progress: &MultiProgress,
 ) -> Result<upload::UploadSummary, String> {
     let staging_dir = local_output.join(".staging");
@@ -264,7 +265,7 @@ async fn upload_result(
         remote_bucket,
         remote_secret,
         None,
-        concurrency,
+        upload_concurrency,
         multi_progress,
     )
     .await)
@@ -278,11 +279,18 @@ async fn upload_result(
 pub(crate) async fn run_upload_only(
     local_output: &Path,
     remote: (&BucketConfig, &str),
-    concurrency: usize,
+    upload_concurrency: usize,
 ) -> Result<upload::UploadSummary, String> {
     let multi_progress = MultiProgress::new();
     let label = remote.0.alias.clone();
-    upload_result(&label, local_output, remote, concurrency, &multi_progress).await
+    upload_result(
+        &label,
+        local_output,
+        remote,
+        upload_concurrency,
+        &multi_progress,
+    )
+    .await
 }
 
 #[cfg(test)]

@@ -239,7 +239,12 @@ impl Job for EmailSyncJob {
         })
     }
 
-    async fn run(self, plan: EmailSyncPlan, concurrency: usize) -> Result<JobSummary, String> {
+    async fn run(
+        self,
+        plan: EmailSyncPlan,
+        concurrency: usize,
+        upload_concurrency: usize,
+    ) -> Result<JobSummary, String> {
         let EmailSyncJob {
             contexts,
             remote,
@@ -253,6 +258,7 @@ impl Job for EmailSyncJob {
             contexts,
             plan.pending_by_identity,
             concurrency,
+            upload_concurrency,
             max_connections_per_identity,
             remote_ref,
             encryptor.as_ref(),

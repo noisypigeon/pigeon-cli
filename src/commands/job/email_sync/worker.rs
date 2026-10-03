@@ -483,6 +483,7 @@ pub(crate) async fn run_email_sync_job(
     identities: Vec<IdentityContext>,
     pending_by_identity: Vec<Vec<PendingMailbox>>,
     concurrency: usize,
+    upload_concurrency: usize,
     max_connections_per_identity: usize,
     remote: Option<(&BucketConfig, &str)>,
     encryptor: Option<&Aes256GcmSivEncryptor>,
@@ -620,7 +621,7 @@ pub(crate) async fn run_email_sync_job(
             bucket_config,
             secret,
             encryptor,
-            concurrency,
+            upload_concurrency,
             &multi_progress,
         )
         .await;
@@ -666,7 +667,7 @@ pub(crate) async fn run_upload_only(
     identities: &[IdentityContext],
     remote: (&BucketConfig, &str),
     encryptor: Option<&Aes256GcmSivEncryptor>,
-    concurrency: usize,
+    upload_concurrency: usize,
 ) -> Result<upload::UploadSummary, String> {
     let multi_progress = MultiProgress::new();
     let encrypt = encryptor.is_some();
@@ -689,7 +690,7 @@ pub(crate) async fn run_upload_only(
         bucket_config,
         secret,
         encryptor,
-        concurrency,
+        upload_concurrency,
         &multi_progress,
     )
     .await)

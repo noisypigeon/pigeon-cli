@@ -24,6 +24,46 @@ use crate::core::retry::retry_with_backoff;
 const UPLOAD_RETRIES: usize = 3;
 const UPLOAD_RETRY_BACKOFF: Duration = Duration::from_secs(2);
 
+/// Floor for `upload_timeout` (ADR-0091 §2) -- comfortably above the real
+/// production run's observed upload latency (median 0.17s/file, p99
+/// 1.2s/file) but far below the 1800s (30 min) three small files were
+/// separately observed to stall for with no timeout at all: a stalled
+/// connection should free its concurrency slot and force a fresh-
+/// connection retry well before half an hour, not after it.
+const UPLOAD_TIMEOUT_FLOOR: Duration = Duration::from_secs(60);
+
+/// Conservative minimum sustained throughput assumed when sizing a timeout
+/// for a large file (ADR-0091 §2) -- deliberately pessimistic (far slower
+/// than any real S3-compatible endpoint should need) so a genuinely large,
+/// genuinely in-progress multipart upload (the real run successfully
+/// uploaded a 30.7GB file) is never mistaken for a stall.
+const UPLOAD_TIMEOUT_MIN_THROUGHPUT_BYTES_PER_SEC: u64 = 10 * 1024 * 1024;
+
+/// The per-attempt timeout for a `bytes`-sized upload (ADR-0091 §2): a
+/// fixed floor (covers the overwhelming majority of real files, which are
+/// small) plus an allowance scaled by `bytes` at a conservative assumed
+/// minimum throughput -- so a multi-GB file gets proportionally more time
+/// before being treated as stalled, without ever waiting anywhere near as
+/// long as the 1800s stall this fix targets.
+fn upload_timeout(bytes: u64) -> Duration {
+    UPLOAD_TIMEOUT_FLOOR + Duration::from_secs(bytes / UPLOAD_TIMEOUT_MIN_THROUGHPUT_BYTES_PER_SEC)
+}
+
+/// Runs `fut`, failing with a plain `String` error (the same shape every
+/// other failure in this path already uses) if it doesn't finish within
+/// `duration` -- so `retry_with_backoff` sees a timeout as just another
+/// retryable error, no special-casing needed there or in `client.rs`
+/// (ADR-0091 §2).
+async fn with_upload_timeout<T>(
+    duration: Duration,
+    fut: impl std::future::Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    match tokio::time::timeout(duration, fut).await {
+        Ok(result) => result,
+        Err(_) => Err(format!("upload timed out after {duration:?}")),
+    }
+}
+
 const UPLOADED_FILE_NAME: &str = ".uploaded";
 
 /// One file queued for upload, carrying everything the concurrent upload
@@ -205,8 +245,12 @@ async fn upload_one(
             }
             None => client::UploadBody::Path(task.path.clone()),
         };
+        let timeout_duration = upload_timeout(bytes_for_log);
         retry_with_backoff(UPLOAD_RETRIES, UPLOAD_RETRY_BACKOFF, || {
-            client::upload_if_changed(bucket_config, secret, &task.key, body.clone())
+            with_upload_timeout(
+                timeout_duration,
+                client::upload_if_changed(bucket_config, secret, &task.key, body.clone()),
+            )
         })
         .await
     }
@@ -294,6 +338,36 @@ pub(crate) async fn run_upload_phase(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upload_timeout_applies_the_floor_for_small_files() {
+        assert_eq!(upload_timeout(0), UPLOAD_TIMEOUT_FLOOR);
+        assert_eq!(upload_timeout(1024), UPLOAD_TIMEOUT_FLOOR);
+    }
+
+    #[test]
+    fn upload_timeout_scales_with_size_for_large_files() {
+        let thirty_gb = 30u64 * 1024 * 1024 * 1024;
+        let timeout = upload_timeout(thirty_gb);
+        assert!(timeout > UPLOAD_TIMEOUT_FLOOR);
+        assert!(timeout < Duration::from_secs(6 * 60 * 60));
+    }
+
+    #[tokio::test]
+    async fn with_upload_timeout_converts_a_stalled_future_into_a_string_err() {
+        let never = std::future::pending::<Result<(), String>>();
+        let result = with_upload_timeout(Duration::from_millis(10), never).await;
+        assert!(result.unwrap_err().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn with_upload_timeout_passes_through_a_fast_result_unchanged() {
+        let fast = async { Ok::<_, String>("done") };
+        assert_eq!(
+            with_upload_timeout(Duration::from_secs(10), fast).await,
+            Ok("done")
+        );
+    }
 
     #[test]
     fn pending_upload_tasks_with_a_pre_seeded_uploaded_index_matches_the_dedupe_layout() {

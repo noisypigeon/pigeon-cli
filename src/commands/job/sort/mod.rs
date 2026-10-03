@@ -47,13 +47,19 @@ impl Job for SortJob {
         .await
     }
 
-    async fn run(self, plan: SortPlan, concurrency: usize) -> Result<SortSummary, String> {
+    async fn run(
+        self,
+        plan: SortPlan,
+        concurrency: usize,
+        upload_concurrency: usize,
+    ) -> Result<SortSummary, String> {
         worker::run_sort_job(
             &self.source_bucket,
             &self.source_secret,
             &self.local_output,
             plan.tasks,
             concurrency,
+            upload_concurrency,
             (&self.remote.0, self.remote.1.as_str()),
         )
         .await

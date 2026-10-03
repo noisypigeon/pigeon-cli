@@ -640,6 +640,7 @@ pub(crate) async fn run_pull_transform_job(
     local_output: &Path,
     tasks: Vec<PullTask>,
     concurrency: usize,
+    upload_concurrency: usize,
     remote: Option<(&BucketConfig, &str)>,
     encryptor: Option<&Aes256GcmSivEncryptor>,
     allowed_extensions: HashSet<String>,
@@ -866,7 +867,7 @@ pub(crate) async fn run_pull_transform_job(
             local_output,
             (remote_bucket, remote_secret),
             encryptor,
-            concurrency,
+            upload_concurrency,
             &multi_progress,
         )
         .await?;
@@ -896,7 +897,7 @@ async fn upload_result(
     local_output: &Path,
     remote: (&BucketConfig, &str),
     encryptor: Option<&Aes256GcmSivEncryptor>,
-    concurrency: usize,
+    upload_concurrency: usize,
     multi_progress: &MultiProgress,
 ) -> Result<upload::UploadSummary, String> {
     let (remote_bucket, remote_secret) = remote;
@@ -918,7 +919,7 @@ async fn upload_result(
         remote_bucket,
         remote_secret,
         encryptor,
-        concurrency,
+        upload_concurrency,
         multi_progress,
     )
     .await)
@@ -933,7 +934,7 @@ pub(crate) async fn run_upload_only(
     local_output: &Path,
     remote: (&BucketConfig, &str),
     encryptor: Option<&Aes256GcmSivEncryptor>,
-    concurrency: usize,
+    upload_concurrency: usize,
 ) -> Result<upload::UploadSummary, String> {
     let multi_progress = MultiProgress::new();
     let label = remote.0.alias.clone();
@@ -942,7 +943,7 @@ pub(crate) async fn run_upload_only(
         local_output,
         remote,
         encryptor,
-        concurrency,
+        upload_concurrency,
         &multi_progress,
     )
     .await

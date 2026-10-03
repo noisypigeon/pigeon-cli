@@ -23,6 +23,18 @@ pub(crate) trait Job {
 
     /// Execute `plan` at the given concurrency, after the wizard's confirm
     /// step. Consumes `self` since a job's identity/credentials are only
-    /// ever run once per invocation.
-    async fn run(self, plan: Self::Plan, concurrency: usize) -> Result<Self::Summary, String>;
+    /// ever run once per invocation. `upload_concurrency` sizes this job's
+    /// upload phase independently of `concurrency` (which sizes its primary
+    /// download/hash/transform/fetch work) -- a network-round-trip-bound
+    /// phase has no principled reason to share a dial with CPU-bound or
+    /// IMAP-bound work (ADR-0091 §3). `DecryptFilesJob`, which has no
+    /// upload phase, accepts and ignores it, matching ADR-0090's "not
+    /// uniformly" precedent for a concurrency-shaped change that doesn't
+    /// apply to every implementor.
+    async fn run(
+        self,
+        plan: Self::Plan,
+        concurrency: usize,
+        upload_concurrency: usize,
+    ) -> Result<Self::Summary, String>;
 }

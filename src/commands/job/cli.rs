@@ -62,6 +62,16 @@ pub enum JobType {
         #[arg(long)]
         concurrency: Option<usize>,
 
+        /// Maximum number of files to upload concurrently, independent of
+        /// `--concurrency` (which sizes IMAP fetch/transform work) -- the
+        /// upload phase is network-round-trip-bound, not IMAP-bound, so it
+        /// benefits from its own, separately-tuned concurrency (ADR-0091).
+        /// Interactively prompted when omitted and stdin is a terminal;
+        /// defaults to 16 otherwise. With `--upload-only`, this is the only
+        /// concurrency flag that has any effect.
+        #[arg(long)]
+        upload_concurrency: Option<usize>,
+
         /// Maximum number of simultaneous IMAP connections opened to any
         /// one identity, regardless of `--concurrency` (ADR-0071) -- caps
         /// worker concurrency per-account rather than only globally, so a
@@ -157,6 +167,16 @@ pub enum JobType {
         #[arg(long)]
         concurrency: Option<usize>,
 
+        /// Maximum number of files to upload concurrently, independent of
+        /// `--concurrency` (which sizes IMAP fetch/extract work) -- the
+        /// upload phase is network-round-trip-bound, not IMAP-bound, so it
+        /// benefits from its own, separately-tuned concurrency (ADR-0091).
+        /// Interactively prompted when omitted and stdin is a terminal;
+        /// defaults to 16 otherwise. With `--upload-only`, this is the only
+        /// concurrency flag that has any effect.
+        #[arg(long)]
+        upload_concurrency: Option<usize>,
+
         /// Maximum number of simultaneous IMAP connections opened to any
         /// one identity, regardless of `--concurrency`. Defaults to 6 when
         /// omitted; not interactively prompted.
@@ -244,6 +264,16 @@ pub enum JobType {
         #[arg(long)]
         concurrency: Option<usize>,
 
+        /// Maximum number of files to upload concurrently, independent of
+        /// `--concurrency` (which sizes download/recode work) -- the upload
+        /// phase is network-round-trip-bound, not CPU-bound, so it benefits
+        /// from its own, separately-tuned concurrency (ADR-0091).
+        /// Interactively prompted when omitted and stdin is a terminal;
+        /// defaults to 16 otherwise. With `--upload-only`, this is the only
+        /// concurrency flag that has any effect.
+        #[arg(long)]
+        upload_concurrency: Option<usize>,
+
         /// Resumes uploading an already-completed local pull-transform run
         /// instead of starting a new one: skips the bucket listing/
         /// download/classify/recode/placement phases entirely (and the
@@ -293,6 +323,16 @@ pub enum JobType {
         /// Maximum number of files to download/hash concurrently.
         #[arg(long)]
         concurrency: Option<usize>,
+
+        /// Maximum number of files to upload concurrently, independent of
+        /// `--concurrency` (which sizes download/hash work) -- the upload
+        /// phase is network-round-trip-bound, not CPU-bound, so it benefits
+        /// from its own, separately-tuned concurrency (ADR-0091).
+        /// Interactively prompted when omitted and stdin is a terminal;
+        /// defaults to 16 otherwise. With `--upload-only`, this is the only
+        /// concurrency flag that has any effect.
+        #[arg(long)]
+        upload_concurrency: Option<usize>,
 
         /// Resumes uploading an already-completed local dedupe run instead
         /// of starting a new one: skips the bucket listing/download/hash/
@@ -344,6 +384,16 @@ pub enum JobType {
         /// Maximum number of files to download concurrently.
         #[arg(long)]
         concurrency: Option<usize>,
+
+        /// Maximum number of files to upload concurrently, independent of
+        /// `--concurrency` (which sizes download work) -- the upload phase
+        /// is network-round-trip-bound, so it benefits from its own,
+        /// separately-tuned concurrency (ADR-0091). Interactively prompted
+        /// when omitted and stdin is a terminal; defaults to 16 otherwise.
+        /// With `--upload-only`, this is the only concurrency flag that has
+        /// any effect.
+        #[arg(long)]
+        upload_concurrency: Option<usize>,
 
         /// Resumes uploading an already-completed local sort run instead
         /// of starting a new one: skips the bucket listing/download/

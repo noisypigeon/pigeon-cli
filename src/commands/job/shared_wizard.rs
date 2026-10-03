@@ -197,6 +197,51 @@ impl WizardInput for CpuConcurrencyInput {
     }
 }
 
+/// Flat default for `UploadConcurrencyInput` (ADR-0091 §3) -- deliberately
+/// *not* `default_concurrency()` (core count): the real production run
+/// showed the upload phase bottlenecked by per-file round-trip latency,
+/// not CPU (median 0.17s/file, p99 1.2s, only 8 uploads in flight,
+/// ~30 files/sec on small files) -- a cores-based default would be
+/// actively wrong here, the same reasoning ADR-0090 used to deliberately
+/// leave `sort`/`email-sync`/`email-pull`'s *primary* concurrency alone.
+const UPLOAD_CONCURRENCY_DEFAULT: usize = 16;
+
+/// Resolves the upload phase's own concurrency, independent of whatever
+/// `ConcurrencyInput`/`CpuConcurrencyInput` resolves for a job's primary
+/// (download/hash/transform/fetch) work (ADR-0091 §3) -- the upload phase
+/// is network-RTT-bound, not CPU-bound, so tying it to core count or to a
+/// flat value tuned for IMAP is wrong in either direction. Unlike
+/// `ConcurrencyInput`'s non-interactive fallback (which errors, requiring
+/// `--concurrency`), this falls back to `UPLOAD_CONCURRENCY_DEFAULT`
+/// rather than erroring: it's a new flag being added to commands that
+/// already run unattended in scripts/cron today, and requiring it
+/// non-interactively would break every existing non-interactive
+/// invocation that predates this flag.
+pub(crate) struct UploadConcurrencyInput {
+    pub flag: Option<usize>,
+}
+
+impl WizardInput for UploadConcurrencyInput {
+    type Value = usize;
+
+    fn flag_value(&self) -> Option<Result<usize, String>> {
+        self.flag.map(|value| Ok(value.max(1)))
+    }
+
+    fn prompt(&self) -> Result<usize, String> {
+        let value = Input::<usize>::new()
+            .with_prompt("Upload concurrency")
+            .default(UPLOAD_CONCURRENCY_DEFAULT)
+            .interact_text()
+            .map_err(|err| format!("failed to read upload concurrency: {err}"))?;
+        Ok(value.max(1))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<usize, String> {
+        Ok(UPLOAD_CONCURRENCY_DEFAULT)
+    }
+}
+
 /// The final "proceed?" gate, identical across every job: `--yes` skips it
 /// outright; otherwise prompts on a TTY, and errors outside one (there's no
 /// sane way to read a yes/no answer from a pipe without an established
@@ -248,5 +293,20 @@ mod tests {
     fn cpu_concurrency_input_requires_a_flag_when_not_interactive() {
         let input = CpuConcurrencyInput { flag: None };
         assert!(input.non_interactive_fallback().is_err());
+    }
+
+    #[test]
+    fn upload_concurrency_input_flag_value_overrides_the_default() {
+        let input = UploadConcurrencyInput { flag: Some(32) };
+        assert_eq!(input.flag_value(), Some(Ok(32)));
+    }
+
+    #[test]
+    fn upload_concurrency_input_falls_back_to_a_default_when_not_interactive() {
+        let input = UploadConcurrencyInput { flag: None };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Ok(UPLOAD_CONCURRENCY_DEFAULT)
+        );
     }
 }
