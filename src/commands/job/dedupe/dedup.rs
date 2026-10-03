@@ -50,12 +50,25 @@ pub(crate) struct PlacementSummary {
     pub failed: usize,
 }
 
+/// Whether `key`'s file name carries the source data's "no known date"
+/// sentinel (`0000-00-00-...`) rather than a real date prefix. Dedupe's
+/// keep-selection (ADR-0095) uses this to avoid preferring an undated copy
+/// over a dated one just because "0000" sorts before a real year.
+fn is_undated_key(key: &str) -> bool {
+    let name = Path::new(key)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(key);
+    name.starts_with("0000-00-00-")
+}
+
 /// Places every entry in `files` under `result_dir/<extension>/`,
 /// deduplicating by content hash and recording a `MergeRecord` for every
-/// duplicate found. Sorted by `original_key` first for reproducible
-/// placement order across re-runs, same discipline as every other
-/// single-threaded placement pass in this codebase (concurrent
-/// `unique_path` calls against a shared directory would race).
+/// duplicate found. Sorted with dated keys ahead of undated ones (ADR-0095),
+/// then by `original_key` within each group for reproducible placement
+/// order across re-runs, same discipline as every other single-threaded
+/// placement pass in this codebase (concurrent `unique_path` calls against
+/// a shared directory would race).
 ///
 /// A single file's placement failure is logged and simply omitted from the
 /// returned `finished_keys` list (retried next run), rather than aborting
@@ -66,7 +79,11 @@ pub(crate) fn place_and_report(
     dedup: &mut DedupeDedup,
     multi_progress: &MultiProgress,
 ) -> (PlacementSummary, Vec<MergeRecord>, Vec<String>) {
-    files.sort_by(|a, b| a.original_key.cmp(&b.original_key));
+    files.sort_by(|a, b| {
+        is_undated_key(&a.original_key)
+            .cmp(&is_undated_key(&b.original_key))
+            .then_with(|| a.original_key.cmp(&b.original_key))
+    });
 
     let bar = sink::new_progress_bar("place".to_string(), files.len() as u64, multi_progress);
     let mut summary = PlacementSummary::default();
@@ -230,6 +247,54 @@ mod tests {
         assert_eq!(
             fs::read_dir(result_dir.path().join("pdf")).unwrap().count(),
             1
+        );
+    }
+
+    #[test]
+    fn is_undated_key_detects_the_no_known_date_sentinel() {
+        assert!(is_undated_key("jpg/0000-00-00-image-370.jpg"));
+        assert!(!is_undated_key("2018/jpg/2018-01-02-image-12.jpg"));
+        assert!(!is_undated_key("a/report.pdf"));
+    }
+
+    #[test]
+    fn place_and_report_prefers_a_dated_key_over_an_undated_duplicate() {
+        let staging = tempfile::tempdir().unwrap();
+        let result_dir = tempfile::tempdir().unwrap();
+        let mut dedup = dedup_at(staging.path());
+
+        // "0000-00-00-..." sorts before "2018-01-02-..." lexicographically,
+        // so listing the undated file first exercises the actual fix rather
+        // than just restating it.
+        let files = vec![
+            HashedFile {
+                original_key: "jpg/0000-00-00-image-370.jpg".to_string(),
+                scratch_path: stage_scratch(staging.path(), "undated.jpg", b"same-bytes"),
+                extension: "jpg".to_string(),
+                content_hash: "same-hash".to_string(),
+            },
+            HashedFile {
+                original_key: "2018/jpg/2018-01-02-image-12.jpg".to_string(),
+                scratch_path: stage_scratch(staging.path(), "dated.jpg", b"same-bytes"),
+                extension: "jpg".to_string(),
+                content_hash: "same-hash".to_string(),
+            },
+        ];
+
+        let (summary, records, finished_keys) =
+            place_and_report(result_dir.path(), files, &mut dedup, &MultiProgress::new());
+
+        assert_eq!(summary.placed, 1);
+        assert_eq!(summary.duplicates_skipped, 1);
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].duplicate_key, "jpg/0000-00-00-image-370.jpg");
+        assert_eq!(records[0].kept_path, "jpg/2018-01-02-image-12.jpg");
+        assert_eq!(finished_keys.len(), 2);
+        assert!(
+            result_dir
+                .path()
+                .join("jpg/2018-01-02-image-12.jpg")
+                .exists()
         );
     }
 
