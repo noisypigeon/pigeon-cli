@@ -13,5 +13,8 @@ fn main() {
         }
     };
     observability::install_panic_hook();
+    if !cli.no_metrics {
+        observability::metrics::install(observability::metrics::resolve_port(cli.metrics_port));
+    }
     std::process::exit(commands::dispatch(cli.command));
 }

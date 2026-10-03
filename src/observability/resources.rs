@@ -35,6 +35,17 @@ impl ResourceSampler {
                     disk_written_bytes = disk.total_written_bytes,
                     "resource sample"
                 );
+                // Same values as a Prometheus gauge/counter pair (ADR-0092),
+                // for an on-host agent to scrape -- `total_*_bytes` are
+                // already cumulative-since-process-start per `sysinfo`, so
+                // `.absolute()` (not `.increment()`) keeps the counter
+                // monotonic without double-counting between samples.
+                metrics::gauge!("pigeon_resource_cpu_percent").set(process.cpu_usage() as f64);
+                metrics::gauge!("pigeon_resource_mem_bytes").set(process.memory() as f64);
+                metrics::counter!("pigeon_resource_disk_read_bytes_total")
+                    .absolute(disk.total_read_bytes);
+                metrics::counter!("pigeon_resource_disk_written_bytes_total")
+                    .absolute(disk.total_written_bytes);
             }
         });
         Self { handle }
