@@ -97,9 +97,13 @@ async fn download_one(
 
     bar.inc(1);
     match result {
-        Ok(file) => Some(file),
+        Ok(file) => {
+            crate::observability::metrics::record_phase("sort", "download", "ok");
+            Some(file)
+        }
         Err(err) => {
             tracing::warn!(key = %task.key, step = "download", error = %err, "download failed");
+            crate::observability::metrics::record_phase("sort", "download", "failed");
             None
         }
     }
@@ -143,6 +147,7 @@ pub(crate) async fn run_sort_job(
     upload_concurrency: usize,
     remote: (&BucketConfig, &str),
 ) -> Result<SortSummary, String> {
+    crate::observability::metrics::set_macro_phase("sort", false);
     let staging_dir = local_output.join(".staging");
     let raw_dir = staging_dir.join("raw");
     let result_dir = local_output.join("result");
@@ -201,10 +206,12 @@ pub(crate) async fn run_sort_job(
                 Ok(()) => {
                     placed += 1;
                     manifest::append_checkpoint(&staging_dir, &file.original_key)?;
+                    crate::observability::metrics::record_phase("sort", "placement", "ok");
                 }
                 Err(err) => {
                     tracing::warn!(key = %file.original_key, step = "place", error = %err, "failed to place file");
                     placement_failed += 1;
+                    crate::observability::metrics::record_phase("sort", "placement", "failed");
                 }
             }
         }
@@ -256,7 +263,7 @@ async fn upload_result(
     let (remote_bucket, remote_secret) = remote;
 
     let (upload_tasks, uploaded_index) =
-        upload::pending_upload_tasks(label, &staging_dir, &result_dir, &result_dir, false)?;
+        upload::pending_upload_tasks("sort", label, &staging_dir, &result_dir, &result_dir, false)?;
     let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
     uploaded_indexes.insert(staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
     Ok(upload::run_upload_phase(

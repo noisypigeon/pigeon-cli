@@ -57,6 +57,7 @@ pub(crate) struct FailureBreakdown {
     pub download: usize,
     pub archive: usize,
     pub hash: usize,
+    pub placement: usize,
 }
 
 impl FailureBreakdown {
@@ -64,6 +65,7 @@ impl FailureBreakdown {
         self.download += other.download;
         self.archive += other.archive;
         self.hash += other.hash;
+        self.placement += other.placement;
     }
 }
 
@@ -144,6 +146,7 @@ async fn process_item(
                     category: FailureCategory::Download,
                 };
             }
+            crate::observability::metrics::record_phase("dedupe", "download", "ok");
             raw_path
         }
     };
@@ -267,6 +270,7 @@ pub(crate) async fn run_dedupe_job(
     upload_concurrency: usize,
     remote: Option<(&BucketConfig, &str)>,
 ) -> Result<DedupeSummary, String> {
+    crate::observability::metrics::set_macro_phase("dedupe", false);
     let staging_dir = local_output.join(".staging");
     let raw_dir = staging_dir.join("raw");
     let result_dir = local_output.join("result");
@@ -343,6 +347,7 @@ pub(crate) async fn run_dedupe_job(
                         depth,
                         members,
                     } => {
+                        crate::observability::metrics::record_phase("dedupe", "archive", "ok");
                         bar.inc_length(members.len() as u64);
                         queue.lock().unwrap().extend(members);
                         if depth == 0 {
@@ -350,6 +355,7 @@ pub(crate) async fn run_dedupe_job(
                         }
                     }
                     ItemOutcome::Hashed { depth, file } => {
+                        crate::observability::metrics::record_phase("dedupe", "hash", "ok");
                         if depth == 0 {
                             finished_root_keys
                                 .lock()
@@ -360,11 +366,21 @@ pub(crate) async fn run_dedupe_job(
                     }
                     ItemOutcome::Failed { category } => {
                         let mut breakdown = failure_breakdown.lock().unwrap();
-                        match category {
-                            FailureCategory::Download => breakdown.download += 1,
-                            FailureCategory::Archive => breakdown.archive += 1,
-                            FailureCategory::Hash => breakdown.hash += 1,
-                        }
+                        let phase = match category {
+                            FailureCategory::Download => {
+                                breakdown.download += 1;
+                                "download"
+                            }
+                            FailureCategory::Archive => {
+                                breakdown.archive += 1;
+                                "archive"
+                            }
+                            FailureCategory::Hash => {
+                                breakdown.hash += 1;
+                                "hash"
+                            }
+                        };
+                        crate::observability::metrics::record_phase("dedupe", phase, "failed");
                     }
                 }
 
@@ -428,11 +444,21 @@ pub(crate) async fn run_dedupe_job(
 
     let mut summary = DedupeSummary {
         processed: placement_summary.placed,
-        failed: failure_breakdown.download + failure_breakdown.archive + failure_breakdown.hash,
+        failed: failure_breakdown.download
+            + failure_breakdown.archive
+            + failure_breakdown.hash
+            + placement_summary.failed,
         duplicates_skipped: placement_summary.duplicates_skipped,
         ..Default::default()
     };
     summary.failure_breakdown.merge(&failure_breakdown);
+    // `place_and_report`'s placement failures were previously logged but
+    // never counted anywhere at all (ADR-0093 fixes this as a side effect
+    // of adding the live per-phase metric at that same call site) --
+    // `pull_transform`'s equivalent placement pass already folds its own
+    // `PlacementSummary.failed` into `failure_breakdown.placement` the same
+    // way.
+    summary.failure_breakdown.placement = placement_summary.failed;
 
     if let Some((remote_bucket, remote_secret)) = remote {
         let upload_summary = upload_result(
@@ -470,8 +496,14 @@ async fn upload_result(
     let result_dir = local_output.join("result");
     let (remote_bucket, remote_secret) = remote;
 
-    let (upload_tasks, uploaded_index) =
-        upload::pending_upload_tasks(label, &staging_dir, &result_dir, &result_dir, false)?;
+    let (upload_tasks, uploaded_index) = upload::pending_upload_tasks(
+        "dedupe",
+        label,
+        &staging_dir,
+        &result_dir,
+        &result_dir,
+        false,
+    )?;
     let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
     uploaded_indexes.insert(staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
     Ok(upload::run_upload_phase(

@@ -178,6 +178,7 @@ async fn run_worker(
                 .expect("identity semaphores are never closed");
             match connect_with_retry(ctx).await {
                 Ok(session) => {
+                    crate::observability::metrics::record_phase("email-sync", "connect", "ok");
                     connection = Some(WorkerConnection {
                         identity_index,
                         mailbox: String::new(),
@@ -217,6 +218,12 @@ async fn run_worker(
                             );
                             outcome.failed += uid_count;
                             outcome.failure_breakdown.connect += uid_count;
+                            crate::observability::metrics::record_phase_count(
+                                "email-sync",
+                                "connect",
+                                "failed",
+                                uid_count as u64,
+                            );
                         }
                     }
                     continue;
@@ -227,7 +234,10 @@ async fn run_worker(
         let conn = connection.as_mut().unwrap();
         if conn.mailbox != batch.mailbox {
             match conn.session.examine(&batch.mailbox).await {
-                Ok(_) => conn.mailbox = batch.mailbox.clone(),
+                Ok(_) => {
+                    conn.mailbox = batch.mailbox.clone();
+                    crate::observability::metrics::record_phase("email-sync", "examine", "ok");
+                }
                 Err(err) => {
                     let _ = multi_progress.println(format!(
                         "Error: failed to open '{}' read-only: {err}",
@@ -264,6 +274,12 @@ async fn run_worker(
                             );
                             outcome.failed += uid_count;
                             outcome.failure_breakdown.examine += uid_count;
+                            crate::observability::metrics::record_phase_count(
+                                "email-sync",
+                                "examine",
+                                "failed",
+                                uid_count as u64,
+                            );
                         }
                     }
                     continue;
@@ -314,6 +330,12 @@ async fn run_worker(
                         );
                         outcome.failed += uid_count;
                         outcome.failure_breakdown.batch_error += uid_count;
+                        crate::observability::metrics::record_phase_count(
+                            "email-sync",
+                            "batch_error",
+                            "failed",
+                            uid_count as u64,
+                        );
                     }
                 }
             }
@@ -378,6 +400,7 @@ async fn process_batch_on_session(
             tracing::warn!(uid, mailbox = %batch.mailbox, step = "fetch", "eml missing before transform, counted as failed");
             outcome.failed += 1;
             outcome.failure_breakdown.missing_file += 1;
+            crate::observability::metrics::record_phase("email-sync", "missing_file", "failed");
             continue;
         }
         let transformed = multi_progress
@@ -407,6 +430,7 @@ async fn process_batch_on_session(
                     )?;
                     let _ = fs::remove_file(&eml_path);
                     outcome.synced += 1;
+                    crate::observability::metrics::record_phase("email-sync", "verification", "ok");
                 }
                 Err(reason) => {
                     tracing::warn!(
@@ -424,12 +448,22 @@ async fn process_batch_on_session(
                     ));
                     outcome.failed += 1;
                     outcome.failure_breakdown.verification += 1;
+                    crate::observability::metrics::record_phase(
+                        "email-sync",
+                        "verification",
+                        "failed",
+                    );
                 }
             },
             None => {
                 tracing::warn!(uid, mailbox = %batch.mailbox, step = "transform", "message parse skipped");
                 outcome.failed += 1;
                 outcome.failure_breakdown.parse_skipped += 1;
+                crate::observability::metrics::record_phase(
+                    "email-sync",
+                    "parse_skipped",
+                    "failed",
+                );
             }
         }
     }
@@ -488,6 +522,7 @@ pub(crate) async fn run_email_sync_job(
     remote: Option<(&BucketConfig, &str)>,
     encryptor: Option<&Aes256GcmSivEncryptor>,
 ) -> Result<JobSummary, String> {
+    crate::observability::metrics::set_macro_phase("email-sync", false);
     let encrypt = encryptor.is_some();
 
     // Interleaved round-robin across identities (ADR-0071), rather than one
@@ -647,6 +682,7 @@ fn identity_upload_tasks(
         .output_dir
         .join(identity::sanitize_segment(&ctx.identity.email));
     upload::pending_upload_tasks(
+        "email-sync",
         &ctx.identity.alias,
         &ctx.staging_dir,
         &identity_dir,
