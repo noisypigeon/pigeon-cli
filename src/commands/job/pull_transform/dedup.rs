@@ -96,12 +96,17 @@ pub(crate) fn place_files(
                 "failed to place file"
             );
             summary.failed += 1;
-            crate::observability::metrics::record_phase("pull-transform", "placement", "failed");
+            crate::observability::metrics::record_phase(
+                "pull-transform",
+                "placement",
+                "failed",
+                None,
+            );
             bar.inc(1);
             continue;
         }
         summary.placed += 1;
-        crate::observability::metrics::record_phase("pull-transform", "placement", "ok");
+        crate::observability::metrics::record_phase("pull-transform", "placement", "ok", None);
         finished_keys.push(file.original_key);
         bar.inc(1);
     }

@@ -9,6 +9,19 @@ use crate::cli::Commands;
 /// the operation failed" stay distinguishable.
 pub const FAILURE_EXIT_CODE: i32 = 1;
 
+/// Prints `message` to stderr and returns `FAILURE_EXIT_CODE` -- the shared
+/// landing point every job wizard's `dispatch_async` uses to turn an `Err`
+/// into an exit code (ADR-0097). Previously each of the six job wizards
+/// defined this identically but without the `tracing::error!` call, so a
+/// handled job failure reached stderr but never the structured JSONL log
+/// (issue #18). `run_instrumented` still logs its own "command finished"
+/// line afterward with the exit code; this is the line that explains why.
+pub(crate) fn fail(message: impl std::fmt::Display) -> i32 {
+    tracing::error!(error = %message, "job failed");
+    eprintln!("Error: {message}");
+    FAILURE_EXIT_CODE
+}
+
 pub fn dispatch(command: Commands) -> i32 {
     match command {
         Commands::Keyring(args) => crate::commands::keyring::commands::dispatch(args.command),

@@ -5,12 +5,12 @@ use std::path::{Path, PathBuf};
 
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 
-use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, SourceBucketInput,
     UploadConcurrencyInput, UploadTargetInput,
 };
 use crate::commands::keyring::store::Store;
+use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
@@ -84,11 +84,6 @@ fn print_type_summary(summaries: &[TypeSummary]) {
         })
         .collect();
     crate::commands::print_table(&["EXTENSION", "PENDING", "SIZE"], &rows);
-}
-
-fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("Error: {message}");
-    FAILURE_EXIT_CODE
 }
 
 /// Resolves which file extensions to pull/transform/upload this run

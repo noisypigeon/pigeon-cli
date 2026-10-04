@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use dialoguer::Input;
 
-use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, SourceBucketInput, UploadConcurrencyInput,
 };
 use crate::commands::keyring::store::Store;
+use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
@@ -148,11 +148,6 @@ fn print_extension_summary(summaries: &[ExtensionSummary]) {
         &["EXTENSION", "PENDING", "SIZE", "CLASSIFICATION", "ACTION"],
         &rows,
     );
-}
-
-fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("Error: {message}");
-    FAILURE_EXIT_CODE
 }
 
 /// Entry point for `pigeon job run reduce` (ADR-0096).

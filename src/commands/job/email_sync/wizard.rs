@@ -3,12 +3,12 @@ use std::path::PathBuf;
 
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 
-use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, EncryptionKeyInput, UploadConcurrencyInput, UploadTargetInput,
 };
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
+use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
@@ -488,11 +488,6 @@ async fn dispatch_async(
         }
         Err(err) => fail(err),
     }
-}
-
-fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("Error: {message}");
-    FAILURE_EXIT_CODE
 }
 
 /// Whether `ctx`'s identity has a completed local run `--upload-only` can

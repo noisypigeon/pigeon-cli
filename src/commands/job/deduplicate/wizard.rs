@@ -3,11 +3,11 @@ use std::path::{Path, PathBuf};
 
 use dialoguer::Input;
 
-use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, CpuConcurrencyInput, SourceBucketInput, UploadConcurrencyInput, UploadTargetInput,
 };
 use crate::commands::keyring::store::Store;
+use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
@@ -76,11 +76,6 @@ fn print_type_summary(summaries: &[TypeSummary]) {
         })
         .collect();
     crate::commands::print_table(&["EXTENSION", "PENDING", "SIZE"], &rows);
-}
-
-fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("Error: {message}");
-    FAILURE_EXIT_CODE
 }
 
 /// Entry point for `pigeon job run deduplicate` (ADR-0082).

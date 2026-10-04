@@ -146,7 +146,12 @@ async fn process_item(
                     category: FailureCategory::Download,
                 };
             }
-            crate::observability::metrics::record_phase("deduplicate", "download", "ok");
+            crate::observability::metrics::record_phase(
+                "deduplicate",
+                "download",
+                "ok",
+                Some(bucket_config.alias.as_str()),
+            );
             raw_path
         }
     };
@@ -347,7 +352,12 @@ pub(crate) async fn run_deduplicate_job(
                         depth,
                         members,
                     } => {
-                        crate::observability::metrics::record_phase("deduplicate", "archive", "ok");
+                        crate::observability::metrics::record_phase(
+                            "deduplicate",
+                            "archive",
+                            "ok",
+                            Some(bucket_config.alias.as_str()),
+                        );
                         bar.inc_length(members.len() as u64);
                         queue.lock().unwrap().extend(members);
                         if depth == 0 {
@@ -355,7 +365,12 @@ pub(crate) async fn run_deduplicate_job(
                         }
                     }
                     ItemOutcome::Hashed { depth, file } => {
-                        crate::observability::metrics::record_phase("deduplicate", "hash", "ok");
+                        crate::observability::metrics::record_phase(
+                            "deduplicate",
+                            "hash",
+                            "ok",
+                            Some(bucket_config.alias.as_str()),
+                        );
                         if depth == 0 {
                             finished_root_keys
                                 .lock()
@@ -380,7 +395,12 @@ pub(crate) async fn run_deduplicate_job(
                                 "hash"
                             }
                         };
-                        crate::observability::metrics::record_phase("deduplicate", phase, "failed");
+                        crate::observability::metrics::record_phase(
+                            "deduplicate",
+                            phase,
+                            "failed",
+                            Some(bucket_config.alias.as_str()),
+                        );
                     }
                 }
 

@@ -42,6 +42,12 @@ pub fn install(port: u16) {
     }
 }
 
+/// No source `BucketConfig` is in scope at this call site (e.g. an IMAP- or
+/// local-dir-sourced job, or a post-download pass operating on already
+/// -staged local files) -- the label is always present (ADR-0097), just
+/// with this sentinel value, so the metric's label set stays fixed.
+const NO_BUCKET: &str = "n/a";
+
 /// Records one item completing one phase of a job's pipeline, live, at the
 /// exact moment it happens (ADR-0093) -- labeled `pigeon_job` (not `job`,
 /// which Alloy's Prometheus scrape config already reserves to identify the
@@ -56,8 +62,15 @@ pub fn install(port: u16) {
 /// which only ever reported once at the very end of a run -- a dashboard
 /// built on that never showed anything mid-run. A job's running totals are
 /// `sum by (pigeon_job, outcome) (pigeon_job_phase_total{pigeon_job="..."})`.
-pub(crate) fn record_phase(job: &'static str, phase: &'static str, outcome: &'static str) {
-    record_phase_count(job, phase, outcome, 1);
+/// `source_bucket` (ADR-0097) is `Some(alias)` when a source `BucketConfig`
+/// is already in scope at the call site, `None` otherwise (see `NO_BUCKET`).
+pub(crate) fn record_phase(
+    job: &'static str,
+    phase: &'static str,
+    outcome: &'static str,
+    source_bucket: Option<&str>,
+) {
+    record_phase_count(job, phase, outcome, 1, source_bucket);
 }
 
 /// Same as `record_phase`, but for a site that already knows it's
@@ -70,12 +83,15 @@ pub(crate) fn record_phase_count(
     phase: &'static str,
     outcome: &'static str,
     count: u64,
+    source_bucket: Option<&str>,
 ) {
     ::metrics::counter!(
         "pigeon_job_phase_total",
         "pigeon_job" => job,
         "phase" => phase,
         "outcome" => outcome,
+        "instance" => crate::observability::instance(),
+        "source_bucket" => source_bucket.unwrap_or(NO_BUCKET).to_string(),
     )
     .increment(count);
 }
@@ -87,9 +103,10 @@ pub(crate) fn record_phase_count(
 /// transition -- upload never starts until all local work is done -- so
 /// unlike a per-item phase, a single gauge is an accurate fit here.
 pub(crate) fn set_macro_phase(job: &'static str, uploading: bool) {
-    ::metrics::gauge!("pigeon_job_macro_phase", "pigeon_job" => job).set(if uploading {
-        1.0
-    } else {
-        0.0
-    });
+    ::metrics::gauge!(
+        "pigeon_job_macro_phase",
+        "pigeon_job" => job,
+        "instance" => crate::observability::instance(),
+    )
+    .set(if uploading { 1.0 } else { 0.0 });
 }

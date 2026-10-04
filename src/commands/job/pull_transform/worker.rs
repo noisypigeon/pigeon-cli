@@ -500,7 +500,12 @@ async fn process_item(
                     category: FailureCategory::Download,
                 };
             }
-            crate::observability::metrics::record_phase("pull-transform", "download", "ok");
+            crate::observability::metrics::record_phase(
+                "pull-transform",
+                "download",
+                "ok",
+                Some(bucket_config.alias.as_str()),
+            );
             raw_path
         }
     };
@@ -752,6 +757,7 @@ pub(crate) async fn run_pull_transform_job(
                             "pull-transform",
                             "archive",
                             "ok",
+                            Some(bucket_config.alias.as_str()),
                         );
                         bar.inc_length(members.len() as u64);
                         queue.lock().unwrap().extend(members);
@@ -765,6 +771,7 @@ pub(crate) async fn run_pull_transform_job(
                             "pull-transform",
                             "classify",
                             "skipped_type",
+                            Some(bucket_config.alias.as_str()),
                         );
                     }
                     ItemOutcome::Processed {
@@ -791,6 +798,7 @@ pub(crate) async fn run_pull_transform_job(
                                 "pull-transform",
                                 "recode",
                                 "recoded",
+                                Some(bucket_config.alias.as_str()),
                             );
                         }
                         if fell_back_to_original {
@@ -799,6 +807,7 @@ pub(crate) async fn run_pull_transform_job(
                                 "pull-transform",
                                 "recode",
                                 "fallback",
+                                Some(bucket_config.alias.as_str()),
                             );
                         }
                         processed_files.lock().unwrap().push(file);
@@ -806,6 +815,7 @@ pub(crate) async fn run_pull_transform_job(
                             "pull-transform",
                             "classify",
                             "ok",
+                            Some(bucket_config.alias.as_str()),
                         );
                     }
                     ItemOutcome::Failed { category, .. } => {
@@ -828,6 +838,7 @@ pub(crate) async fn run_pull_transform_job(
                             "pull-transform",
                             phase,
                             "failed",
+                            Some(bucket_config.alias.as_str()),
                         );
                     }
                 }
