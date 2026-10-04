@@ -11,6 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use indicatif::MultiProgress;
+use tracing::Instrument;
 
 use crate::commands::job::download;
 use crate::commands::job::email_sync::sink;
@@ -71,6 +72,11 @@ pub(crate) struct PullTransformSummary {
     /// of `failed` (nothing went wrong) and never checkpointed for a
     /// depth-0 item, so a later run with a broader filter still sees it.
     pub skipped_type: usize,
+    /// Zip members dropped by the per-archive extraction-ratio cap
+    /// (ADR-0098) -- already folded into `failed`/`failure_breakdown.archive`
+    /// too, since dropped data is a real failure, but broken out here so
+    /// the wizard can print it as its own distinct, named count.
+    pub dropped_members: usize,
 }
 
 /// Broad category driving both processing (does this need `ffmpeg`?) and
@@ -121,6 +127,11 @@ struct QueueItem {
     /// announcing (ADR-0075) and to size the disk-space preflight check
     /// (ADR-0076), never trusted for correctness.
     size: u64,
+    /// The top-level task's own `display_key`, unchanged through every
+    /// descendant -- tracks whether *any* descendant of a given root failed
+    /// or lost data, so that root can be excluded from the checkpoint
+    /// (ADR-0098). Never participates in path computation.
+    root_key: String,
 }
 
 enum FailureCategory {
@@ -132,10 +143,15 @@ enum FailureCategory {
 enum ItemOutcome {
     /// `display_key`/`depth` identify the zip that was expanded (checkpoint
     /// candidate iff `depth == 0`); `members` are queued for the next pass.
+    /// `dropped` is how many members this zip lost to the per-archive
+    /// extraction-ratio cap (ADR-0098) -- nonzero here means real data was
+    /// discarded, counted as a failure and tainting this item's root out of
+    /// the checkpoint.
     ZipExpanded {
         display_key: String,
         depth: u32,
         members: Vec<QueueItem>,
+        dropped: usize,
     },
     Processed {
         depth: u32,
@@ -437,12 +453,12 @@ async fn process_item(
     raw_dir: &Path,
     scratch_dir: &Path,
     counter: &Arc<AtomicU64>,
-    extracted_bytes: &Arc<AtomicU64>,
     multi_progress: &MultiProgress,
     allowed_extensions: &HashSet<String>,
     expand_zip_keys: &HashSet<String>,
     transcode_targets: &TranscodeTargets,
-) -> ItemOutcome {
+) -> (String, ItemOutcome) {
+    let root_key = item.root_key.clone();
     let depth = item.depth;
     let (kind, extension) = classify_extension(&item.display_key);
 
@@ -453,7 +469,7 @@ async fn process_item(
         if let Some(path) = &item.path {
             let _ = fs::remove_file(path);
         }
-        return ItemOutcome::Skipped;
+        return (root_key, ItemOutcome::Skipped);
     }
 
     // ADR-0077: a zip not selected for expansion is handled exactly like a
@@ -471,17 +487,23 @@ async fn process_item(
             let key = item.source_key.as_deref().unwrap_or(&item.display_key);
             if let Err(err) = download::check_disk_space(raw_dir, item.size) {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "not enough disk space");
-                return ItemOutcome::Failed {
-                    category: FailureCategory::Download,
-                };
+                return (
+                    root_key,
+                    ItemOutcome::Failed {
+                        category: FailureCategory::Download,
+                    },
+                );
             }
             let raw_path = match next_scratch_path(raw_dir, counter, &extension) {
                 Ok(path) => path,
                 Err(err) => {
                     tracing::warn!(key = %item.display_key, step = "download", error = %err, "failed to allocate a raw path");
-                    return ItemOutcome::Failed {
-                        category: FailureCategory::Download,
-                    };
+                    return (
+                        root_key,
+                        ItemOutcome::Failed {
+                            category: FailureCategory::Download,
+                        },
+                    );
                 }
             };
             if let Err(err) = download::download_with_retry(
@@ -496,9 +518,12 @@ async fn process_item(
             {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "download failed");
                 let _ = fs::remove_file(&raw_path);
-                return ItemOutcome::Failed {
-                    category: FailureCategory::Download,
-                };
+                return (
+                    root_key,
+                    ItemOutcome::Failed {
+                        category: FailureCategory::Download,
+                    },
+                );
             }
             crate::observability::metrics::record_phase(
                 "pull-transform",
@@ -514,35 +539,39 @@ async fn process_item(
         if depth >= archive::MAX_ZIP_DEPTH {
             tracing::warn!(key = %item.display_key, step = "archive", depth, "zip nesting depth cap reached, not expanding further");
             let _ = fs::remove_file(&path);
-            return ItemOutcome::Failed {
-                category: FailureCategory::Archive,
-            };
+            return (
+                root_key,
+                ItemOutcome::Failed {
+                    category: FailureCategory::Archive,
+                },
+            );
         }
         if let Err(err) = download::check_disk_space(raw_dir, 0) {
             tracing::warn!(key = %item.display_key, step = "archive", error = %err, "not enough disk space to expand");
             let _ = fs::remove_file(&path);
-            return ItemOutcome::Failed {
-                category: FailureCategory::Archive,
-            };
+            return (
+                root_key,
+                ItemOutcome::Failed {
+                    category: FailureCategory::Archive,
+                },
+            );
         }
         // CPU-bound (decompression) -- handed to `spawn_blocking` rather
         // than run inline, same ADR-0088 precedent `deduplicate/worker.rs` set,
-        // generalized here (ADR-0090).
+        // generalized here (ADR-0090). `spawn_blocking` doesn't propagate
+        // the ambient `tracing` span on its own, so it's re-entered inside
+        // the closure via the span captured just before spawning
+        // (ADR-0098).
         let expand_path = path.clone();
         let expand_raw_dir = raw_dir.to_path_buf();
         let expand_counter = Arc::clone(counter);
-        let expand_extracted_bytes = Arc::clone(extracted_bytes);
+        let span = tracing::Span::current();
         let expand_result = tokio::task::spawn_blocking(move || {
-            archive::expand_to_dir(
-                &expand_path,
-                &expand_raw_dir,
-                &expand_counter,
-                &expand_extracted_bytes,
-            )
+            span.in_scope(|| archive::expand_to_dir(&expand_path, &expand_raw_dir, &expand_counter))
         })
         .await;
-        return match expand_result {
-            Ok(Ok(raw_members)) => {
+        let outcome = match expand_result {
+            Ok(Ok((raw_members, dropped))) => {
                 let _ = fs::remove_file(&path);
                 let members = raw_members
                     .into_iter()
@@ -552,12 +581,14 @@ async fn process_item(
                         path: Some(member.path),
                         depth: depth + 1,
                         size: member.size,
+                        root_key: root_key.clone(),
                     })
                     .collect();
                 ItemOutcome::ZipExpanded {
                     display_key: item.display_key,
                     depth,
                     members,
+                    dropped,
                 }
             }
             Ok(Err(err)) => {
@@ -575,6 +606,7 @@ async fn process_item(
                 }
             }
         };
+        return (root_key, outcome);
     }
 
     let processed = match kind {
@@ -594,20 +626,24 @@ async fn process_item(
         FileKind::Pdf | FileKind::Ooxml | FileKind::Other => {
             // CPU-bound (document parsing/hashing) -- handed to
             // `spawn_blocking` rather than run inline (ADR-0090, same
-            // ADR-0088 precedent).
+            // ADR-0088 precedent). Span re-entered inside the closure, same
+            // reasoning as the zip-expansion call above (ADR-0098).
             let display_key = item.display_key.clone();
             let extension = extension.clone();
             let scratch_dir = scratch_dir.to_path_buf();
             let counter = Arc::clone(counter);
+            let span = tracing::Span::current();
             match tokio::task::spawn_blocking(move || {
-                process_document_or_other(
-                    &display_key,
-                    &extension,
-                    kind,
-                    path,
-                    &scratch_dir,
-                    &counter,
-                )
+                span.in_scope(|| {
+                    process_document_or_other(
+                        &display_key,
+                        &extension,
+                        kind,
+                        path,
+                        &scratch_dir,
+                        &counter,
+                    )
+                })
             })
             .await
             {
@@ -618,7 +654,7 @@ async fn process_item(
         FileKind::Zip => unreachable!("handled above"),
     };
 
-    match processed {
+    let outcome = match processed {
         Ok((file, recoded, fell_back)) => ItemOutcome::Processed {
             depth,
             file,
@@ -631,7 +667,8 @@ async fn process_item(
                 category: FailureCategory::Classify,
             }
         }
-    }
+    };
+    (root_key, outcome)
 }
 
 /// Runs the full pull-transform pipeline: lists already come in via `tasks`
@@ -665,7 +702,6 @@ pub(crate) async fn run_pull_transform_job(
     fs::create_dir_all(&raw_dir)
         .map_err(|err| format!("failed to create {}: {err}", raw_dir.display()))?;
     let counter = Arc::new(AtomicU64::new(0));
-    let extracted_bytes = Arc::new(AtomicU64::new(0));
 
     // One `MultiProgress` spans the whole run -- main phase, placement, and
     // (if uploading) upload -- matching `email_sync::worker`'s own shape
@@ -680,10 +716,11 @@ pub(crate) async fn run_pull_transform_job(
             .into_iter()
             .map(|task| QueueItem {
                 source_key: Some(task.key.clone()),
-                display_key: task.key,
+                display_key: task.key.clone(),
                 path: None,
                 depth: 0,
                 size: task.size,
+                root_key: task.key,
             })
             .collect(),
     ));
@@ -695,8 +732,14 @@ pub(crate) async fn run_pull_transform_job(
     let recoded_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let fallback_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let skipped_type_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let dropped_members = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // Same root-tainting mechanism as `deduplicate/worker.rs` (ADR-0098): a
+    // root is excluded from the checkpoint if any descendant failed or lost
+    // a member to the extraction-ratio cap.
+    let tainted_roots = Arc::new(Mutex::new(HashSet::<String>::new()));
     let allowed_extensions = Arc::new(allowed_extensions);
     let expand_zip_keys = Arc::new(expand_zip_keys);
+    let command_span = tracing::Span::current();
 
     let worker_count = concurrency.max(1);
     let mut handles = Vec::with_capacity(worker_count);
@@ -709,10 +752,11 @@ pub(crate) async fn run_pull_transform_job(
         let recoded_count = Arc::clone(&recoded_count);
         let fallback_count = Arc::clone(&fallback_count);
         let skipped_type_count = Arc::clone(&skipped_type_count);
+        let dropped_members = Arc::clone(&dropped_members);
+        let tainted_roots = Arc::clone(&tainted_roots);
         let allowed_extensions = Arc::clone(&allowed_extensions);
         let expand_zip_keys = Arc::clone(&expand_zip_keys);
         let counter = Arc::clone(&counter);
-        let extracted_bytes = Arc::clone(&extracted_bytes);
         let bucket_config = bucket_config.clone();
         let secret = secret.to_string();
         let raw_dir = raw_dir.clone();
@@ -720,133 +764,148 @@ pub(crate) async fn run_pull_transform_job(
         let multi_progress = multi_progress.clone();
         let bar = bar.clone();
 
-        handles.push(tokio::spawn(async move {
-            loop {
-                let item = { queue.lock().unwrap().pop_front() };
-                let Some(item) = item else {
-                    if in_flight.load(Ordering::SeqCst) == 0 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    continue;
-                };
-                in_flight.fetch_add(1, Ordering::SeqCst);
-
-                let outcome = process_item(
-                    &bucket_config,
-                    &secret,
-                    item,
-                    &raw_dir,
-                    &scratch_dir,
-                    &counter,
-                    &extracted_bytes,
-                    &multi_progress,
-                    &allowed_extensions,
-                    &expand_zip_keys,
-                    &transcode_targets,
-                )
-                .await;
-
-                match outcome {
-                    ItemOutcome::ZipExpanded {
-                        display_key,
-                        depth,
-                        members,
-                    } => {
-                        crate::observability::metrics::record_phase(
-                            "pull-transform",
-                            "archive",
-                            "ok",
-                            Some(bucket_config.alias.as_str()),
-                        );
-                        bar.inc_length(members.len() as u64);
-                        queue.lock().unwrap().extend(members);
-                        if depth == 0 {
-                            finished_root_keys.lock().unwrap().push(display_key);
+        handles.push(tokio::spawn(
+            async move {
+                loop {
+                    let item = { queue.lock().unwrap().pop_front() };
+                    let Some(item) = item else {
+                        if in_flight.load(Ordering::SeqCst) == 0 {
+                            break;
                         }
-                    }
-                    ItemOutcome::Skipped => {
-                        skipped_type_count.fetch_add(1, Ordering::SeqCst);
-                        crate::observability::metrics::record_phase(
-                            "pull-transform",
-                            "classify",
-                            "skipped_type",
-                            Some(bucket_config.alias.as_str()),
-                        );
-                    }
-                    ItemOutcome::Processed {
-                        depth,
-                        file,
-                        recoded,
-                        fell_back_to_original,
-                    } => {
-                        if depth == 0 {
-                            finished_root_keys
-                                .lock()
-                                .unwrap()
-                                .push(file.original_key.clone());
-                        }
-                        // `FailureBreakdown.recode` is deliberately never
-                        // incremented anywhere (ADR-0093) -- a failed recode
-                        // falls back to the original file rather than
-                        // failing the item, so "recoded" vs "fallback" are
-                        // this phase's real outcomes, not a success/failure
-                        // binary.
-                        if recoded {
-                            recoded_count.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    };
+                    in_flight.fetch_add(1, Ordering::SeqCst);
+
+                    let (root_key, outcome) = process_item(
+                        &bucket_config,
+                        &secret,
+                        item,
+                        &raw_dir,
+                        &scratch_dir,
+                        &counter,
+                        &multi_progress,
+                        &allowed_extensions,
+                        &expand_zip_keys,
+                        &transcode_targets,
+                    )
+                    .await;
+
+                    match outcome {
+                        ItemOutcome::ZipExpanded {
+                            display_key,
+                            depth,
+                            members,
+                            dropped,
+                        } => {
                             crate::observability::metrics::record_phase(
                                 "pull-transform",
-                                "recode",
-                                "recoded",
+                                "archive",
+                                "ok",
+                                Some(bucket_config.alias.as_str()),
+                            );
+                            bar.inc_length(members.len() as u64);
+                            queue.lock().unwrap().extend(members);
+                            if depth == 0 {
+                                finished_root_keys.lock().unwrap().push(display_key);
+                            }
+                            if dropped > 0 {
+                                failure_breakdown.lock().unwrap().archive += dropped;
+                                dropped_members.fetch_add(dropped, Ordering::SeqCst);
+                                tainted_roots.lock().unwrap().insert(root_key.clone());
+                                crate::observability::metrics::record_phase(
+                                    "pull-transform",
+                                    "archive",
+                                    "failed",
+                                    Some(bucket_config.alias.as_str()),
+                                );
+                            }
+                        }
+                        ItemOutcome::Skipped => {
+                            skipped_type_count.fetch_add(1, Ordering::SeqCst);
+                            crate::observability::metrics::record_phase(
+                                "pull-transform",
+                                "classify",
+                                "skipped_type",
                                 Some(bucket_config.alias.as_str()),
                             );
                         }
-                        if fell_back_to_original {
-                            fallback_count.fetch_add(1, Ordering::SeqCst);
+                        ItemOutcome::Processed {
+                            depth,
+                            file,
+                            recoded,
+                            fell_back_to_original,
+                        } => {
+                            if depth == 0 {
+                                finished_root_keys
+                                    .lock()
+                                    .unwrap()
+                                    .push(file.original_key.clone());
+                            }
+                            // `FailureBreakdown.recode` is deliberately never
+                            // incremented anywhere (ADR-0093) -- a failed recode
+                            // falls back to the original file rather than
+                            // failing the item, so "recoded" vs "fallback" are
+                            // this phase's real outcomes, not a success/failure
+                            // binary.
+                            if recoded {
+                                recoded_count.fetch_add(1, Ordering::SeqCst);
+                                crate::observability::metrics::record_phase(
+                                    "pull-transform",
+                                    "recode",
+                                    "recoded",
+                                    Some(bucket_config.alias.as_str()),
+                                );
+                            }
+                            if fell_back_to_original {
+                                fallback_count.fetch_add(1, Ordering::SeqCst);
+                                crate::observability::metrics::record_phase(
+                                    "pull-transform",
+                                    "recode",
+                                    "fallback",
+                                    Some(bucket_config.alias.as_str()),
+                                );
+                            }
+                            processed_files.lock().unwrap().push(file);
                             crate::observability::metrics::record_phase(
                                 "pull-transform",
-                                "recode",
-                                "fallback",
+                                "classify",
+                                "ok",
                                 Some(bucket_config.alias.as_str()),
                             );
                         }
-                        processed_files.lock().unwrap().push(file);
-                        crate::observability::metrics::record_phase(
-                            "pull-transform",
-                            "classify",
-                            "ok",
-                            Some(bucket_config.alias.as_str()),
-                        );
+                        ItemOutcome::Failed { category, .. } => {
+                            tainted_roots.lock().unwrap().insert(root_key.clone());
+                            let mut breakdown = failure_breakdown.lock().unwrap();
+                            let phase = match category {
+                                FailureCategory::Download => {
+                                    breakdown.download += 1;
+                                    "download"
+                                }
+                                FailureCategory::Archive => {
+                                    breakdown.archive += 1;
+                                    "archive"
+                                }
+                                FailureCategory::Classify => {
+                                    breakdown.classify += 1;
+                                    "classify"
+                                }
+                            };
+                            crate::observability::metrics::record_phase(
+                                "pull-transform",
+                                phase,
+                                "failed",
+                                Some(bucket_config.alias.as_str()),
+                            );
+                        }
                     }
-                    ItemOutcome::Failed { category, .. } => {
-                        let mut breakdown = failure_breakdown.lock().unwrap();
-                        let phase = match category {
-                            FailureCategory::Download => {
-                                breakdown.download += 1;
-                                "download"
-                            }
-                            FailureCategory::Archive => {
-                                breakdown.archive += 1;
-                                "archive"
-                            }
-                            FailureCategory::Classify => {
-                                breakdown.classify += 1;
-                                "classify"
-                            }
-                        };
-                        crate::observability::metrics::record_phase(
-                            "pull-transform",
-                            phase,
-                            "failed",
-                            Some(bucket_config.alias.as_str()),
-                        );
-                    }
+
+                    bar.inc(1);
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
                 }
-
-                bar.inc(1);
-                in_flight.fetch_sub(1, Ordering::SeqCst);
             }
-        }));
+            .instrument(command_span.clone()),
+        ));
     }
 
     let mut first_panic = None;
@@ -875,6 +934,13 @@ pub(crate) async fn run_pull_transform_job(
         .map_err(|_| "internal error: failure breakdown still shared".to_string())?
         .into_inner()
         .map_err(|_| "internal error: failure breakdown lock poisoned".to_string())?;
+    let dropped_members = Arc::try_unwrap(dropped_members)
+        .map_err(|_| "internal error: dropped-member counter still shared".to_string())?
+        .into_inner();
+    let tainted_roots = Arc::try_unwrap(tainted_roots)
+        .map_err(|_| "internal error: tainted-root set still shared".to_string())?
+        .into_inner()
+        .map_err(|_| "internal error: tainted-root set lock poisoned".to_string())?;
 
     // `dedup` (the full hash->path `ContentIndex`) and `placed_keys` live
     // only inside this block, so they're dropped here, before the upload
@@ -897,7 +963,9 @@ pub(crate) async fn run_pull_transform_job(
         // panic notwithstanding, which already aborts the whole run above)
         // still only gets checkpointed via this same mechanism, since
         // `finished_root_keys` already only contains depth-0 keys.
-        finished_root_keys.retain(|key| placed_keys.contains(key) || is_zip_key(key));
+        finished_root_keys.retain(|key| {
+            !tainted_roots.contains(key) && (placed_keys.contains(key) || is_zip_key(key))
+        });
         for key in &finished_root_keys {
             manifest::append_checkpoint(local_output, key)?;
         }
@@ -914,6 +982,7 @@ pub(crate) async fn run_pull_transform_job(
         recoded: recoded_count.load(Ordering::SeqCst),
         recode_fallback_to_original: fallback_count.load(Ordering::SeqCst),
         skipped_type: skipped_type_count.load(Ordering::SeqCst),
+        dropped_members,
         ..Default::default()
     };
     summary.failure_breakdown.merge(&failure_breakdown);
@@ -921,7 +990,7 @@ pub(crate) async fn run_pull_transform_job(
 
     if let Some((remote_bucket, remote_secret)) = remote {
         let upload_summary = upload_result(
-            &bucket_config.alias,
+            &remote_bucket.alias,
             local_output,
             (remote_bucket, remote_secret),
             encryptor,
@@ -1125,7 +1194,6 @@ mod tests {
         let raw_dir = dir.path().join("raw");
         let scratch_dir = dir.path().join("scratch");
         let counter = Arc::new(AtomicU64::new(0));
-        let extracted_bytes = Arc::new(AtomicU64::new(0));
 
         let bucket_config = BucketConfig {
             alias: "unused".to_string(),
@@ -1141,16 +1209,16 @@ mod tests {
             path: None,
             depth: 0,
             size: 100,
+            root_key: "photo.pdf".to_string(),
         };
 
-        let outcome = process_item(
+        let (_root_key, outcome) = process_item(
             &bucket_config,
             "unused-secret",
             item,
             &raw_dir,
             &scratch_dir,
             &counter,
-            &extracted_bytes,
             &MultiProgress::new(),
             &all_extensions(&["jpg"]),
             &all_extensions(&[]),
@@ -1169,7 +1237,6 @@ mod tests {
         fs::create_dir_all(&raw_dir).unwrap();
         let scratch_dir = dir.path().join("scratch");
         let counter = Arc::new(AtomicU64::new(0));
-        let extracted_bytes = Arc::new(AtomicU64::new(0));
 
         let zip_path = raw_dir.join("archive.zip");
         fs::write(&zip_path, b"not really a zip, just opaque bytes").unwrap();
@@ -1180,6 +1247,7 @@ mod tests {
             path: Some(zip_path),
             depth: 0,
             size: 36,
+            root_key: "archive.zip".to_string(),
         };
 
         let bucket_config = BucketConfig {
@@ -1190,7 +1258,7 @@ mod tests {
             encryption_key_alias: None,
         };
 
-        let outcome = tokio::runtime::Builder::new_current_thread()
+        let (_root_key, outcome) = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
@@ -1201,7 +1269,6 @@ mod tests {
                 &raw_dir,
                 &scratch_dir,
                 &counter,
-                &extracted_bytes,
                 &MultiProgress::new(),
                 &all_extensions(&["zip"]),
                 &all_extensions(&[]), // "archive.zip" not selected for expansion

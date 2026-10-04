@@ -230,7 +230,7 @@ pub(crate) async fn run_reduce_job(
     };
 
     let upload_summary = upload_result(
-        &bucket_config.alias,
+        &remote.0.alias,
         local_output,
         remote,
         upload_concurrency,

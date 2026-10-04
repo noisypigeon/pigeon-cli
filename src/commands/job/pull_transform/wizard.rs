@@ -545,7 +545,7 @@ async fn dispatch_async(
     match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
             println!(
-                "Processed {} file(s), {} failed ({} download, {} archive, {} classify, {} placement), {} skipped (type not selected), {} duplicate(s) skipped, {} recoded, {} kept as original (recode did not verify), {} uploaded, {} unchanged, {} upload failed.",
+                "Processed {} file(s), {} failed ({} download, {} archive, {} classify, {} placement), {} skipped (type not selected), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} recoded, {} kept as original (recode did not verify), {} uploaded, {} unchanged, {} upload failed.",
                 summary.processed,
                 summary.failed,
                 summary.failure_breakdown.download,
@@ -554,6 +554,7 @@ async fn dispatch_async(
                 summary.failure_breakdown.placement,
                 summary.skipped_type,
                 summary.duplicates_skipped,
+                summary.dropped_members,
                 summary.recoded,
                 summary.recode_fallback_to_original,
                 summary.uploaded,

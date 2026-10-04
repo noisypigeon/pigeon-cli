@@ -66,6 +66,16 @@ gap. See step 4 and the Known limitations section.
      `keyring.modify`, `keyring.delete`, or `keyring.list` as needed --
      these are the exact `command_name()` strings, see the cheat sheet
      below.)
+
+     Before ADR-0098, `deduplicate`/`pull-transform`'s archive/download/hash
+     warnings -- logged from inside `tokio::spawn`ed worker tasks and
+     `tokio::task::spawn_blocking` closures -- were missing this `command`
+     span entirely (neither primitive propagates the caller's ambient span
+     on its own), so this filter silently missed them. If you're looking at
+     a `pigeon.jsonl` from before that fix, don't trust an empty result from
+     this filter as proof nothing archive-related happened; cross-check by
+     grepping the raw file for `"step":"archive"` with no `spans[]` filter
+     at all.
    - Within that filtered stream, bound by **timestamp proximity** to
      what the user reported (a specific time, "just now", "the last run").
      A crashed run's last line for that `command` will simply be the last
@@ -228,18 +238,24 @@ hasn't already pasted it):
 - `pull-transform`: `"Processed {processed} file(s), {failed} failed
   ({download} download, {archive} archive, {classify} classify,
   {placement} placement), {skipped_type} skipped (type not selected),
-  {duplicates_skipped} duplicate(s) skipped, {recoded} recoded,
+  {duplicates_skipped} duplicate(s) skipped, {dropped_members} zip
+  member(s) dropped (extraction cap), {recoded} recoded,
   {recode_fallback_to_original} kept as original (recode did not verify),
   {uploaded} uploaded, {unchanged} unchanged, {upload_failed} upload
   failed."`
 - `decrypt-files`: `"Decrypted {decrypted} file(s), {failed} failed."`
 - `deduplicate`: `"Processed {processed} file(s), {failed} failed ({download}
   download, {archive} archive, {hash} hash), {duplicates_skipped}
-  duplicate(s) skipped, {uploaded} uploaded, {unchanged} unchanged,
-  {upload_failed} upload failed."` -- a `--upload-only` resumed run instead
-  prints `"Uploaded {uploaded} file(s), {unchanged} unchanged,
-  {upload_failed} upload failed."` (no `processed`/`failed`/dedup counts --
-  it never re-touches download/hash/placement, ADR-0089).
+  duplicate(s) skipped, {dropped_members} zip member(s) dropped (extraction
+  cap), {uploaded} uploaded, {unchanged} unchanged, {upload_failed} upload
+  failed."` -- a `--upload-only` resumed run instead prints `"Uploaded
+  {uploaded} file(s), {unchanged} unchanged, {upload_failed} upload
+  failed."` (no `processed`/`failed`/dedup counts -- it never re-touches
+  download/hash/placement, ADR-0089). `dropped_members` (ADR-0098) is
+  already folded into the `archive` breakdown and `failed` -- it means real
+  data was discarded by the per-archive extraction-ratio cap, not just
+  noise; the affected root zip is excluded from `.processed`, so a plain
+  rerun retries it.
 - `reduce`: `"Forwarded {forwarded} file(s), {failed} failed ({download}
   download, {placement} placement), {skipped_low_value} skipped
   (reproducible), {uploaded} uploaded, {unchanged} unchanged,
