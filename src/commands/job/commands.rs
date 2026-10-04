@@ -1,6 +1,6 @@
 use crate::commands::job::cli::{JobCommands, JobType};
 use crate::commands::job::{
-    decrypt_files, deduplicate, email_pull, email_sync, pull_transform, reduce,
+    decrypt_files, deduplicate, email_pull, email_sync, import, pull_transform, reduce,
 };
 use crate::core::observability::Observable as _;
 
@@ -96,6 +96,20 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     force_valuable,
                     force_reproducible,
+                    report_bucket,
+                    job_name,
+                    yes,
+                ),
+                JobType::Import {
+                    source,
+                    destination,
+                    local_output,
+                    report_bucket,
+                    yes,
+                } => import::wizard::dispatch(
+                    source,
+                    destination,
+                    local_output,
                     report_bucket,
                     job_name,
                     yes,

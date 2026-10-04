@@ -476,6 +476,48 @@ pub enum JobType {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Copies data from a configurable source to a configurable
+    /// destination by shelling out to the external `rclone` binary, with
+    /// its performance/retry flags fixed (not configurable here). Pigeon
+    /// manages no rclone credentials/config -- `--source`/`--destination`
+    /// are raw `remote:path` strings passed straight through to `rclone
+    /// copy`'s argv; `rclone.conf` is provisioned by an external process,
+    /// outside this crate's scope (ADR-0101). Requires `rclone` on `PATH`.
+    Import {
+        /// rclone source, e.g. `source:media/`. Interactively prompted
+        /// when omitted and stdin is a terminal; required otherwise.
+        #[arg(long)]
+        source: Option<String>,
+
+        /// rclone destination, e.g. `destination:`. Interactively
+        /// prompted when omitted and stdin is a terminal; required
+        /// otherwise.
+        #[arg(long)]
+        destination: Option<String>,
+
+        /// Local directory this run's rclone log (also serving as this
+        /// job's report) and transcript are written under. Defaults to a
+        /// directory under the OS temp directory when omitted. Unlike
+        /// every other job, this is not a staging area for transferred
+        /// data -- rclone transfers directly source -> destination with no
+        /// pigeon-side staging.
+        #[arg(long)]
+        local_output: Option<PathBuf>,
+
+        /// Alias of a configured bucket-config this run's report (the
+        /// rclone log itself, for this job), the shared observability log,
+        /// and a transcript of its printed output are uploaded to, always
+        /// unencrypted, under a `YYYY-MM-DD-job-name-{run-id}/` prefix
+        /// (ADR-0100). Mandatory -- interactively selected when omitted
+        /// and stdin is a terminal; required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
+        /// Skip the final "proceed?" confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 impl Observable for JobType {
@@ -487,6 +529,7 @@ impl Observable for JobType {
             JobType::PullTransform { .. } => "job.pull-transform",
             JobType::Deduplicate { .. } => "job.deduplicate",
             JobType::Reduce { .. } => "job.reduce",
+            JobType::Import { .. } => "job.import",
         }
     }
 }
