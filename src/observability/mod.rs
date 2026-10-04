@@ -108,17 +108,26 @@ pub fn install_panic_hook() {
     panic::install_panic_hook();
 }
 
+/// This process's hostname, resolved once and cached for the rest of the
+/// process's life (ADR-0097) -- reused for both the `command` span's
+/// `instance` field and every custom metric's `instance` label, so a run
+/// touching tens of thousands of items never re-queries `sysinfo` per item.
+pub(crate) fn instance() -> &'static str {
+    static INSTANCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    INSTANCE.get_or_init(|| sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string()))
+}
+
 pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i32) -> i32 {
-    // Resolved once per process; `sysinfo` is already a dependency (used by
-    // `resources::ResourceSampler`), so no new crate is needed for this.
     // Every event in this run inherits both fields via `spans[]` (ADR-0093)
     // -- "what job" (`command`) and "what instance" (`instance`), closing
     // the gap a shared, multi-instance Cockpit store otherwise has no way
     // to disambiguate on the logs side (Prometheus's scrape-level `job`/
     // `instance` labels have no log-side equivalent).
-    let instance = sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string());
-    let span = tracing::info_span!("command", command = command_name, instance = %instance);
+    let span = tracing::info_span!("command", command = command_name, instance = instance());
     let _guard = span.enter();
+    // Brackets "command finished" below (ADR-0097) -- previously a job that
+    // crashed or hung left no trace that it had even started.
+    tracing::info!("command started");
     let start = std::time::Instant::now();
     let exit_code = f();
     let elapsed = start.elapsed();
@@ -128,10 +137,19 @@ pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i
         "command finished"
     );
     let status = if exit_code == 0 { "success" } else { "failure" };
-    ::metrics::histogram!("pigeon_command_duration_seconds", "command" => command_name)
-        .record(elapsed.as_secs_f64());
-    ::metrics::counter!("pigeon_command_runs_total", "command" => command_name, "status" => status)
-        .increment(1);
+    ::metrics::histogram!(
+        "pigeon_command_duration_seconds",
+        "command" => command_name,
+        "instance" => instance(),
+    )
+    .record(elapsed.as_secs_f64());
+    ::metrics::counter!(
+        "pigeon_command_runs_total",
+        "command" => command_name,
+        "status" => status,
+        "instance" => instance(),
+    )
+    .increment(1);
     exit_code
 }
 

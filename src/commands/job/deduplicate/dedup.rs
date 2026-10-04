@@ -116,11 +116,12 @@ pub(crate) fn place_and_report(
                         "deduplicate",
                         "placement",
                         "failed",
+                        None,
                     );
                     continue;
                 }
                 summary.placed += 1;
-                crate::observability::metrics::record_phase("deduplicate", "placement", "ok");
+                crate::observability::metrics::record_phase("deduplicate", "placement", "ok", None);
                 finished_keys.push(file.original_key);
             }
         }

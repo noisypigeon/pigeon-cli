@@ -143,7 +143,12 @@ async fn run_worker(
                 .expect("identity semaphores are never closed");
             match connect_with_retry(ctx).await {
                 Ok(session) => {
-                    crate::observability::metrics::record_phase("email-pull", "connect", "ok");
+                    crate::observability::metrics::record_phase(
+                        "email-pull",
+                        "connect",
+                        "ok",
+                        None,
+                    );
                     connection = Some(WorkerConnection {
                         identity_index,
                         mailbox: String::new(),
@@ -188,6 +193,7 @@ async fn run_worker(
                                 "connect",
                                 "failed",
                                 uid_count as u64,
+                                None,
                             );
                         }
                     }
@@ -201,7 +207,12 @@ async fn run_worker(
             match conn.session.examine(&batch.mailbox).await {
                 Ok(_) => {
                     conn.mailbox = batch.mailbox.clone();
-                    crate::observability::metrics::record_phase("email-pull", "examine", "ok");
+                    crate::observability::metrics::record_phase(
+                        "email-pull",
+                        "examine",
+                        "ok",
+                        None,
+                    );
                 }
                 Err(err) => {
                     let _ = multi_progress.println(format!(
@@ -244,6 +255,7 @@ async fn run_worker(
                                 "examine",
                                 "failed",
                                 uid_count as u64,
+                                None,
                             );
                         }
                     }
@@ -301,6 +313,7 @@ async fn run_worker(
                             "batch_error",
                             "failed",
                             uid_count as u64,
+                            None,
                         );
                     }
                 }
@@ -359,7 +372,12 @@ async fn process_batch_on_session(
             tracing::warn!(uid, mailbox = %batch.mailbox, step = "fetch", "eml missing after fetch, counted as failed");
             outcome.failed += 1;
             outcome.failure_breakdown.missing_file += 1;
-            crate::observability::metrics::record_phase("email-pull", "missing_file", "failed");
+            crate::observability::metrics::record_phase(
+                "email-pull",
+                "missing_file",
+                "failed",
+                None,
+            );
             continue;
         }
 
@@ -388,6 +406,7 @@ async fn process_batch_on_session(
                     "email-pull",
                     "attachment_extraction",
                     "extracted",
+                    None,
                 );
             }
             Err(()) => {
@@ -409,6 +428,7 @@ async fn process_batch_on_session(
                     "email-pull",
                     "attachment_extraction",
                     "extraction_failed",
+                    None,
                 );
             }
         }

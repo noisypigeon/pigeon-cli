@@ -2,9 +2,9 @@ use std::path::PathBuf;
 
 use dialoguer::Input;
 
-use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput};
 use crate::commands::keyring::store::Store;
+use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::crypto::Aes256GcmSivEncryptor;
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
@@ -91,11 +91,6 @@ impl WizardInput for EncryptionKeyInput<'_> {
     fn non_interactive_fallback(&self) -> Result<String, String> {
         Err("--encryption-key is required when not running interactively".to_string())
     }
-}
-
-fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("Error: {message}");
-    FAILURE_EXIT_CODE
 }
 
 /// Entry point for `pigeon job run decrypt-files` (ADR-0028).

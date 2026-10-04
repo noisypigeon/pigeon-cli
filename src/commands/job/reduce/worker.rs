@@ -56,7 +56,12 @@ async fn process_item(
     let extension = extension_of(&task.key);
     if let Err(err) = download::check_disk_space(raw_dir, task.size) {
         tracing::warn!(key = %task.key, step = "download", error = %err, "not enough disk space");
-        crate::observability::metrics::record_phase("reduce", "download", "failed");
+        crate::observability::metrics::record_phase(
+            "reduce",
+            "download",
+            "failed",
+            Some(bucket_config.alias.as_str()),
+        );
         return ItemOutcome::Failed {
             category: FailureCategory::Download,
         };
@@ -74,18 +79,33 @@ async fn process_item(
     {
         tracing::warn!(key = %task.key, step = "download", error = %err, "download failed");
         let _ = fs::remove_file(&raw_path);
-        crate::observability::metrics::record_phase("reduce", "download", "failed");
+        crate::observability::metrics::record_phase(
+            "reduce",
+            "download",
+            "failed",
+            Some(bucket_config.alias.as_str()),
+        );
         return ItemOutcome::Failed {
             category: FailureCategory::Download,
         };
     }
-    crate::observability::metrics::record_phase("reduce", "download", "ok");
+    crate::observability::metrics::record_phase(
+        "reduce",
+        "download",
+        "ok",
+        Some(bucket_config.alias.as_str()),
+    );
 
     let extension_dir = result_dir.join(&extension);
     if let Err(err) = fs::create_dir_all(&extension_dir) {
         tracing::warn!(key = %task.key, step = "placement", error = %err, "failed to create extension dir");
         let _ = fs::remove_file(&raw_path);
-        crate::observability::metrics::record_phase("reduce", "placement", "failed");
+        crate::observability::metrics::record_phase(
+            "reduce",
+            "placement",
+            "failed",
+            Some(bucket_config.alias.as_str()),
+        );
         return ItemOutcome::Failed {
             category: FailureCategory::Placement,
         };
@@ -98,12 +118,22 @@ async fn process_item(
     if let Err(err) = fs::rename(&raw_path, &final_path) {
         tracing::warn!(key = %task.key, step = "placement", error = %err, "failed to place file");
         let _ = fs::remove_file(&raw_path);
-        crate::observability::metrics::record_phase("reduce", "placement", "failed");
+        crate::observability::metrics::record_phase(
+            "reduce",
+            "placement",
+            "failed",
+            Some(bucket_config.alias.as_str()),
+        );
         return ItemOutcome::Failed {
             category: FailureCategory::Placement,
         };
     }
-    crate::observability::metrics::record_phase("reduce", "placement", "ok");
+    crate::observability::metrics::record_phase(
+        "reduce",
+        "placement",
+        "ok",
+        Some(bucket_config.alias.as_str()),
+    );
     ItemOutcome::Placed { key: task.key }
 }
 

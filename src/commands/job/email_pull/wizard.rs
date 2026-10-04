@@ -3,7 +3,6 @@ use std::path::PathBuf;
 
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 
-use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::email_sync::wizard::print_manifest_summary;
 use crate::commands::job::email_sync::{DEFAULT_MAX_CONNECTIONS_PER_IDENTITY, IdentityContext};
 use crate::commands::job::shared_wizard::{
@@ -11,6 +10,7 @@ use crate::commands::job::shared_wizard::{
 };
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
+use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
 use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
@@ -383,11 +383,6 @@ async fn dispatch_async(
         }
         Err(err) => fail(err),
     }
-}
-
-fn fail(message: impl std::fmt::Display) -> i32 {
-    eprintln!("Error: {message}");
-    FAILURE_EXIT_CODE
 }
 
 /// Whether `ctx`'s identity has a completed local run `--upload-only` can

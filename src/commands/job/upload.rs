@@ -232,7 +232,13 @@ async fn upload_one(
     // Metrics only, no log line (ADR-0093) -- "upload started" carried no
     // error/context beyond file/bytes, the same telemetry-not-diagnostic
     // shape as the resource sampler's old log line.
-    metrics::counter!("pigeon_upload_attempts_total", "pigeon_job" => task.job).increment(1);
+    metrics::counter!(
+        "pigeon_upload_attempts_total",
+        "pigeon_job" => task.job,
+        "instance" => crate::observability::instance(),
+        "destination_bucket" => bucket_config.alias.clone(),
+    )
+    .increment(1);
     let upload_started = std::time::Instant::now();
 
     let outcome = async {
@@ -265,23 +271,45 @@ async fn upload_one(
         .await
     }
     .await;
-    metrics::histogram!("pigeon_upload_duration_seconds", "pigeon_job" => task.job)
-        .record(upload_started.elapsed().as_secs_f64());
+    metrics::histogram!(
+        "pigeon_upload_duration_seconds",
+        "pigeon_job" => task.job,
+        "instance" => crate::observability::instance(),
+        "destination_bucket" => bucket_config.alias.clone(),
+    )
+    .record(upload_started.elapsed().as_secs_f64());
 
     bar.inc(1);
     match outcome {
         Ok(client::UploadOutcome::Uploaded) => {
             let _ = commit_uploaded(uploaded_indexes, &task);
-            metrics::counter!("pigeon_upload_bytes_total", "pigeon_job" => task.job)
-                .increment(bytes_for_log);
-            metrics::counter!("pigeon_upload_outcomes_total", "pigeon_job" => task.job, "outcome" => "uploaded")
-                .increment(1);
+            metrics::counter!(
+                "pigeon_upload_bytes_total",
+                "pigeon_job" => task.job,
+                "instance" => crate::observability::instance(),
+                "destination_bucket" => bucket_config.alias.clone(),
+            )
+            .increment(bytes_for_log);
+            metrics::counter!(
+                "pigeon_upload_outcomes_total",
+                "pigeon_job" => task.job,
+                "outcome" => "uploaded",
+                "instance" => crate::observability::instance(),
+                "destination_bucket" => bucket_config.alias.clone(),
+            )
+            .increment(1);
             UploadOutcomeKind::Uploaded
         }
         Ok(client::UploadOutcome::Unchanged) => {
             let _ = commit_uploaded(uploaded_indexes, &task);
-            metrics::counter!("pigeon_upload_outcomes_total", "pigeon_job" => task.job, "outcome" => "unchanged")
-                .increment(1);
+            metrics::counter!(
+                "pigeon_upload_outcomes_total",
+                "pigeon_job" => task.job,
+                "outcome" => "unchanged",
+                "instance" => crate::observability::instance(),
+                "destination_bucket" => bucket_config.alias.clone(),
+            )
+            .increment(1);
             UploadOutcomeKind::Unchanged
         }
         Err(err) => {
@@ -296,8 +324,14 @@ async fn upload_one(
                 "Warning: upload failed for {}: {err}",
                 task.path.display()
             ));
-            metrics::counter!("pigeon_upload_outcomes_total", "pigeon_job" => task.job, "outcome" => "failed")
-                .increment(1);
+            metrics::counter!(
+                "pigeon_upload_outcomes_total",
+                "pigeon_job" => task.job,
+                "outcome" => "failed",
+                "instance" => crate::observability::instance(),
+                "destination_bucket" => bucket_config.alias.clone(),
+            )
+            .increment(1);
             UploadOutcomeKind::Failed
         }
     }
