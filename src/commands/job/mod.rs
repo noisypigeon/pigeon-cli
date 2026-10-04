@@ -1,10 +1,11 @@
 pub mod cli;
 pub mod commands;
 pub mod decrypt_files;
-pub mod dedupe;
+pub mod deduplicate;
 pub(crate) mod download;
 pub mod email_pull;
 pub mod email_sync;
 pub mod pull_transform;
+pub mod reduce;
 pub(crate) mod shared_wizard;
 pub(crate) mod upload;

@@ -698,18 +698,18 @@ fn job_run_pull_transform_with_unknown_bucket_fails_fast() {
 }
 
 #[test]
-fn job_run_help_lists_dedupe() {
+fn job_run_help_lists_deduplicate() {
     pigeon()
         .args(["job", "run", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("dedupe"));
+        .stdout(predicate::str::contains("deduplicate"));
 }
 
 #[test]
-fn job_run_dedupe_help_shows_source_bucket_and_concurrency_flags() {
+fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
     pigeon()
-        .args(["job", "run", "dedupe", "--help"])
+        .args(["job", "run", "deduplicate", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("--source-bucket"))
@@ -719,7 +719,7 @@ fn job_run_dedupe_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--upload-concurrency"))
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--yes"))
-        // ADR-0082 §0/§1: dedupe never offers encryption or file-type/
+        // ADR-0082 §0/§1: deduplicate never offers encryption or file-type/
         // zip-expansion selection -- every file is always processed and
         // every zip is always expanded.
         .stdout(predicate::str::contains("--encryption-key").not())
@@ -728,7 +728,7 @@ fn job_run_dedupe_help_shows_source_bucket_and_concurrency_flags() {
 }
 
 #[test]
-fn job_run_dedupe_without_source_bucket_fails_fast_non_interactively() {
+fn job_run_deduplicate_without_source_bucket_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
@@ -736,7 +736,7 @@ fn job_run_dedupe_without_source_bucket_fails_fast_non_interactively() {
         .args([
             "job",
             "run",
-            "dedupe",
+            "deduplicate",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -752,18 +752,18 @@ fn job_run_dedupe_without_source_bucket_fails_fast_non_interactively() {
 }
 
 #[test]
-fn job_run_dedupe_upload_only_without_a_completed_run_fails_fast() {
+fn job_run_deduplicate_upload_only_without_a_completed_run_fails_fast() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
     // No --source-bucket, no --remote-output: the preflight check (ADR-0089)
     // must fail before either would ever be resolved, since this empty
-    // --local-output never ran a dedupe pass at all.
+    // --local-output never ran a deduplicate pass at all.
     pigeon_in(&config_dir)
         .args([
             "job",
             "run",
-            "dedupe",
+            "deduplicate",
             "--upload-only",
             "--local-output",
             local_output.path().to_str().unwrap(),
@@ -772,11 +772,13 @@ fn job_run_dedupe_upload_only_without_a_completed_run_fails_fast() {
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("no completed dedupe run found"));
+        .stderr(predicate::str::contains(
+            "no completed deduplicate run found",
+        ));
 }
 
 #[test]
-fn job_run_dedupe_with_unknown_bucket_fails_fast() {
+fn job_run_deduplicate_with_unknown_bucket_fails_fast() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
@@ -784,7 +786,7 @@ fn job_run_dedupe_with_unknown_bucket_fails_fast() {
         .args([
             "job",
             "run",
-            "dedupe",
+            "deduplicate",
             "--source-bucket",
             "no-such-bucket",
             "--local-output",
@@ -798,6 +800,138 @@ fn job_run_dedupe_with_unknown_bucket_fails_fast() {
         .code(1)
         .stderr(predicate::str::contains(
             "no bucket-config named 'no-such-bucket'",
+        ));
+}
+
+#[test]
+fn job_run_help_lists_reduce() {
+    pigeon()
+        .args(["job", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("reduce"));
+}
+
+#[test]
+fn job_run_reduce_help_shows_source_bucket_and_concurrency_flags() {
+    pigeon()
+        .args(["job", "run", "reduce", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source-bucket"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--remote-output"))
+        .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--upload-concurrency"))
+        .stdout(predicate::str::contains("--upload-only"))
+        .stdout(predicate::str::contains("--force-valuable"))
+        .stdout(predicate::str::contains("--force-reproducible"))
+        .stdout(predicate::str::contains("--yes"))
+        // ADR-0096: reduce never offers encryption or file-type/
+        // zip-expansion selection -- its input is already flat.
+        .stdout(predicate::str::contains("--encryption-key").not())
+        .stdout(predicate::str::contains("--file-types").not())
+        .stdout(predicate::str::contains("--expand-zips").not());
+}
+
+#[test]
+fn job_run_reduce_upload_only_without_a_completed_run_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    // No --source-bucket, no --remote-output: the preflight check must
+    // fail before either would ever be resolved, since this empty
+    // --local-output never ran a reduce pass at all.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "reduce",
+            "--upload-only",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no completed reduce run found"));
+}
+
+#[test]
+fn job_run_reduce_without_source_bucket_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "reduce",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--source-bucket is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_reduce_with_unknown_source_bucket_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "reduce",
+            "--source-bucket",
+            "no-such-bucket",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no bucket-config named 'no-such-bucket'",
+        ));
+}
+
+#[test]
+fn job_run_reduce_without_remote_output_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "source-alias");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "reduce",
+            "--source-bucket",
+            "source-alias",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--remote-output is required when not running interactively",
         ));
 }
 

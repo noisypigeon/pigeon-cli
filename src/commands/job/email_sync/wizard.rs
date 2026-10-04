@@ -498,7 +498,7 @@ fn fail(message: impl std::fmt::Display) -> i32 {
 /// Whether `ctx`'s identity has a completed local run `--upload-only` can
 /// resume uploading from: its own `output_dir` must exist and hold at
 /// least one entry (the sanitized-email-named subdirectory a prior run
-/// placed its result under). Per-identity, unlike `dedupe`'s single-tree
+/// placed its result under). Per-identity, unlike `deduplicate`'s single-tree
 /// check, since each identity has its own isolated `staging`/`result`
 /// subtree (ADR-0090).
 fn identity_has_completed_run(ctx: &IdentityContext) -> bool {
@@ -510,7 +510,7 @@ fn identity_has_completed_run(ctx: &IdentityContext) -> bool {
 /// `--upload-only` branch of `dispatch_async` (ADR-0090): resumes uploading
 /// already-completed local runs for the selected identities, skipping the
 /// IMAP connect/fetch/transform/dedup phases -- and the per-identity IMAP
-/// credentials they'd otherwise need -- entirely. Unlike `dedupe`'s
+/// credentials they'd otherwise need -- entirely. Unlike `deduplicate`'s
 /// single-tree version, an identity whose local state isn't ready is
 /// skipped with a warning rather than failing the whole command, since the
 /// other selected identities may still have something to upload.

@@ -10,6 +10,7 @@ use std::path::Path;
 
 use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
+pub(crate) use crate::core::data::extension_of;
 
 /// One source object pending processing -- `Job::gather`'s result. Only
 /// top-level bucket objects; zip members discovered during `run()` are
@@ -108,36 +109,9 @@ pub(crate) async fn gather_pending(
     })
 }
 
-/// The lowercased extension of `key`'s final path segment, or `"(none)"`
-/// when there isn't one -- deliberately a plain string bucket rather than a
-/// closed enum, since a bucket can (and often does) contain extensions this
-/// job has no special handling for.
-pub(crate) fn extension_of(key: &str) -> String {
-    std::path::Path::new(key)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .unwrap_or_else(|| "(none)".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extension_of_lowercases_and_strips_the_dot() {
-        assert_eq!(extension_of("Photos/IMG_0001.JPG"), "jpg");
-    }
-
-    #[test]
-    fn extension_of_handles_no_extension() {
-        assert_eq!(extension_of("Photos/README"), "(none)");
-    }
-
-    #[test]
-    fn extension_of_handles_dotfiles_without_extension() {
-        assert_eq!(extension_of(".DS_Store"), "(none)");
-    }
 
     #[test]
     fn load_checkpoint_is_empty_for_a_fresh_directory() {

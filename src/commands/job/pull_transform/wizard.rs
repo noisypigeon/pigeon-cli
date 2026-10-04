@@ -7,8 +7,8 @@ use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 
 use crate::commands::FAILURE_EXIT_CODE;
 use crate::commands::job::shared_wizard::{
-    ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, UploadConcurrencyInput,
-    UploadTargetInput,
+    ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, SourceBucketInput,
+    UploadConcurrencyInput, UploadTargetInput,
 };
 use crate::commands::keyring::store::Store;
 use crate::core::crypto::Aes256GcmSivEncryptor;
@@ -20,32 +20,6 @@ use super::manifest::{self, PROCESSED_FILE_NAME, PullTask};
 use super::media::{self, TranscodeTargets, check_ffmpeg_available};
 use super::worker;
 use super::{PullTransformJob, TypeSummary};
-
-/// Resolves which bucket-config to pull from -- mandatory (unlike
-/// `UploadTargetInput`'s optional upload target), since there's no sane
-/// default source for this job the way `email_sync`'s local-output has one.
-struct SourceBucketInput<'a> {
-    flag: Option<String>,
-    store: &'a Store,
-}
-
-impl WizardInput for SourceBucketInput<'_> {
-    type Value = String;
-
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(Ok)
-    }
-
-    fn prompt(&self) -> Result<String, String> {
-        self.store
-            .prompt_select_bucket()
-            .map(|bucket_config| bucket_config.alias.clone())
-    }
-
-    fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--source-bucket is required when not running interactively".to_string())
-    }
-}
 
 /// Same shape as `email_sync::wizard`'s `LocalOutputInput` -- `--local-output`
 /// if given, an editable prompt on a TTY, that same default silently
@@ -604,7 +578,7 @@ async fn dispatch_async(
 /// Whether `local_output` holds a completed prior pull-transform run that
 /// `--upload-only` can resume uploading from: its `.processed` checkpoint
 /// must exist directly under `local_output` (not under `.staging/` --
-/// unlike `dedupe`/`sort`, this job never adopted that split) and at least
+/// unlike `deduplicate`/`sort`, this job never adopted that split) and at least
 /// one placed-content subdirectory (`local_output/<extension>/...`, where
 /// every real file lives) must exist besides `.staging` itself (ADR-0090).
 fn upload_only_preflight_ok(local_output: &Path) -> bool {

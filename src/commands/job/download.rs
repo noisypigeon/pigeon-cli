@@ -1,6 +1,6 @@
 //! Disk-space-aware, streaming download primitives shared by every job that
 //! pulls bucket objects to local disk (originally `pull_transform::worker`'s
-//! own private helpers, ADR-0076; hoisted here once `dedupe` needed the
+//! own private helpers, ADR-0076; hoisted here once `deduplicate` needed the
 //! exact same behavior, ADR-0082 §0 -- same "extract on a second real
 //! consumer" reasoning as `commands::job::upload`'s own ADR-0074 hoist).
 

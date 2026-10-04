@@ -35,7 +35,7 @@ gap. See step 4 and the Known limitations section.
    `~/.local/share/pigeon/logs/pigeon.jsonl` (Linux -- `directories`'
    `data_local_dir()`, i.e. `$XDG_DATA_HOME` or `~/.local/share` by
    default; this is the path a headless Linux box running a long `job run
-   dedupe`/`pull-transform` will actually have, ADR-0089). Overridable two
+   deduplicate`/`pull-transform` will actually have, ADR-0089). Overridable two
    ways -- check both before assuming the default: the `PIGEON_LOG_DIR`
    environment variable, or a `--log-file <path>` flag passed to the
    command itself. If the user pasted a terminal transcript, look for
@@ -47,7 +47,7 @@ gap. See step 4 and the Known limitations section.
    line (timestamp + `anon-rss:<kB>`) is faster to get to than reconstructing
    the same conclusion from `pigeon_resource_mem_bytes` climbing (step 4),
    and dates/correlates directly against the JSONL timeline from step 3 once
-   you have it (ADR-0089 -- this is exactly how a real `dedupe` OOM mid-upload
+   you have it (ADR-0089 -- this is exactly how a real `deduplicate` OOM mid-upload
    was first confirmed, back when this signal still lived in the log itself).
 
 2. **Isolate the run.** The log is **append-only across every past
@@ -175,9 +175,9 @@ let it go stale silently.
 
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
-`job.email-sync`, `job.pull-transform`, `job.decrypt-files`, `job.dedupe`,
-`job.email-pull`, `keyring.add`, `keyring.modify`,
-`keyring.delete`, `keyring.list`.
+`job.email-sync`, `job.pull-transform`, `job.decrypt-files`,
+`job.deduplicate`, `job.reduce`, `job.email-pull`, `keyring.add`,
+`keyring.modify`, `keyring.delete`, `keyring.list`.
 
 **Keyring commands emit no per-operation tracing at all** -- only the two
 boilerplate `"command finished"`/`"close"` events for the outer span. A
@@ -191,16 +191,22 @@ the user for the terminal output instead.
   (also `upload`, shared with every job's upload phase).
 - `email-sync`: `connect`, `examine`, `batch`, `fetch`, `transform`,
   `verify` (also `upload`).
-- `dedupe`: `download`, `archive` (zip expansion), `hash` (SHA-256 content
-  hashing), `place` (also `upload`). The fetch+hash phase is CPU-bound
-  (ADR-0088) -- a slow `dedupe` run with normal-looking `pigeon_resource_cpu_percent`
-  (Prometheus, step 4) and a thin WARN/ERROR tail is more likely genuinely
-  waiting on a slow source bucket than failing; a `dedupe` run OOM-killed
-  specifically partway through the upload phase (`pigeon_job_macro_phase`
-  last reading `1` before samples stop, step 4) matches the known ADR-0089
-  failure mode -- check whether `--upload-only` (resumes uploading an
-  already-completed local run without repeating download/hash/placement)
-  is available on the installed version before suggesting a full rerun.
+- `deduplicate`: `download`, `archive` (zip expansion), `hash` (SHA-256
+  content hashing), `place` (also `upload`). The fetch+hash phase is
+  CPU-bound (ADR-0088) -- a slow `deduplicate` run with normal-looking
+  `pigeon_resource_cpu_percent` (Prometheus, step 4) and a thin WARN/ERROR
+  tail is more likely genuinely waiting on a slow source bucket than
+  failing; a `deduplicate` run OOM-killed specifically partway through the
+  upload phase (`pigeon_job_macro_phase` last reading `1` before samples
+  stop, step 4) matches the known ADR-0089 failure mode -- check whether
+  `--upload-only` (resumes uploading an already-completed local run
+  without repeating download/hash/placement) is available on the
+  installed version before suggesting a full rerun.
+- `reduce`: `download`, `placement` (also `upload`). No hash/archive
+  phases at all -- it classifies by extension only and never expands zips
+  (its input, `deduplicate`'s output, is already flat). A `reduce` run
+  with a large `skipped_low_value` count relative to `forwarded` in its
+  completion summary is working as intended, not a sign of trouble.
 
 **`pigeon_upload_attempts_total` metric** (`upload.rs::upload_one`,
 ADR-0093, replaces the old `"upload started"` log event removed in the
@@ -227,13 +233,18 @@ hasn't already pasted it):
   {uploaded} uploaded, {unchanged} unchanged, {upload_failed} upload
   failed."`
 - `decrypt-files`: `"Decrypted {decrypted} file(s), {failed} failed."`
-- `dedupe`: `"Processed {processed} file(s), {failed} failed ({download}
+- `deduplicate`: `"Processed {processed} file(s), {failed} failed ({download}
   download, {archive} archive, {hash} hash), {duplicates_skipped}
   duplicate(s) skipped, {uploaded} uploaded, {unchanged} unchanged,
   {upload_failed} upload failed."` -- a `--upload-only` resumed run instead
   prints `"Uploaded {uploaded} file(s), {unchanged} unchanged,
   {upload_failed} upload failed."` (no `processed`/`failed`/dedup counts --
   it never re-touches download/hash/placement, ADR-0089).
+- `reduce`: `"Forwarded {forwarded} file(s), {failed} failed ({download}
+  download, {placement} placement), {skipped_low_value} skipped
+  (reproducible), {uploaded} uploaded, {unchanged} unchanged,
+  {upload_failed} upload failed."` -- same `--upload-only` resumed-run
+  shape as `deduplicate`'s.
 
 Every job above: a nonzero `failed`/`upload_failed` means the process
 exited with `FAILURE_EXIT_CODE`, not `0`.

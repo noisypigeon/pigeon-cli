@@ -4,7 +4,7 @@
 //! from this sibling job), with one deliberate layout correction: checkpoint
 //! functions take `staging_dir`, not `local_output` itself -- keeps
 //! `.processed`/`.content-hashes` out of the uploaded `result/` tree (see
-//! `dedupe/mod.rs`'s top-level doc comment).
+//! `deduplicate/mod.rs`'s top-level doc comment).
 
 use std::collections::HashSet;
 use std::fs;
@@ -12,11 +12,12 @@ use std::path::Path;
 
 use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
+pub(crate) use crate::core::data::extension_of;
 
 /// One source object pending processing -- `Job::gather`'s result. Only
 /// top-level bucket objects; zip members discovered during `run()` are
 /// queued dynamically there, never appear in this list.
-pub(crate) struct DedupeTask {
+pub(crate) struct DeduplicateTask {
     pub key: String,
     pub size: u64,
 }
@@ -29,8 +30,8 @@ pub(crate) struct TypeSummary {
     pub total_bytes: u64,
 }
 
-pub(crate) struct DedupePlan {
-    pub tasks: Vec<DedupeTask>,
+pub(crate) struct DeduplicatePlan {
+    pub tasks: Vec<DeduplicateTask>,
     pub type_summary: Vec<TypeSummary>,
 }
 
@@ -73,7 +74,7 @@ pub(crate) async fn gather_pending(
     bucket_config: &BucketConfig,
     secret: &str,
     staging_dir: &Path,
-) -> Result<DedupePlan, String> {
+) -> Result<DeduplicatePlan, String> {
     let done = load_checkpoint(staging_dir)?;
     let entries = client::list_objects(bucket_config, secret, "", true).await?;
 
@@ -89,7 +90,7 @@ pub(crate) async fn gather_pending(
         let bucket = by_extension.entry(extension).or_insert((0, 0));
         bucket.0 += 1;
         bucket.1 += entry.size;
-        tasks.push(DedupeTask {
+        tasks.push(DeduplicateTask {
             key: entry.key,
             size: entry.size,
         });
@@ -104,40 +105,15 @@ pub(crate) async fn gather_pending(
         })
         .collect();
 
-    Ok(DedupePlan {
+    Ok(DeduplicatePlan {
         tasks,
         type_summary,
     })
 }
 
-/// The lowercased extension of `key`'s final path segment, or `"(none)"`
-/// when there isn't one.
-pub(crate) fn extension_of(key: &str) -> String {
-    std::path::Path::new(key)
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .unwrap_or_else(|| "(none)".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn extension_of_lowercases_and_strips_the_dot() {
-        assert_eq!(extension_of("Photos/IMG_0001.JPG"), "jpg");
-    }
-
-    #[test]
-    fn extension_of_handles_no_extension() {
-        assert_eq!(extension_of("Photos/README"), "(none)");
-    }
-
-    #[test]
-    fn extension_of_handles_dotfiles_without_extension() {
-        assert_eq!(extension_of(".DS_Store"), "(none)");
-    }
 
     #[test]
     fn load_checkpoint_is_empty_for_a_missing_staging_dir() {

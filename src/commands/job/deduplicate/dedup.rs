@@ -13,9 +13,9 @@ use crate::core::data::{ContentIndex, Dedup, sanitize_filename, unique_path};
 
 pub(crate) const CONTENT_HASHES_FILE: &str = ".content-hashes";
 
-pub(crate) struct DedupeDedup(pub(crate) ContentIndex);
+pub(crate) struct DeduplicateDedup(pub(crate) ContentIndex);
 
-impl Dedup for DedupeDedup {
+impl Dedup for DeduplicateDedup {
     fn check(&self, hash: &str) -> Option<&str> {
         self.0.check(hash)
     }
@@ -51,7 +51,7 @@ pub(crate) struct PlacementSummary {
 }
 
 /// Whether `key`'s file name carries the source data's "no known date"
-/// sentinel (`0000-00-00-...`) rather than a real date prefix. Dedupe's
+/// sentinel (`0000-00-00-...`) rather than a real date prefix. Deduplicate's
 /// keep-selection (ADR-0095) uses this to avoid preferring an undated copy
 /// over a dated one just because "0000" sorts before a real year.
 fn is_undated_key(key: &str) -> bool {
@@ -76,7 +76,7 @@ fn is_undated_key(key: &str) -> bool {
 pub(crate) fn place_and_report(
     result_dir: &Path,
     mut files: Vec<HashedFile>,
-    dedup: &mut DedupeDedup,
+    dedup: &mut DeduplicateDedup,
     multi_progress: &MultiProgress,
 ) -> (PlacementSummary, Vec<MergeRecord>, Vec<String>) {
     files.sort_by(|a, b| {
@@ -112,11 +112,15 @@ pub(crate) fn place_and_report(
                         "failed to place file"
                     );
                     summary.failed += 1;
-                    crate::observability::metrics::record_phase("dedupe", "placement", "failed");
+                    crate::observability::metrics::record_phase(
+                        "deduplicate",
+                        "placement",
+                        "failed",
+                    );
                     continue;
                 }
                 summary.placed += 1;
-                crate::observability::metrics::record_phase("dedupe", "placement", "ok");
+                crate::observability::metrics::record_phase("deduplicate", "placement", "ok");
                 finished_keys.push(file.original_key);
             }
         }
@@ -126,7 +130,11 @@ pub(crate) fn place_and_report(
     (summary, records, finished_keys)
 }
 
-fn place_one(result_dir: &Path, file: &HashedFile, dedup: &mut DedupeDedup) -> Result<(), String> {
+fn place_one(
+    result_dir: &Path,
+    file: &HashedFile,
+    dedup: &mut DeduplicateDedup,
+) -> Result<(), String> {
     let extension_dir = result_dir.join(&file.extension);
     fs::create_dir_all(&extension_dir)
         .map_err(|err| format!("failed to create {}: {err}", extension_dir.display()))?;
@@ -154,7 +162,7 @@ fn place_one(result_dir: &Path, file: &HashedFile, dedup: &mut DedupeDedup) -> R
 }
 
 /// Writes a plain-text, tab-separated merge report to
-/// `local_output/dedupe-report.txt` -- one line per `MergeRecord` plus a
+/// `local_output/deduplicate-report.txt` -- one line per `MergeRecord` plus a
 /// trailing summary line. Written even when `records` is empty, so the
 /// report lives at a predictable, scriptable path every run (ADR-0082 §5).
 pub(crate) fn write_report(local_output: &Path, records: &[MergeRecord]) -> Result<(), String> {
@@ -167,7 +175,7 @@ pub(crate) fn write_report(local_output: &Path, records: &[MergeRecord]) -> Resu
     }
     contents.push_str(&format!("\n{} duplicate(s) removed.\n", records.len()));
 
-    let path = local_output.join("dedupe-report.txt");
+    let path = local_output.join("deduplicate-report.txt");
     fs::write(&path, contents).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
@@ -175,8 +183,8 @@ pub(crate) fn write_report(local_output: &Path, records: &[MergeRecord]) -> Resu
 mod tests {
     use super::*;
 
-    fn dedup_at(dir: &Path) -> DedupeDedup {
-        DedupeDedup(ContentIndex::load(dir, CONTENT_HASHES_FILE).unwrap())
+    fn dedup_at(dir: &Path) -> DeduplicateDedup {
+        DeduplicateDedup(ContentIndex::load(dir, CONTENT_HASHES_FILE).unwrap())
     }
 
     fn stage_scratch(staging: &Path, name: &str, contents: &[u8]) -> PathBuf {
@@ -214,7 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn place_and_report_dedupes_a_cross_key_duplicate_and_records_it() {
+    fn place_and_report_deduplicates_a_cross_key_duplicate_and_records_it() {
         let staging = tempfile::tempdir().unwrap();
         let result_dir = tempfile::tempdir().unwrap();
         let mut dedup = dedup_at(staging.path());
@@ -339,7 +347,7 @@ mod tests {
 
         write_report(dir.path(), &records).unwrap();
 
-        let contents = fs::read_to_string(dir.path().join("dedupe-report.txt")).unwrap();
+        let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
         assert!(contents.contains("b/report-copy.pdf\tsame-hash\tpdf/report.pdf"));
         assert!(contents.contains("1 duplicate(s) removed."));
     }
@@ -350,7 +358,7 @@ mod tests {
 
         write_report(dir.path(), &[]).unwrap();
 
-        let contents = fs::read_to_string(dir.path().join("dedupe-report.txt")).unwrap();
+        let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
         assert!(contents.contains("0 duplicate(s) removed."));
     }
 }

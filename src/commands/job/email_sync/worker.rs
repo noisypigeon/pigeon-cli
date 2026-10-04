@@ -695,7 +695,7 @@ fn identity_upload_tasks(
 /// IMAP connect/fetch/transform/dedup phases entirely (ADR-0090's
 /// `--upload-only`) -- `identities` is expected to already be filtered down
 /// to ones with a completed local run (the wizard's job, same preflight
-/// check `dedupe`'s single-tree version does, just per-identity here).
+/// check `deduplicate`'s single-tree version does, just per-identity here).
 /// Accumulates every identity's upload tasks into one shared
 /// `run_upload_phase` call, exactly mirroring how `run_email_sync_job`'s
 /// own per-identity loop already does before its own shared upload call.

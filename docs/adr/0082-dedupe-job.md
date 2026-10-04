@@ -2,7 +2,8 @@
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-30.
-- **Status**: Accepted.
+- **Status**: Accepted. Renamed `dedupe` → `deduplicate` by ADR-0096
+  (module/identifier names in the body below are historical).
 
 ## Context
 
