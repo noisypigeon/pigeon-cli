@@ -966,3 +966,105 @@ fn job_run_pull_transform_without_ffmpeg_on_path_fails_fast_with_a_clear_error()
         .code(1)
         .stderr(predicate::str::contains("was not found on PATH"));
 }
+
+#[test]
+fn job_run_help_lists_import() {
+    pigeon()
+        .args(["job", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("import"));
+}
+
+#[test]
+fn job_run_import_help_shows_source_destination_and_report_bucket_flags() {
+    pigeon()
+        .args(["job", "run", "import", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source"))
+        .stdout(predicate::str::contains("--destination"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--yes"))
+        // ADR-0101: import's rclone performance/retry flags are fixed, not
+        // CLI flags, and it never resolves a pigeon bucket-config for
+        // source/destination.
+        .stdout(predicate::str::contains("--source-bucket").not())
+        .stdout(predicate::str::contains("--concurrency").not())
+        .stdout(predicate::str::contains("--encryption-key").not());
+}
+
+#[test]
+fn job_run_import_without_source_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "import",
+            "--destination",
+            "dest:",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--source is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_import_without_destination_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "import",
+            "--source",
+            "source:media/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--destination is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "import",
+            "--source",
+            "source:media/",
+            "--destination",
+            "dest:",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("was not found on PATH"));
+}
