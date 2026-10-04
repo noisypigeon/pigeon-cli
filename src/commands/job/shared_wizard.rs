@@ -39,6 +39,34 @@ impl WizardInput for SourceBucketInput<'_> {
     }
 }
 
+/// Resolves which bucket-config to upload this run's report/log/transcript
+/// to -- mandatory on every job type (ADR-0100), identical shape to
+/// `SourceBucketInput`'s mandatory selection above. Put here directly
+/// (rather than originated in one job first) since every job needs it from
+/// day one.
+pub(crate) struct ReportBucketInput<'a> {
+    pub flag: Option<String>,
+    pub store: &'a Store,
+}
+
+impl WizardInput for ReportBucketInput<'_> {
+    type Value = String;
+
+    fn flag_value(&self) -> Option<Result<String, String>> {
+        self.flag.clone().map(Ok)
+    }
+
+    fn prompt(&self) -> Result<String, String> {
+        self.store
+            .prompt_select_bucket()
+            .map(|bucket_config| bucket_config.alias.clone())
+    }
+
+    fn non_interactive_fallback(&self) -> Result<String, String> {
+        Err("--report-bucket is required when not running interactively".to_string())
+    }
+}
+
 /// Resolves whether (and where) to upload (originally `email_sync`'s
 /// `RemoteOutputInput`, ADR-0021 §5 amendment): `Some(alias)` if the flag is
 /// given (validated by the caller); on a TTY if omitted, asks whether to

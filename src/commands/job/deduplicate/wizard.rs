@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use dialoguer::Input;
 
+use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, CpuConcurrencyInput, SourceBucketInput, UploadConcurrencyInput, UploadTargetInput,
 };
@@ -79,6 +80,7 @@ fn print_type_summary(summaries: &[TypeSummary]) {
 }
 
 /// Entry point for `pigeon job run deduplicate` (ADR-0082).
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     source_bucket: Option<String>,
     local_output: Option<PathBuf>,
@@ -86,6 +88,8 @@ pub fn dispatch(
     concurrency: Option<usize>,
     upload_concurrency: Option<usize>,
     upload_only: bool,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -102,10 +106,13 @@ pub fn dispatch(
         concurrency,
         upload_concurrency,
         upload_only,
+        report_bucket,
+        job_name,
         yes,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_async(
     source_bucket: Option<String>,
     local_output: Option<PathBuf>,
@@ -113,6 +120,8 @@ async fn dispatch_async(
     concurrency: Option<usize>,
     upload_concurrency: Option<usize>,
     upload_only: bool,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as every
@@ -134,6 +143,8 @@ async fn dispatch_async(
             local_output,
             remote_output,
             upload_concurrency,
+            report_bucket,
+            job_name,
             yes,
             &keyring_store,
         )
@@ -220,6 +231,11 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, &keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -230,10 +246,18 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    let report_path = job.local_output.join("deduplicate-report.txt");
-    match job.run(plan, concurrency, upload_concurrency).await {
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let (transcript, transcript_path) = match report_upload::new_transcript(&job.local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let job_local_output = job.local_output.clone();
+    let report_path = job_local_output.join("deduplicate-report.txt");
+    let exit_code = match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} uploaded, {} unchanged, {} upload failed.",
                 summary.processed,
                 summary.failed,
@@ -246,15 +270,30 @@ async fn dispatch_async(
                 summary.unchanged,
                 summary.upload_failed
             );
-            println!("Report: {}", report_path.display());
+            report_upload::say(&transcript, message);
+            report_upload::say(&transcript, format!("Report: {}", report_path.display()));
             if summary.failed > 0 || summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
             }
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            if !report_path.exists() {
+                let _ = report_upload::write_summary_report(&job_local_output, job_name, &err);
+            }
+            fail(err)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }
 
 /// Whether `local_output` holds a completed prior deduplicate run that
@@ -277,10 +316,13 @@ fn upload_only_preflight_ok(local_output: &Path) -> bool {
 /// an already-completed local deduplicate run, skipping the bucket listing/
 /// download/hash/placement phases -- and the source bucket credentials
 /// they'd otherwise need -- entirely.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_upload_only(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     upload_concurrency: Option<usize>,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
     keyring_store: &Store,
 ) -> i32 {
@@ -326,6 +368,11 @@ async fn dispatch_upload_only(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -336,7 +383,14 @@ async fn dispatch_upload_only(
         Err(err) => return fail(err),
     }
 
-    match worker::run_upload_only(
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let (transcript, transcript_path) = match report_upload::new_transcript(&local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match worker::run_upload_only(
         &local_output,
         (&remote_bucket_config, &remote_secret),
         upload_concurrency,
@@ -344,18 +398,39 @@ async fn dispatch_upload_only(
     .await
     {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Uploaded {} file(s), {} unchanged, {} upload failed.",
                 summary.uploaded, summary.unchanged, summary.upload_failed
             );
-            if summary.upload_failed > 0 {
+            report_upload::say(&transcript, message);
+            let exit_code = if summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
-            }
+            };
+            let report_path =
+                report_upload::write_summary_report(&local_output, job_name, &summary)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(error = %err, "failed to write report");
+                        local_output.join(format!("{job_name}-report.txt"))
+                    });
+            (exit_code, report_path)
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            let report_path = report_upload::write_summary_report(&local_output, job_name, &err)
+                .unwrap_or_else(|_| local_output.join(format!("{job_name}-report.txt")));
+            (fail(err), report_path)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }
 
 #[cfg(test)]

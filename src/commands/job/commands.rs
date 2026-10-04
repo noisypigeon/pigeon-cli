@@ -8,6 +8,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
     match command {
         JobCommands::Run(run_args) => {
             let name = run_args.job_type.command_name();
+            let job_name = run_args.job_type.job_name();
             crate::observability::run_instrumented(name, move || match run_args.job_type {
                 JobType::EmailSync {
                     identities,
@@ -18,6 +19,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     max_connections_per_identity,
                     upload_only,
+                    report_bucket,
                     yes,
                 } => email_sync::wizard::dispatch(
                     identities,
@@ -28,6 +30,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     max_connections_per_identity,
                     upload_only,
+                    report_bucket,
+                    job_name,
                     yes,
                 ),
                 JobType::EmailPull {
@@ -38,6 +42,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     max_connections_per_identity,
                     upload_only,
+                    report_bucket,
                     yes,
                 } => email_pull::wizard::dispatch(
                     identities,
@@ -47,6 +52,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     max_connections_per_identity,
                     upload_only,
+                    report_bucket,
+                    job_name,
                     yes,
                 ),
                 JobType::Deduplicate {
@@ -56,6 +63,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     concurrency,
                     upload_concurrency,
                     upload_only,
+                    report_bucket,
                     yes,
                 } => deduplicate::wizard::dispatch(
                     source_bucket,
@@ -64,6 +72,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     concurrency,
                     upload_concurrency,
                     upload_only,
+                    report_bucket,
+                    job_name,
                     yes,
                 ),
                 JobType::Reduce {
@@ -75,6 +85,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     force_valuable,
                     force_reproducible,
+                    report_bucket,
                     yes,
                 } => reduce::wizard::dispatch(
                     source_bucket,
@@ -85,6 +96,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     force_valuable,
                     force_reproducible,
+                    report_bucket,
+                    job_name,
                     yes,
                 ),
                 JobType::DecryptFiles {
@@ -92,12 +105,15 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     output_dir,
                     encryption_key,
                     concurrency,
+                    report_bucket,
                     yes,
                 } => decrypt_files::wizard::dispatch(
                     input_dir,
                     output_dir,
                     encryption_key,
                     concurrency,
+                    report_bucket,
+                    job_name,
                     yes,
                 ),
                 JobType::PullTransform {
@@ -113,6 +129,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     concurrency,
                     upload_concurrency,
                     upload_only,
+                    report_bucket,
                     yes,
                 } => pull_transform::wizard::dispatch(
                     source_bucket,
@@ -127,6 +144,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     concurrency,
                     upload_concurrency,
                     upload_only,
+                    report_bucket,
+                    job_name,
                     yes,
                 ),
             })

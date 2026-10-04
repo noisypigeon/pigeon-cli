@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 use dialoguer::{Confirm, Input, MultiSelect, Select, theme::ColorfulTheme};
 
+use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, CpuConcurrencyInput, EncryptionKeyInput, SourceBucketInput,
     UploadConcurrencyInput, UploadTargetInput,
@@ -308,6 +309,8 @@ pub fn dispatch(
     concurrency: Option<usize>,
     upload_concurrency: Option<usize>,
     upload_only: bool,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -330,6 +333,8 @@ pub fn dispatch(
         concurrency,
         upload_concurrency,
         upload_only,
+        report_bucket,
+        job_name,
         yes,
     ))
 }
@@ -348,6 +353,8 @@ async fn dispatch_async(
     concurrency: Option<usize>,
     upload_concurrency: Option<usize>,
     upload_only: bool,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return
@@ -371,6 +378,8 @@ async fn dispatch_async(
             remote_output,
             encryption_key,
             upload_concurrency,
+            report_bucket,
+            job_name,
             yes,
             &keyring_store,
         )
@@ -532,6 +541,11 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, &keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -542,9 +556,17 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    match job.run(plan, concurrency, upload_concurrency).await {
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let job_local_output = job.local_output.clone();
+    let (transcript, transcript_path) = match report_upload::new_transcript(&job_local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Processed {} file(s), {} failed ({} download, {} archive, {} classify, {} placement), {} skipped (type not selected), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} recoded, {} kept as original (recode did not verify), {} uploaded, {} unchanged, {} upload failed.",
                 summary.processed,
                 summary.failed,
@@ -561,14 +583,36 @@ async fn dispatch_async(
                 summary.unchanged,
                 summary.upload_failed
             );
-            if summary.failed > 0 || summary.upload_failed > 0 {
+            report_upload::say(&transcript, message);
+            let exit_code = if summary.failed > 0 || summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
-            }
+            };
+            let report_path =
+                report_upload::write_summary_report(&job_local_output, job_name, &summary)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(error = %err, "failed to write report");
+                        job_local_output.join(format!("{job_name}-report.txt"))
+                    });
+            (exit_code, report_path)
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            let report_path =
+                report_upload::write_summary_report(&job_local_output, job_name, &err)
+                    .unwrap_or_else(|_| job_local_output.join(format!("{job_name}-report.txt")));
+            (fail(err), report_path)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }
 
 /// Whether `local_output` holds a completed prior pull-transform run that
@@ -595,11 +639,14 @@ fn upload_only_preflight_ok(local_output: &Path) -> bool {
 /// listing/download/classify/recode/placement phases -- and the source
 /// bucket credentials and `ffmpeg`/`ffprobe` check they'd otherwise need --
 /// entirely.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_upload_only(
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     encryption_key: Option<String>,
     upload_concurrency: Option<usize>,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
     keyring_store: &Store,
 ) -> i32 {
@@ -670,6 +717,11 @@ async fn dispatch_upload_only(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -680,7 +732,14 @@ async fn dispatch_upload_only(
         Err(err) => return fail(err),
     }
 
-    match worker::run_upload_only(
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let (transcript, transcript_path) = match report_upload::new_transcript(&local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match worker::run_upload_only(
         &local_output,
         (&remote_bucket_config, &remote_secret),
         encryptor.as_ref(),
@@ -689,18 +748,39 @@ async fn dispatch_upload_only(
     .await
     {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Uploaded {} file(s), {} unchanged, {} upload failed.",
                 summary.uploaded, summary.unchanged, summary.upload_failed
             );
-            if summary.upload_failed > 0 {
+            report_upload::say(&transcript, message);
+            let exit_code = if summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
-            }
+            };
+            let report_path =
+                report_upload::write_summary_report(&local_output, job_name, &summary)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(error = %err, "failed to write report");
+                        local_output.join(format!("{job_name}-report.txt"))
+                    });
+            (exit_code, report_path)
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            let report_path = report_upload::write_summary_report(&local_output, job_name, &err)
+                .unwrap_or_else(|_| local_output.join(format!("{job_name}-report.txt")));
+            (fail(err), report_path)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }
 
 #[cfg(test)]
