@@ -1,6 +1,6 @@
 # ADR-0098: fix silent zip-expansion data loss and false archive failures
 
-- **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
+- **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-04.
 - **Status**: Accepted.
 

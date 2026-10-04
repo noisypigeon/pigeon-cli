@@ -1,6 +1,6 @@
 # ADR-0094: remove `pigeon job run sort`
 
-- **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
+- **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-03.
 - **Status**: Accepted.
 

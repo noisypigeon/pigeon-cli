@@ -1,6 +1,6 @@
 # ADR-0095: prefer dated keys when choosing dedupe's kept copy
 
-- **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
+- **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-03.
 - **Status**: Accepted.
 

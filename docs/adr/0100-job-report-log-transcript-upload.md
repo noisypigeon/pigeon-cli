@@ -1,6 +1,6 @@
 # ADR-0100: job wizard report/log/transcript bucket upload
 
-- **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
+- **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-04.
 - **Status**: Accepted.
 

@@ -1,6 +1,6 @@
 # ADR-0101: `pigeon job run import` (rclone-backed copy job)
 
-- **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
+- **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-04.
 - **Status**: Accepted.
 

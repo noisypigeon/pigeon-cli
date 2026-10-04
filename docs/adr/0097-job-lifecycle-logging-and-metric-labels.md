@@ -1,6 +1,6 @@
 # ADR-0097: job lifecycle log events and instance/bucket metric labels
 
-- **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
+- **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-04.
 - **Status**: Accepted.
 
