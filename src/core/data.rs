@@ -26,23 +26,39 @@ pub(crate) trait Dedup {
     fn commit(&mut self, hash: &str, relative_path: &str) -> Result<(), String>;
 }
 
-/// One dotfile's worth of `<hex-md5> <relative-path>` entries -- a durable,
-/// append-only content-hash index backing byte-identical-content
-/// deduplication (originally ADR-0012, for `pigeon email`'s message/
-/// attachment dedup; genericized by ADR-0020 for reuse by other transforms;
-/// relocated by ADR-0023). The relative path stored is caller-defined --
-/// typically relative to wherever that caller's own transformed output
-/// lives.
+/// One hash's committed entry: the final relative path, plus (ADR-0099) the
+/// original source key of whichever file was kept under that path --
+/// empty when the entry predates ADR-0099 or was committed by a caller that
+/// only ever uses the plain `Dedup::commit` (original key is never
+/// retroactively backfilled, since a hash is only ever committed once).
+#[derive(Clone)]
+struct ContentIndexEntry {
+    relative_path: String,
+    original_key: String,
+}
+
+/// One dotfile's worth of `<hex-md5>\t<relative-path>\t<original-key>`
+/// entries -- a durable, append-only content-hash index backing
+/// byte-identical-content deduplication (originally ADR-0012, for `pigeon
+/// email`'s message/attachment dedup; genericized by ADR-0020 for reuse by
+/// other transforms; relocated by ADR-0023; gained the tab-separated
+/// `original-key` field in ADR-0099). The relative path stored is
+/// caller-defined -- typically relative to wherever that caller's own
+/// transformed output lives.
 pub(crate) struct ContentIndex {
     staging_dir: PathBuf,
     file_name: &'static str,
-    entries: HashMap<String, String>,
+    entries: HashMap<String, ContentIndexEntry>,
 }
 
 impl ContentIndex {
     /// Loads `staging_dir/file_name`. A missing file (first run) is an empty
-    /// index. Lines that don't split into `<hash> <path>` are skipped
-    /// leniently.
+    /// index. A line containing a tab is read as the current
+    /// `<hash>\t<relative_path>\t<original_key>` format (the trailing
+    /// `original_key` field is optional, for forward compatibility); a line
+    /// with no tab falls back to the pre-ADR-0099
+    /// `<hash> <relative_path>` format, with `original_key` defaulting to
+    /// `""`. Lines matching neither shape are skipped leniently.
     pub(crate) fn load(
         staging_dir: &Path,
         file_name: &'static str,
@@ -55,8 +71,28 @@ impl ContentIndex {
         };
         let entries = contents
             .lines()
-            .filter_map(|line| line.split_once(' '))
-            .map(|(hash, relpath)| (hash.to_string(), relpath.to_string()))
+            .filter_map(|line| {
+                if let Some((hash, rest)) = line.split_once('\t') {
+                    let (relative_path, original_key) = rest.split_once('\t').unwrap_or((rest, ""));
+                    Some((
+                        hash.to_string(),
+                        ContentIndexEntry {
+                            relative_path: relative_path.to_string(),
+                            original_key: original_key.to_string(),
+                        },
+                    ))
+                } else {
+                    line.split_once(' ').map(|(hash, relative_path)| {
+                        (
+                            hash.to_string(),
+                            ContentIndexEntry {
+                                relative_path: relative_path.to_string(),
+                                original_key: String::new(),
+                            },
+                        )
+                    })
+                }
+            })
             .collect();
         Ok(ContentIndex {
             staging_dir: staging_dir.to_path_buf(),
@@ -68,23 +104,54 @@ impl ContentIndex {
     /// Looks up `hash` against every durably committed entry (entries loaded
     /// at start, plus entries `commit`-ted so far this run).
     pub(crate) fn check(&self, hash: &str) -> Option<&str> {
-        self.entries.get(hash).map(String::as_str)
+        self.entries
+            .get(hash)
+            .map(|entry| entry.relative_path.as_str())
+    }
+
+    /// Like `check`, but also returns the original source key of the kept
+    /// file (ADR-0099) -- `""` when the entry predates ADR-0099 or was
+    /// committed via the plain `commit`/`Dedup::commit`.
+    pub(crate) fn check_with_original_key(&self, hash: &str) -> Option<(&str, &str)> {
+        self.entries
+            .get(hash)
+            .map(|entry| (entry.relative_path.as_str(), entry.original_key.as_str()))
     }
 
     /// Appends one `<hash> <relative_path>` line to `staging_dir/file_name`
     /// (the same `staging_dir` given to `load`) and makes it visible to
-    /// every subsequent `check()` this run.
+    /// every subsequent `check()` this run. Thin wrapper over
+    /// `commit_with_key` with an empty original key, for every `Dedup`
+    /// implementor that doesn't track one.
     pub(crate) fn commit(&mut self, hash: &str, relative_path: &str) -> Result<(), String> {
+        self.commit_with_key(hash, relative_path, "")
+    }
+
+    /// Like `commit`, but also durably records `original_key` (ADR-0099) --
+    /// the source key of the file being kept under `relative_path` -- as a
+    /// third tab-separated field, so a later duplicate's report row can
+    /// name where the copy it was merged into actually came from.
+    pub(crate) fn commit_with_key(
+        &mut self,
+        hash: &str,
+        relative_path: &str,
+        original_key: &str,
+    ) -> Result<(), String> {
         let path = self.staging_dir.join(self.file_name);
         let mut file = fs::OpenOptions::new()
             .create(true)
             .append(true)
             .open(&path)
             .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
-        writeln!(file, "{hash} {relative_path}")
+        writeln!(file, "{hash}\t{relative_path}\t{original_key}")
             .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
-        self.entries
-            .insert(hash.to_string(), relative_path.to_string());
+        self.entries.insert(
+            hash.to_string(),
+            ContentIndexEntry {
+                relative_path: relative_path.to_string(),
+                original_key: original_key.to_string(),
+            },
+        );
         Ok(())
     }
 }
@@ -380,12 +447,26 @@ fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
+/// The portion of `key` after its last `!` zip-member separator -- zip
+/// expansion (`deduplicate`/`pull_transform` worker.rs) builds a synthetic,
+/// human-readable key for an extracted member by joining the zip's own key
+/// onto the member's in-archive path with `!` (e.g.
+/// `"outer.zip!photos/img.jpg"`). `extension_of` and any filename-deriving
+/// `Path` split must look at this, not the raw key, or a zip member's
+/// synthetic prefix leaks into the derived extension/name (ADR-0099) --
+/// e.g. an extensionless member `outer.zip!README` would otherwise be seen
+/// as having extension `"zip!README"`, the only dot in the whole key.
+/// Returns `key` unchanged when there's no `!`.
+pub(crate) fn after_zip_separator(key: &str) -> &str {
+    key.rsplit('!').next().unwrap_or(key)
+}
+
 /// The lowercased extension of `key`'s final path segment, or `"(none)"`
 /// when there isn't one. Hoisted here (ADR-0096 §0) once `pull_transform`,
 /// `deduplicate`, and `reduce` all needed the identical logic -- this
 /// codebase's usual "duplicate until the third consumer" precedent.
 pub(crate) fn extension_of(key: &str) -> String {
-    Path::new(key)
+    Path::new(after_zip_separator(key))
         .extension()
         .and_then(|ext| ext.to_str())
         .map(|ext| ext.to_ascii_lowercase())
@@ -409,6 +490,76 @@ mod tests {
     #[test]
     fn extension_of_handles_dotfiles_without_extension() {
         assert_eq!(extension_of(".DS_Store"), "(none)");
+    }
+
+    #[test]
+    fn extension_of_strips_a_zip_member_prefix_before_deriving_the_extension() {
+        assert_eq!(extension_of("outer.zip!README"), "(none)");
+        assert_eq!(extension_of("outer.zip!photos/img.JPG"), "jpg");
+    }
+
+    #[test]
+    fn after_zip_separator_returns_the_segment_after_the_last_bang() {
+        assert_eq!(after_zip_separator("outer.zip!README"), "README");
+        assert_eq!(
+            after_zip_separator("a.zip!nested.zip!photos/img.jpg"),
+            "photos/img.jpg"
+        );
+        assert_eq!(after_zip_separator("plain/key.jpg"), "plain/key.jpg");
+    }
+
+    #[test]
+    fn content_index_commit_with_key_round_trips_the_original_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+
+        index
+            .commit_with_key("hash-a", "pdf/report.pdf", "docs/report.pdf")
+            .unwrap();
+
+        assert_eq!(index.check("hash-a"), Some("pdf/report.pdf"));
+        assert_eq!(
+            index.check_with_original_key("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf"))
+        );
+
+        // Reload from disk to confirm the 3-field line persisted correctly.
+        let reloaded = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+        assert_eq!(
+            reloaded.check_with_original_key("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf"))
+        );
+    }
+
+    #[test]
+    fn content_index_commit_writes_an_empty_original_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+
+        index.commit("hash-a", "pdf/report.pdf").unwrap();
+
+        assert_eq!(
+            index.check_with_original_key("hash-a"),
+            Some(("pdf/report.pdf", ""))
+        );
+    }
+
+    #[test]
+    fn content_index_load_is_backward_compatible_with_the_old_space_separated_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".content-hashes"),
+            "hash-a pdf/report.pdf\n",
+        )
+        .unwrap();
+
+        let index = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+
+        assert_eq!(index.check("hash-a"), Some("pdf/report.pdf"));
+        assert_eq!(
+            index.check_with_original_key("hash-a"),
+            Some(("pdf/report.pdf", ""))
+        );
     }
 
     const MESSAGE_HASHES: &str = ".message-hashes";

@@ -7,9 +7,11 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use indicatif::MultiProgress;
+use indicatif::ProgressBar;
 use sha2::{Digest, Sha256};
 
 use crate::commands::keyring::bucket::client;
@@ -45,6 +47,42 @@ fn format_mb(bytes: u64) -> String {
 /// output.
 fn should_announce_download(size: u64) -> bool {
     size >= ANNOUNCE_DOWNLOAD_THRESHOLD_BYTES
+}
+
+/// A job's large-download call-out, rendered as a transient message on its
+/// own shared progress bar (ADR-0099) instead of a permanent
+/// `MultiProgress::println` line -- the prior approach inserted one
+/// scrolling line per large download (~600 in one real run), burying the
+/// live bars. Multiple concurrent workers share one job-level bar, so the
+/// message is advisory (shows whichever large download was announced most
+/// recently); `in_flight` ensures the message is only cleared once *every*
+/// currently-announced large download has finished, so one worker
+/// finishing doesn't blank another still-in-flight worker's announcement.
+#[derive(Clone)]
+pub(crate) struct DownloadAnnounce {
+    bar: ProgressBar,
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl DownloadAnnounce {
+    pub(crate) fn new(bar: ProgressBar) -> Self {
+        DownloadAnnounce {
+            bar,
+            in_flight: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    fn start(&self, key: &str, size: u64) {
+        self.in_flight.fetch_add(1, Ordering::SeqCst);
+        self.bar
+            .set_message(format!("Downloading {key} ({})...", format_mb(size)));
+    }
+
+    fn finish(&self) {
+        if self.in_flight.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.bar.set_message("");
+        }
+    }
 }
 
 /// The available space (in bytes) on whichever disk backs `path`, matched
@@ -84,22 +122,30 @@ pub(crate) fn check_disk_space(path: &Path, needed: u64) -> Result<(), String> {
 
 /// Streams `key` straight to `dest_path` (ADR-0076) -- never buffers the
 /// whole object in memory, so a 50-100GB object costs a small, fixed
-/// amount of RAM regardless of its size.
+/// amount of RAM regardless of its size. `announce` gets the transient
+/// bar-message call-out for a large download (ADR-0099); cleared on every
+/// exit path, success or failure, so a failed large download never leaves
+/// a stale message behind.
 pub(crate) async fn download_with_retry(
     bucket_config: &BucketConfig,
     secret: &str,
     key: &str,
     size: u64,
     dest_path: &Path,
-    multi_progress: &MultiProgress,
+    announce: &DownloadAnnounce,
 ) -> Result<(), String> {
-    if should_announce_download(size) {
-        let _ = multi_progress.println(format!("Downloading {key} ({})...", format_mb(size)));
+    let announced = should_announce_download(size);
+    if announced {
+        announce.start(key, size);
     }
-    retry_with_backoff(DOWNLOAD_RETRIES, DOWNLOAD_RETRY_BACKOFF, || {
+    let result = retry_with_backoff(DOWNLOAD_RETRIES, DOWNLOAD_RETRY_BACKOFF, || {
         client::download_object_to_file(bucket_config, secret, key, dest_path)
     })
-    .await?;
+    .await;
+    if announced {
+        announce.finish();
+    }
+    result?;
     Ok(())
 }
 
@@ -147,6 +193,23 @@ mod tests {
         assert!(should_announce_download(
             ANNOUNCE_DOWNLOAD_THRESHOLD_BYTES + 1
         ));
+    }
+
+    #[test]
+    fn download_announce_clears_the_message_only_once_every_in_flight_download_finishes() {
+        let announce = DownloadAnnounce::new(ProgressBar::hidden());
+
+        announce.start("a.zip", 100 * 1024 * 1024);
+        announce.start("b.zip", 200 * 1024 * 1024);
+        assert!(announce.bar.message().contains("b.zip"));
+
+        // One of two in-flight downloads finishing must not blank the
+        // message while the other is still in flight.
+        announce.finish();
+        assert_ne!(announce.bar.message(), "");
+
+        announce.finish();
+        assert_eq!(announce.bar.message(), "");
     }
 
     #[test]
