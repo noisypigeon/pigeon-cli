@@ -121,7 +121,7 @@ async fn process_item(
     item: QueueItem,
     raw_dir: &Path,
     counter: &Arc<AtomicU64>,
-    multi_progress: &MultiProgress,
+    announce: &download::DownloadAnnounce,
 ) -> (String, ItemOutcome) {
     let root_key = item.root_key.clone();
     let depth = item.depth;
@@ -159,7 +159,7 @@ async fn process_item(
                 key,
                 item.size,
                 &raw_path,
-                multi_progress,
+                announce,
             )
             .await
             {
@@ -325,7 +325,9 @@ pub(crate) async fn run_deduplicate_job(
     let multi_progress = MultiProgress::new();
     let total = tasks.len() as u64;
     let _ = multi_progress.println(format!("Downloading and processing {total} object(s)..."));
+    tracing::info!(total, "deduplicate: download/expand/hash phase starting");
     let bar = sink::new_progress_bar("deduplicate".to_string(), total, &multi_progress);
+    let announce = download::DownloadAnnounce::new(bar.clone());
 
     let queue: Arc<Mutex<VecDeque<QueueItem>>> = Arc::new(Mutex::new(
         tasks
@@ -368,7 +370,7 @@ pub(crate) async fn run_deduplicate_job(
         let bucket_config = bucket_config.clone();
         let secret = secret.to_string();
         let raw_dir = raw_dir.clone();
-        let multi_progress = multi_progress.clone();
+        let announce = announce.clone();
         let bar = bar.clone();
 
         handles.push(tokio::spawn(
@@ -384,15 +386,9 @@ pub(crate) async fn run_deduplicate_job(
                     };
                     in_flight.fetch_add(1, Ordering::SeqCst);
 
-                    let (root_key, outcome) = process_item(
-                        &bucket_config,
-                        &secret,
-                        item,
-                        &raw_dir,
-                        &counter,
-                        &multi_progress,
-                    )
-                    .await;
+                    let (root_key, outcome) =
+                        process_item(&bucket_config, &secret, item, &raw_dir, &counter, &announce)
+                            .await;
 
                     match outcome {
                         ItemOutcome::ZipExpanded {
@@ -507,6 +503,15 @@ pub(crate) async fn run_deduplicate_job(
         .into_inner()
         .map_err(|_| "internal error: tainted-root set lock poisoned".to_string())?;
 
+    tracing::info!(
+        hashed = files.len(),
+        download_failed = failure_breakdown.download,
+        archive_failed = failure_breakdown.archive,
+        hash_failed = failure_breakdown.hash,
+        dropped_members,
+        "deduplicate: download/expand/hash phase complete"
+    );
+
     // `dedup_index` (the full hash->path map), `merge_records` (the
     // human-readable report -- can run well into the GB range for a large,
     // duplicate-heavy bucket), and `placed_keys` all live only inside this
@@ -534,6 +539,13 @@ pub(crate) async fn run_deduplicate_job(
         placement_summary
     };
 
+    tracing::info!(
+        placed = placement_summary.placed,
+        duplicates_skipped = placement_summary.duplicates_skipped,
+        placement_failed = placement_summary.failed,
+        "deduplicate: placement phase complete"
+    );
+
     let mut summary = DeduplicateSummary {
         processed: placement_summary.placed,
         failed: failure_breakdown.download
@@ -554,6 +566,7 @@ pub(crate) async fn run_deduplicate_job(
     summary.failure_breakdown.placement = placement_summary.failed;
 
     if let Some((remote_bucket, remote_secret)) = remote {
+        tracing::info!(bucket = %remote_bucket.alias, "deduplicate: upload phase starting");
         let upload_summary = upload_result(
             &remote_bucket.alias,
             local_output,

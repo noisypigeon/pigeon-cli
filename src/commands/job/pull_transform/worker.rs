@@ -454,6 +454,7 @@ async fn process_item(
     scratch_dir: &Path,
     counter: &Arc<AtomicU64>,
     multi_progress: &MultiProgress,
+    announce: &download::DownloadAnnounce,
     allowed_extensions: &HashSet<String>,
     expand_zip_keys: &HashSet<String>,
     transcode_targets: &TranscodeTargets,
@@ -512,7 +513,7 @@ async fn process_item(
                 key,
                 item.size,
                 &raw_path,
-                multi_progress,
+                announce,
             )
             .await
             {
@@ -709,7 +710,12 @@ pub(crate) async fn run_pull_transform_job(
     let multi_progress = MultiProgress::new();
     let total = tasks.len() as u64;
     let _ = multi_progress.println(format!("Downloading and processing {total} object(s)..."));
+    tracing::info!(
+        total,
+        "pull-transform: download/expand/hash/recode phase starting"
+    );
     let bar = sink::new_progress_bar("pull-transform".to_string(), total, &multi_progress);
+    let announce = download::DownloadAnnounce::new(bar.clone());
 
     let queue: Arc<Mutex<std::collections::VecDeque<QueueItem>>> = Arc::new(Mutex::new(
         tasks
@@ -762,6 +768,7 @@ pub(crate) async fn run_pull_transform_job(
         let raw_dir = raw_dir.clone();
         let scratch_dir = scratch_dir.clone();
         let multi_progress = multi_progress.clone();
+        let announce = announce.clone();
         let bar = bar.clone();
 
         handles.push(tokio::spawn(
@@ -785,6 +792,7 @@ pub(crate) async fn run_pull_transform_job(
                         &scratch_dir,
                         &counter,
                         &multi_progress,
+                        &announce,
                         &allowed_extensions,
                         &expand_zip_keys,
                         &transcode_targets,
@@ -942,6 +950,16 @@ pub(crate) async fn run_pull_transform_job(
         .into_inner()
         .map_err(|_| "internal error: tainted-root set lock poisoned".to_string())?;
 
+    tracing::info!(
+        processed = files.len(),
+        download_failed = failure_breakdown.download,
+        archive_failed = failure_breakdown.archive,
+        recode_failed = failure_breakdown.recode,
+        classify_failed = failure_breakdown.classify,
+        dropped_members,
+        "pull-transform: download/expand/hash/recode phase complete"
+    );
+
     // `dedup` (the full hash->path `ContentIndex`) and `placed_keys` live
     // only inside this block, so they're dropped here, before the upload
     // phase runs, instead of surviving in `run_pull_transform_job`'s own
@@ -972,6 +990,13 @@ pub(crate) async fn run_pull_transform_job(
         placement_summary
     };
 
+    tracing::info!(
+        placed = placement_summary.placed,
+        duplicates_skipped = placement_summary.duplicates_skipped,
+        placement_failed = placement_summary.failed,
+        "pull-transform: placement phase complete"
+    );
+
     let mut summary = PullTransformSummary {
         processed: placement_summary.placed,
         failed: failure_breakdown.download
@@ -989,6 +1014,7 @@ pub(crate) async fn run_pull_transform_job(
     summary.failure_breakdown.placement = placement_summary.failed;
 
     if let Some((remote_bucket, remote_secret)) = remote {
+        tracing::info!(bucket = %remote_bucket.alias, "pull-transform: upload phase starting");
         let upload_summary = upload_result(
             &remote_bucket.alias,
             local_output,
@@ -1220,6 +1246,7 @@ mod tests {
             &scratch_dir,
             &counter,
             &MultiProgress::new(),
+            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
             &all_extensions(&["jpg"]),
             &all_extensions(&[]),
             &TranscodeTargets::default(),
@@ -1270,6 +1297,7 @@ mod tests {
                 &scratch_dir,
                 &counter,
                 &MultiProgress::new(),
+                &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
                 &all_extensions(&["zip"]),
                 &all_extensions(&[]), // "archive.zip" not selected for expansion
                 &TranscodeTargets::default(),
