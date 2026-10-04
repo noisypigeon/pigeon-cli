@@ -323,6 +323,7 @@ fn job_run_email_sync_help_shows_identities_and_concurrency_flags() {
         .stdout(predicate::str::contains("--upload-concurrency"))
         .stdout(predicate::str::contains("--max-connections-per-identity"))
         .stdout(predicate::str::contains("--upload-only"))
+        .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--yes"));
 }
 
@@ -430,6 +431,7 @@ fn job_run_email_pull_help_shows_identities_and_concurrency_flags() {
         .stdout(predicate::str::contains("--upload-concurrency"))
         .stdout(predicate::str::contains("--max-connections-per-identity"))
         .stdout(predicate::str::contains("--upload-only"))
+        .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0081 §4: email-pull never offers encryption, at all.
         .stdout(predicate::str::contains("--encryption-key").not());
@@ -536,6 +538,7 @@ fn job_run_decrypt_files_help_shows_input_output_and_key_flags() {
         .stdout(predicate::str::contains("--output-dir"))
         .stdout(predicate::str::contains("--encryption-key"))
         .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0091: decrypt-files has no upload phase, so it never gets
         // --upload-concurrency.
@@ -617,7 +620,8 @@ fn job_run_pull_transform_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--encryption-key"))
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--upload-concurrency"))
-        .stdout(predicate::str::contains("--upload-only"));
+        .stdout(predicate::str::contains("--upload-only"))
+        .stdout(predicate::str::contains("--report-bucket"));
 }
 
 #[test]
@@ -718,6 +722,7 @@ fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--upload-concurrency"))
         .stdout(predicate::str::contains("--upload-only"))
+        .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0082 §0/§1: deduplicate never offers encryption or file-type/
         // zip-expansion selection -- every file is always processed and
@@ -826,6 +831,7 @@ fn job_run_reduce_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--force-valuable"))
         .stdout(predicate::str::contains("--force-reproducible"))
+        .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--yes"))
         // ADR-0096: reduce never offers encryption or file-type/
         // zip-expansion selection -- its input is already flat.

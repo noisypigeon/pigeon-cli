@@ -5,6 +5,7 @@ use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::commands::job::email_sync::wizard::print_manifest_summary;
 use crate::commands::job::email_sync::{DEFAULT_MAX_CONNECTIONS_PER_IDENTITY, IdentityContext};
+use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
     ConfirmInput, UploadConcurrencyInput, UploadTargetInput,
 };
@@ -189,6 +190,8 @@ pub fn dispatch(
     upload_concurrency: Option<usize>,
     max_connections_per_identity: Option<usize>,
     upload_only: bool,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -206,6 +209,8 @@ pub fn dispatch(
         upload_concurrency,
         max_connections_per_identity,
         upload_only,
+        report_bucket,
+        job_name,
         yes,
     ))
 }
@@ -219,6 +224,8 @@ async fn dispatch_async(
     upload_concurrency: Option<usize>,
     max_connections_per_identity: Option<usize>,
     upload_only: bool,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as
@@ -241,6 +248,8 @@ async fn dispatch_async(
             local_output,
             remote_output,
             upload_concurrency,
+            report_bucket,
+            job_name,
             yes,
             &keyring_store,
         )
@@ -345,6 +354,11 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, &keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -355,9 +369,16 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    match job.run(plan, concurrency, upload_concurrency).await {
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let (transcript, transcript_path) = match report_upload::new_transcript(&local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Pulled {} message(s), {} failed ({} connect, {} examine, {} batch-error, {} missing-file), {} attachment extraction warning(s), {} attachment(s) deduped, {} uploaded, {} unchanged, {} upload failed.",
                 summary.synced,
                 summary.failed,
@@ -371,18 +392,42 @@ async fn dispatch_async(
                 summary.unchanged,
                 summary.upload_failed
             );
-            println!(
-                "Attachments: {} estimated pre-run, {} actually staged.",
-                estimated_pending_attachments, summary.attachments_staged
+            report_upload::say(&transcript, message);
+            report_upload::say(
+                &transcript,
+                format!(
+                    "Attachments: {} estimated pre-run, {} actually staged.",
+                    estimated_pending_attachments, summary.attachments_staged
+                ),
             );
-            if summary.failed > 0 || summary.upload_failed > 0 {
+            let exit_code = if summary.failed > 0 || summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
-            }
+            };
+            let report_path =
+                report_upload::write_summary_report(&local_output, job_name, &summary)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(error = %err, "failed to write report");
+                        local_output.join(format!("{job_name}-report.txt"))
+                    });
+            (exit_code, report_path)
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            let report_path = report_upload::write_summary_report(&local_output, job_name, &err)
+                .unwrap_or_else(|_| local_output.join(format!("{job_name}-report.txt")));
+            (fail(err), report_path)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }
 
 /// Whether `ctx`'s identity has a completed local run `--upload-only` can
@@ -400,11 +445,14 @@ fn identity_has_completed_run(ctx: &IdentityContext) -> bool {
 /// credentials they'd otherwise need -- entirely. An identity whose local
 /// state isn't ready is skipped with a warning rather than failing the
 /// whole command, same as `email_sync::wizard`'s version.
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_upload_only(
     identities: Option<Vec<String>>,
     local_output: Option<PathBuf>,
     remote_output: Option<String>,
     upload_concurrency: Option<usize>,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
     keyring_store: &Store,
 ) -> i32 {
@@ -479,6 +527,11 @@ async fn dispatch_upload_only(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -489,7 +542,14 @@ async fn dispatch_upload_only(
         Err(err) => return fail(err),
     }
 
-    match worker::run_upload_only(
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let (transcript, transcript_path) = match report_upload::new_transcript(&local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match worker::run_upload_only(
         &ready_contexts,
         (&remote_bucket_config, &remote_secret),
         upload_concurrency,
@@ -497,18 +557,39 @@ async fn dispatch_upload_only(
     .await
     {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Uploaded {} file(s), {} unchanged, {} upload failed.",
                 summary.uploaded, summary.unchanged, summary.upload_failed
             );
-            if summary.upload_failed > 0 {
+            report_upload::say(&transcript, message);
+            let exit_code = if summary.upload_failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
-            }
+            };
+            let report_path =
+                report_upload::write_summary_report(&local_output, job_name, &summary)
+                    .unwrap_or_else(|err| {
+                        tracing::warn!(error = %err, "failed to write report");
+                        local_output.join(format!("{job_name}-report.txt"))
+                    });
+            (exit_code, report_path)
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            let report_path = report_upload::write_summary_report(&local_output, job_name, &err)
+                .unwrap_or_else(|_| local_output.join(format!("{job_name}-report.txt")));
+            (fail(err), report_path)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }
 
 #[cfg(test)]

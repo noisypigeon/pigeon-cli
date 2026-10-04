@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use dialoguer::Input;
 
+use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput};
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
@@ -94,11 +95,14 @@ impl WizardInput for EncryptionKeyInput<'_> {
 }
 
 /// Entry point for `pigeon job run decrypt-files` (ADR-0028).
+#[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     input_dir: Option<PathBuf>,
     output_dir: Option<PathBuf>,
     encryption_key: Option<String>,
     concurrency: Option<usize>,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
@@ -113,15 +117,20 @@ pub fn dispatch(
         output_dir,
         encryption_key,
         concurrency,
+        report_bucket,
+        job_name,
         yes,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dispatch_async(
     input_dir: Option<PathBuf>,
     output_dir: Option<PathBuf>,
     encryption_key: Option<String>,
     concurrency: Option<usize>,
+    report_bucket: Option<String>,
+    job_name: &'static str,
     yes: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return fail(...)`
@@ -188,6 +197,11 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, &keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
 
     match (ConfirmInput { yes }).resolve() {
         Ok(true) => {}
@@ -198,7 +212,15 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     }
 
-    match job
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let output_dir = job.output_dir.clone();
+    let (transcript, transcript_path) = match report_upload::new_transcript(&output_dir) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match job
         .run(
             plan,
             concurrency,
@@ -207,16 +229,36 @@ async fn dispatch_async(
         .await
     {
         Ok(summary) => {
-            println!(
+            let message = format!(
                 "Decrypted {} file(s), {} failed.",
                 summary.decrypted, summary.failed
             );
-            if summary.failed > 0 {
+            report_upload::say(&transcript, message);
+            let exit_code = if summary.failed > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0
-            }
+            };
+            let report_path = report_upload::write_summary_report(&output_dir, job_name, &summary)
+                .unwrap_or_else(|err| {
+                    tracing::warn!(error = %err, "failed to write report");
+                    output_dir.join(format!("{job_name}-report.txt"))
+                });
+            (exit_code, report_path)
         }
-        Err(err) => fail(err),
-    }
+        Err(err) => {
+            let report_path = report_upload::write_summary_report(&output_dir, job_name, &err)
+                .unwrap_or_else(|_| output_dir.join(format!("{job_name}-report.txt")));
+            (fail(err), report_path)
+        }
+    };
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+    exit_code
 }

@@ -1,6 +1,7 @@
 pub mod metrics;
 pub(crate) mod panic;
 pub(crate) mod resources;
+pub(crate) mod transcript;
 
 use std::path::{Path, PathBuf};
 
@@ -67,6 +68,7 @@ pub fn init(
     let (dir, file_name) = resolve_log_path(log_file)?;
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
+    let _ = LOG_FILE_PATH.set(dir.join(&file_name));
 
     let appender = tracing_appender::rolling::never(&dir, &file_name);
     let (writer, guard) = tracing_appender::non_blocking(appender);
@@ -115,6 +117,18 @@ pub fn install_panic_hook() {
 pub(crate) fn instance() -> &'static str {
     static INSTANCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     INSTANCE.get_or_init(|| sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string()))
+}
+
+/// The durable JSONL log file's resolved path, cached by `init()` (ADR-0100)
+/// -- lets a job upload the shared `pigeon.jsonl` to a report bucket without
+/// recomputing `resolve_log_path`'s `--log-file`-vs-default logic itself.
+static LOG_FILE_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+pub(crate) fn log_file_path() -> Result<PathBuf, String> {
+    LOG_FILE_PATH
+        .get()
+        .cloned()
+        .ok_or_else(|| "log file path not resolved -- observability::init must run first".into())
 }
 
 pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i32) -> i32 {

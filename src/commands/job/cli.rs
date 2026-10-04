@@ -96,6 +96,15 @@ pub enum JobType {
         #[arg(long)]
         upload_only: bool,
 
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
         /// Skip the final "proceed?" confirmation. Every other omitted
         /// input (identities, concurrency) still follows its own
         /// independent flag-or-prompt rule -- this only answers the last
@@ -130,6 +139,15 @@ pub enum JobType {
         /// Maximum number of files to decrypt concurrently.
         #[arg(long)]
         concurrency: Option<usize>,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
 
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
@@ -195,6 +213,15 @@ pub enum JobType {
         /// `--remote-output`.
         #[arg(long)]
         upload_only: bool,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
 
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
@@ -288,6 +315,15 @@ pub enum JobType {
         #[arg(long)]
         upload_only: bool,
 
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
         yes: bool,
@@ -346,6 +382,15 @@ pub enum JobType {
         /// `--remote-output`.
         #[arg(long)]
         upload_only: bool,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
 
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
@@ -418,6 +463,15 @@ pub enum JobType {
         #[arg(long)]
         force_reproducible: Vec<String>,
 
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]
         yes: bool,
@@ -434,5 +488,16 @@ impl Observable for JobType {
             JobType::Deduplicate { .. } => "job.deduplicate",
             JobType::Reduce { .. } => "job.reduce",
         }
+    }
+}
+
+impl JobType {
+    /// The bare dash-form job name (e.g. `"deduplicate"`) used in the
+    /// report-bucket upload prefix (ADR-0100) -- `command_name()`'s value
+    /// with its `"job."` prefix stripped, rather than a 6th place in this
+    /// codebase repeating the same job-name literals already duplicated
+    /// across every job's `worker.rs` metrics call sites.
+    pub(crate) fn job_name(&self) -> &'static str {
+        self.command_name().trim_start_matches("job.")
     }
 }
