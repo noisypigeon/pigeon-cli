@@ -234,13 +234,14 @@ async fn dispatch_async(
     match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
             println!(
-                "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} uploaded, {} unchanged, {} upload failed.",
+                "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} uploaded, {} unchanged, {} upload failed.",
                 summary.processed,
                 summary.failed,
                 summary.failure_breakdown.download,
                 summary.failure_breakdown.archive,
                 summary.failure_breakdown.hash,
                 summary.duplicates_skipped,
+                summary.dropped_members,
                 summary.uploaded,
                 summary.unchanged,
                 summary.upload_failed

@@ -217,7 +217,7 @@ enum UploadOutcomeKind {
 /// never committed, so it's retried again on the job's next invocation.
 #[tracing::instrument(
     skip(task, uploaded_indexes, bucket_config, secret, encryptor, bar, multi_progress),
-    fields(identity = %task.label, file = %task.path.display())
+    fields(source_label = %task.label, file = %task.path.display())
 )]
 async fn upload_one(
     task: UploadTask,
@@ -314,7 +314,7 @@ async fn upload_one(
         }
         Err(err) => {
             tracing::warn!(
-                identity = %task.label,
+                source_label = %task.label,
                 file = %task.path.display(),
                 step = "upload",
                 error = %err,

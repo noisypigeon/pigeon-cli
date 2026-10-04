@@ -6,7 +6,7 @@
 //! `pull-transform`; every file is always processed and every zip is always
 //! expanded (ADR-0082 §1).
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -14,6 +14,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use indicatif::MultiProgress;
+use tracing::Instrument;
 
 use crate::commands::job::download;
 use crate::commands::job::email_sync::sink;
@@ -43,13 +44,18 @@ fn is_zip_key(key: &str) -> bool {
 /// downloaded (`source_key: Some`, `path: None`), or a file already on disk
 /// (`path: Some`) -- true both for a completed top-level download and for a
 /// zip member streamed straight to disk during a parent's expansion. Only a
-/// `depth == 0` item is ever checkpointed.
+/// `depth == 0` item is ever checkpointed. `root_key` is the top-level
+/// task's own `display_key`, unchanged through every descendant -- it never
+/// participates in path computation, only in tracking whether *any*
+/// descendant of a given root failed or lost data, so that root can be
+/// excluded from the checkpoint (ADR-0098).
 struct QueueItem {
     source_key: Option<String>,
     display_key: String,
     path: Option<PathBuf>,
     depth: u32,
     size: u64,
+    root_key: String,
 }
 
 #[derive(Debug, Default)]
@@ -78,10 +84,15 @@ enum FailureCategory {
 enum ItemOutcome {
     /// `display_key`/`depth` identify the zip that was expanded (checkpoint
     /// candidate iff `depth == 0`); `members` are queued for the next pass.
+    /// `dropped` is how many members this zip lost to the per-archive
+    /// extraction-ratio cap (ADR-0098) -- nonzero here means real data was
+    /// discarded, so the caller both counts it as a failure and taints this
+    /// item's root out of the checkpoint.
     ZipExpanded {
         display_key: String,
         depth: u32,
         members: Vec<QueueItem>,
+        dropped: usize,
     },
     Hashed {
         depth: u32,
@@ -97,16 +108,22 @@ enum ItemOutcome {
 /// hashes it for the placement pass. The expansion/hash itself runs via
 /// `tokio::task::spawn_blocking` (ADR-0088) -- both are CPU-bound, so they're
 /// handed to tokio's blocking-thread pool rather than occupying one of the
-/// runtime's own async worker threads for the whole call.
+/// runtime's own async worker threads for the whole call. Returns the
+/// item's `root_key` alongside the outcome: neither `spawn_blocking` nor the
+/// caller's own `tokio::spawn` propagate the ambient `tracing` span on
+/// their own, so each blocking closure below explicitly re-enters the span
+/// captured just before it was spawned (ADR-0098) -- without this, every
+/// warning logged here would be missing the `command`/`instance` fields
+/// the rest of `pigeon.jsonl` relies on.
 async fn process_item(
     bucket_config: &BucketConfig,
     secret: &str,
     item: QueueItem,
     raw_dir: &Path,
     counter: &Arc<AtomicU64>,
-    extracted_bytes: &Arc<AtomicU64>,
     multi_progress: &MultiProgress,
-) -> ItemOutcome {
+) -> (String, ItemOutcome) {
+    let root_key = item.root_key.clone();
     let depth = item.depth;
     let extension = extension_of(&item.display_key);
     let is_zip = extension == "zip";
@@ -117,17 +134,23 @@ async fn process_item(
             let key = item.source_key.as_deref().unwrap_or(&item.display_key);
             if let Err(err) = download::check_disk_space(raw_dir, item.size) {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "not enough disk space");
-                return ItemOutcome::Failed {
-                    category: FailureCategory::Download,
-                };
+                return (
+                    root_key,
+                    ItemOutcome::Failed {
+                        category: FailureCategory::Download,
+                    },
+                );
             }
             let raw_path = match next_scratch_path(raw_dir, counter, &extension) {
                 Ok(path) => path,
                 Err(err) => {
                     tracing::warn!(key = %item.display_key, step = "download", error = %err, "failed to allocate a raw path");
-                    return ItemOutcome::Failed {
-                        category: FailureCategory::Download,
-                    };
+                    return (
+                        root_key,
+                        ItemOutcome::Failed {
+                            category: FailureCategory::Download,
+                        },
+                    );
                 }
             };
             if let Err(err) = download::download_with_retry(
@@ -142,9 +165,12 @@ async fn process_item(
             {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "download failed");
                 let _ = fs::remove_file(&raw_path);
-                return ItemOutcome::Failed {
-                    category: FailureCategory::Download,
-                };
+                return (
+                    root_key,
+                    ItemOutcome::Failed {
+                        category: FailureCategory::Download,
+                    },
+                );
             }
             crate::observability::metrics::record_phase(
                 "deduplicate",
@@ -160,32 +186,33 @@ async fn process_item(
         if depth >= archive::MAX_ZIP_DEPTH {
             tracing::warn!(key = %item.display_key, step = "archive", depth, "zip nesting depth cap reached, not expanding further");
             let _ = fs::remove_file(&path);
-            return ItemOutcome::Failed {
-                category: FailureCategory::Archive,
-            };
+            return (
+                root_key,
+                ItemOutcome::Failed {
+                    category: FailureCategory::Archive,
+                },
+            );
         }
         if let Err(err) = download::check_disk_space(raw_dir, 0) {
             tracing::warn!(key = %item.display_key, step = "archive", error = %err, "not enough disk space to expand");
             let _ = fs::remove_file(&path);
-            return ItemOutcome::Failed {
-                category: FailureCategory::Archive,
-            };
+            return (
+                root_key,
+                ItemOutcome::Failed {
+                    category: FailureCategory::Archive,
+                },
+            );
         }
         let expand_path = path.clone();
         let expand_raw_dir = raw_dir.to_path_buf();
         let expand_counter = Arc::clone(counter);
-        let expand_extracted_bytes = Arc::clone(extracted_bytes);
+        let span = tracing::Span::current();
         let expand_result = tokio::task::spawn_blocking(move || {
-            archive::expand_to_dir(
-                &expand_path,
-                &expand_raw_dir,
-                &expand_counter,
-                &expand_extracted_bytes,
-            )
+            span.in_scope(|| archive::expand_to_dir(&expand_path, &expand_raw_dir, &expand_counter))
         })
         .await;
-        return match expand_result {
-            Ok(Ok(raw_members)) => {
+        let outcome = match expand_result {
+            Ok(Ok((raw_members, dropped))) => {
                 // The zip container itself is never hashed or placed -- only
                 // its extracted members are (ADR-0082 §4).
                 let _ = fs::remove_file(&path);
@@ -197,12 +224,14 @@ async fn process_item(
                         path: Some(member.path),
                         depth: depth + 1,
                         size: member.size,
+                        root_key: root_key.clone(),
                     })
                     .collect();
                 ItemOutcome::ZipExpanded {
                     display_key: item.display_key,
                     depth,
                     members,
+                    dropped,
                 }
             }
             Ok(Err(err)) => {
@@ -220,11 +249,15 @@ async fn process_item(
                 }
             }
         };
+        return (root_key, outcome);
     }
 
     let hash_path = path.clone();
-    let hash_result = tokio::task::spawn_blocking(move || download::sha256_file(&hash_path)).await;
-    match hash_result {
+    let span = tracing::Span::current();
+    let hash_result =
+        tokio::task::spawn_blocking(move || span.in_scope(|| download::sha256_file(&hash_path)))
+            .await;
+    let outcome = match hash_result {
         Ok(Ok(content_hash)) => ItemOutcome::Hashed {
             depth,
             file: HashedFile {
@@ -248,7 +281,8 @@ async fn process_item(
                 category: FailureCategory::Hash,
             }
         }
-    }
+    };
+    (root_key, outcome)
 }
 
 #[derive(Debug, Default)]
@@ -257,6 +291,11 @@ pub(crate) struct DeduplicateSummary {
     pub failed: usize,
     pub failure_breakdown: FailureBreakdown,
     pub duplicates_skipped: usize,
+    /// Zip members dropped by the per-archive extraction-ratio cap
+    /// (ADR-0098) -- already folded into `failed`/`failure_breakdown.archive`
+    /// too, since dropped data is a real failure, but broken out here so
+    /// the wizard can print it as its own distinct, named count.
+    pub dropped_members: usize,
     pub uploaded: usize,
     pub unchanged: usize,
     pub upload_failed: usize,
@@ -282,7 +321,6 @@ pub(crate) async fn run_deduplicate_job(
     fs::create_dir_all(&raw_dir)
         .map_err(|err| format!("failed to create {}: {err}", raw_dir.display()))?;
     let counter = Arc::new(AtomicU64::new(0));
-    let extracted_bytes = Arc::new(AtomicU64::new(0));
 
     let multi_progress = MultiProgress::new();
     let total = tasks.len() as u64;
@@ -294,10 +332,11 @@ pub(crate) async fn run_deduplicate_job(
             .into_iter()
             .map(|task| QueueItem {
                 source_key: Some(task.key.clone()),
-                display_key: task.key,
+                display_key: task.key.clone(),
                 path: None,
                 depth: 0,
                 size: task.size,
+                root_key: task.key,
             })
             .collect(),
     ));
@@ -306,6 +345,14 @@ pub(crate) async fn run_deduplicate_job(
     let hashed_files = Arc::new(Mutex::new(Vec::<HashedFile>::new()));
     let finished_root_keys = Arc::new(Mutex::new(Vec::<String>::new()));
     let failure_breakdown = Arc::new(Mutex::new(FailureBreakdown::default()));
+    let dropped_members = Arc::new(AtomicUsize::new(0));
+    // Any root whose descendant failed outright, or lost a member to the
+    // extraction-ratio cap, is excluded from the checkpoint below -- a root
+    // zip was previously checkpointed unconditionally the moment it
+    // expanded, regardless of what happened to its members, so a rerun
+    // could never retry silently-dropped data (ADR-0098).
+    let tainted_roots = Arc::new(Mutex::new(HashSet::<String>::new()));
+    let command_span = tracing::Span::current();
 
     let worker_count = concurrency.max(1);
     let mut handles = Vec::with_capacity(worker_count);
@@ -315,99 +362,115 @@ pub(crate) async fn run_deduplicate_job(
         let hashed_files = Arc::clone(&hashed_files);
         let finished_root_keys = Arc::clone(&finished_root_keys);
         let failure_breakdown = Arc::clone(&failure_breakdown);
+        let dropped_members = Arc::clone(&dropped_members);
+        let tainted_roots = Arc::clone(&tainted_roots);
         let counter = Arc::clone(&counter);
-        let extracted_bytes = Arc::clone(&extracted_bytes);
         let bucket_config = bucket_config.clone();
         let secret = secret.to_string();
         let raw_dir = raw_dir.clone();
         let multi_progress = multi_progress.clone();
         let bar = bar.clone();
 
-        handles.push(tokio::spawn(async move {
-            loop {
-                let item = { queue.lock().unwrap().pop_front() };
-                let Some(item) = item else {
-                    if in_flight.load(Ordering::SeqCst) == 0 {
-                        break;
-                    }
-                    tokio::time::sleep(Duration::from_millis(10)).await;
-                    continue;
-                };
-                in_flight.fetch_add(1, Ordering::SeqCst);
+        handles.push(tokio::spawn(
+            async move {
+                loop {
+                    let item = { queue.lock().unwrap().pop_front() };
+                    let Some(item) = item else {
+                        if in_flight.load(Ordering::SeqCst) == 0 {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        continue;
+                    };
+                    in_flight.fetch_add(1, Ordering::SeqCst);
 
-                let outcome = process_item(
-                    &bucket_config,
-                    &secret,
-                    item,
-                    &raw_dir,
-                    &counter,
-                    &extracted_bytes,
-                    &multi_progress,
-                )
-                .await;
+                    let (root_key, outcome) = process_item(
+                        &bucket_config,
+                        &secret,
+                        item,
+                        &raw_dir,
+                        &counter,
+                        &multi_progress,
+                    )
+                    .await;
 
-                match outcome {
-                    ItemOutcome::ZipExpanded {
-                        display_key,
-                        depth,
-                        members,
-                    } => {
-                        crate::observability::metrics::record_phase(
-                            "deduplicate",
-                            "archive",
-                            "ok",
-                            Some(bucket_config.alias.as_str()),
-                        );
-                        bar.inc_length(members.len() as u64);
-                        queue.lock().unwrap().extend(members);
-                        if depth == 0 {
-                            finished_root_keys.lock().unwrap().push(display_key);
+                    match outcome {
+                        ItemOutcome::ZipExpanded {
+                            display_key,
+                            depth,
+                            members,
+                            dropped,
+                        } => {
+                            crate::observability::metrics::record_phase(
+                                "deduplicate",
+                                "archive",
+                                "ok",
+                                Some(bucket_config.alias.as_str()),
+                            );
+                            bar.inc_length(members.len() as u64);
+                            queue.lock().unwrap().extend(members);
+                            if depth == 0 {
+                                finished_root_keys.lock().unwrap().push(display_key);
+                            }
+                            if dropped > 0 {
+                                failure_breakdown.lock().unwrap().archive += dropped;
+                                dropped_members.fetch_add(dropped, Ordering::SeqCst);
+                                tainted_roots.lock().unwrap().insert(root_key);
+                                crate::observability::metrics::record_phase(
+                                    "deduplicate",
+                                    "archive",
+                                    "failed",
+                                    Some(bucket_config.alias.as_str()),
+                                );
+                            }
+                        }
+                        ItemOutcome::Hashed { depth, file } => {
+                            crate::observability::metrics::record_phase(
+                                "deduplicate",
+                                "hash",
+                                "ok",
+                                Some(bucket_config.alias.as_str()),
+                            );
+                            if depth == 0 {
+                                finished_root_keys
+                                    .lock()
+                                    .unwrap()
+                                    .push(file.original_key.clone());
+                            }
+                            hashed_files.lock().unwrap().push(file);
+                        }
+                        ItemOutcome::Failed { category } => {
+                            tainted_roots.lock().unwrap().insert(root_key);
+                            let mut breakdown = failure_breakdown.lock().unwrap();
+                            let phase = match category {
+                                FailureCategory::Download => {
+                                    breakdown.download += 1;
+                                    "download"
+                                }
+                                FailureCategory::Archive => {
+                                    breakdown.archive += 1;
+                                    "archive"
+                                }
+                                FailureCategory::Hash => {
+                                    breakdown.hash += 1;
+                                    "hash"
+                                }
+                            };
+                            crate::observability::metrics::record_phase(
+                                "deduplicate",
+                                phase,
+                                "failed",
+                                Some(bucket_config.alias.as_str()),
+                            );
                         }
                     }
-                    ItemOutcome::Hashed { depth, file } => {
-                        crate::observability::metrics::record_phase(
-                            "deduplicate",
-                            "hash",
-                            "ok",
-                            Some(bucket_config.alias.as_str()),
-                        );
-                        if depth == 0 {
-                            finished_root_keys
-                                .lock()
-                                .unwrap()
-                                .push(file.original_key.clone());
-                        }
-                        hashed_files.lock().unwrap().push(file);
-                    }
-                    ItemOutcome::Failed { category } => {
-                        let mut breakdown = failure_breakdown.lock().unwrap();
-                        let phase = match category {
-                            FailureCategory::Download => {
-                                breakdown.download += 1;
-                                "download"
-                            }
-                            FailureCategory::Archive => {
-                                breakdown.archive += 1;
-                                "archive"
-                            }
-                            FailureCategory::Hash => {
-                                breakdown.hash += 1;
-                                "hash"
-                            }
-                        };
-                        crate::observability::metrics::record_phase(
-                            "deduplicate",
-                            phase,
-                            "failed",
-                            Some(bucket_config.alias.as_str()),
-                        );
-                    }
+
+                    bar.inc(1);
+                    in_flight.fetch_sub(1, Ordering::SeqCst);
                 }
-
-                bar.inc(1);
-                in_flight.fetch_sub(1, Ordering::SeqCst);
             }
-        }));
+            .instrument(command_span.clone()),
+        ));
     }
 
     let mut first_panic = None;
@@ -436,6 +499,13 @@ pub(crate) async fn run_deduplicate_job(
         .map_err(|_| "internal error: failure breakdown still shared".to_string())?
         .into_inner()
         .map_err(|_| "internal error: failure breakdown lock poisoned".to_string())?;
+    let dropped_members = Arc::try_unwrap(dropped_members)
+        .map_err(|_| "internal error: dropped-member counter still shared".to_string())?
+        .into_inner();
+    let tainted_roots = Arc::try_unwrap(tainted_roots)
+        .map_err(|_| "internal error: tainted-root set still shared".to_string())?
+        .into_inner()
+        .map_err(|_| "internal error: tainted-root set lock poisoned".to_string())?;
 
     // `dedup_index` (the full hash->path map), `merge_records` (the
     // human-readable report -- can run well into the GB range for a large,
@@ -455,7 +525,9 @@ pub(crate) async fn run_deduplicate_job(
         dedup::write_report(local_output, &merge_records)?;
 
         let placed_keys: std::collections::HashSet<String> = placed_keys.into_iter().collect();
-        finished_root_keys.retain(|key| placed_keys.contains(key) || is_zip_key(key));
+        finished_root_keys.retain(|key| {
+            !tainted_roots.contains(key) && (placed_keys.contains(key) || is_zip_key(key))
+        });
         for key in &finished_root_keys {
             manifest::append_checkpoint(&staging_dir, key)?;
         }
@@ -469,6 +541,7 @@ pub(crate) async fn run_deduplicate_job(
             + failure_breakdown.hash
             + placement_summary.failed,
         duplicates_skipped: placement_summary.duplicates_skipped,
+        dropped_members,
         ..Default::default()
     };
     summary.failure_breakdown.merge(&failure_breakdown);
@@ -482,7 +555,7 @@ pub(crate) async fn run_deduplicate_job(
 
     if let Some((remote_bucket, remote_secret)) = remote {
         let upload_summary = upload_result(
-            &bucket_config.alias,
+            &remote_bucket.alias,
             local_output,
             (remote_bucket, remote_secret),
             upload_concurrency,
@@ -501,10 +574,11 @@ pub(crate) async fn run_deduplicate_job(
 /// `.staging/.uploaded` index (ADR-0019/ADR-0024) -- the shared upload tail
 /// both `run_deduplicate_job` and `run_upload_only` call, so there's one code
 /// path and one resume mechanism between a fresh run and a resumed
-/// `--upload-only` one (ADR-0089). `label` is purely descriptive
-/// (tracing/log context): `run_deduplicate_job` passes the source bucket's
-/// alias (its historical behavior); `run_upload_only`, which never touches
-/// a source bucket at all, passes the remote's own alias instead.
+/// `--upload-only` one (ADR-0089). `label` is purely descriptive (tracing/
+/// log context): both callers pass `remote`'s own alias, since `remote` is
+/// always the actual upload destination (ADR-0098 -- `run_deduplicate_job`
+/// previously passed the source bucket's alias here, mislabeling every
+/// upload-phase log line with the wrong bucket).
 async fn upload_result(
     label: &str,
     local_output: &Path,
