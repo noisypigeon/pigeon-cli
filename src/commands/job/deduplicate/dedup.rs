@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use indicatif::MultiProgress;
 
 use crate::commands::job::email_sync::sink;
-use crate::core::data::{ContentIndex, Dedup, sanitize_filename, unique_path};
+use crate::core::data::{ContentIndex, Dedup, after_zip_separator, sanitize_filename, unique_path};
 
 pub(crate) const CONTENT_HASHES_FILE: &str = ".content-hashes";
 
@@ -36,10 +36,14 @@ pub(crate) struct HashedFile {
 }
 
 /// One duplicate discovered during placement, for the human-readable report
-/// (`write_report`).
+/// (`write_report`). `kept_original_key` (ADR-0099) is the source key of
+/// whichever file was kept under `kept_path` -- blank when that hash was
+/// committed before ADR-0099 (never retroactively backfilled, since a hash
+/// is only ever committed once).
 pub(crate) struct MergeRecord {
     pub duplicate_key: String,
     pub kept_path: String,
+    pub kept_original_key: String,
     pub content_hash: String,
 }
 
@@ -55,6 +59,7 @@ pub(crate) struct PlacementSummary {
 /// keep-selection (ADR-0095) uses this to avoid preferring an undated copy
 /// over a dated one just because "0000" sorts before a real year.
 fn is_undated_key(key: &str) -> bool {
+    let key = after_zip_separator(key);
     let name = Path::new(key)
         .file_name()
         .and_then(|n| n.to_str())
@@ -92,11 +97,12 @@ pub(crate) fn place_and_report(
 
     for file in files {
         bar.inc(1);
-        match dedup.check(&file.content_hash) {
-            Some(kept_path) => {
+        match dedup.0.check_with_original_key(&file.content_hash) {
+            Some((kept_path, kept_original_key)) => {
                 records.push(MergeRecord {
                     duplicate_key: file.original_key.clone(),
                     kept_path: kept_path.to_string(),
+                    kept_original_key: kept_original_key.to_string(),
                     content_hash: file.content_hash.clone(),
                 });
                 let _ = fs::remove_file(&file.scratch_path);
@@ -140,10 +146,11 @@ fn place_one(
     fs::create_dir_all(&extension_dir)
         .map_err(|err| format!("failed to create {}: {err}", extension_dir.display()))?;
 
-    let original_name = Path::new(&file.original_key)
+    let key_tail = after_zip_separator(&file.original_key);
+    let original_name = Path::new(key_tail)
         .file_name()
         .and_then(|name| name.to_str())
-        .unwrap_or(&file.original_key);
+        .unwrap_or(key_tail);
     let final_path = unique_path(&extension_dir.join(sanitize_filename(original_name)));
 
     fs::rename(&file.scratch_path, &final_path).map_err(|err| {
@@ -159,19 +166,23 @@ fn place_one(
         file.extension,
         final_path.file_name().unwrap().to_string_lossy()
     );
-    dedup.commit(&file.content_hash, &relative_path)
+    dedup
+        .0
+        .commit_with_key(&file.content_hash, &relative_path, &file.original_key)
 }
 
 /// Writes a plain-text, tab-separated merge report to
 /// `local_output/deduplicate-report.txt` -- one line per `MergeRecord` plus a
 /// trailing summary line. Written even when `records` is empty, so the
 /// report lives at a predictable, scriptable path every run (ADR-0082 §5).
+/// `kept_original_key` (ADR-0099) is blank whenever the kept copy's hash
+/// predates that change -- see `MergeRecord`'s doc comment.
 pub(crate) fn write_report(local_output: &Path, records: &[MergeRecord]) -> Result<(), String> {
-    let mut contents = String::from("duplicate_key\tcontent_hash\tkept_path\n");
+    let mut contents = String::from("duplicate_key\tcontent_hash\tkept_path\tkept_original_key\n");
     for record in records {
         contents.push_str(&format!(
-            "{}\t{}\t{}\n",
-            record.duplicate_key, record.content_hash, record.kept_path
+            "{}\t{}\t{}\t{}\n",
+            record.duplicate_key, record.content_hash, record.kept_path, record.kept_original_key
         ));
     }
     contents.push_str(&format!("\n{} duplicate(s) removed.\n", records.len()));
@@ -223,6 +234,32 @@ mod tests {
     }
 
     #[test]
+    fn place_and_report_strips_the_zip_member_prefix_from_an_extensionless_member() {
+        let staging = tempfile::tempdir().unwrap();
+        let result_dir = tempfile::tempdir().unwrap();
+        let mut dedup = dedup_at(staging.path());
+
+        let file = HashedFile {
+            original_key: "archive.zip!README".to_string(),
+            scratch_path: stage_scratch(staging.path(), "scratch.bin", b"readme-bytes"),
+            extension: "(none)".to_string(),
+            content_hash: "hash-readme".to_string(),
+        };
+
+        let (summary, _records, finished_keys) = place_and_report(
+            result_dir.path(),
+            vec![file],
+            &mut dedup,
+            &MultiProgress::new(),
+        );
+
+        assert_eq!(summary.placed, 1);
+        assert_eq!(finished_keys, vec!["archive.zip!README".to_string()]);
+        assert!(result_dir.path().join("(none)/README").exists());
+        assert!(!result_dir.path().join("zip!README").exists());
+    }
+
+    #[test]
     fn place_and_report_deduplicates_a_cross_key_duplicate_and_records_it() {
         let staging = tempfile::tempdir().unwrap();
         let result_dir = tempfile::tempdir().unwrap();
@@ -251,6 +288,7 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].duplicate_key, "b/report-copy.pdf");
         assert_eq!(records[0].kept_path, "pdf/report.pdf");
+        assert_eq!(records[0].kept_original_key, "a/report.pdf");
         assert_eq!(records[0].content_hash, "same-hash");
         assert_eq!(finished_keys.len(), 2);
         assert_eq!(
@@ -264,6 +302,14 @@ mod tests {
         assert!(is_undated_key("jpg/0000-00-00-image-370.jpg"));
         assert!(!is_undated_key("2018/jpg/2018-01-02-image-12.jpg"));
         assert!(!is_undated_key("a/report.pdf"));
+    }
+
+    #[test]
+    fn is_undated_key_strips_the_zip_member_prefix_first() {
+        assert!(is_undated_key("archive.zip!jpg/0000-00-00-image-370.jpg"));
+        assert!(!is_undated_key(
+            "archive.zip!2018/jpg/2018-01-02-image-12.jpg"
+        ));
     }
 
     #[test]
@@ -298,6 +344,10 @@ mod tests {
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].duplicate_key, "jpg/0000-00-00-image-370.jpg");
         assert_eq!(records[0].kept_path, "jpg/2018-01-02-image-12.jpg");
+        assert_eq!(
+            records[0].kept_original_key,
+            "2018/jpg/2018-01-02-image-12.jpg"
+        );
         assert_eq!(finished_keys.len(), 2);
         assert!(
             result_dir
@@ -343,13 +393,14 @@ mod tests {
         let records = vec![MergeRecord {
             duplicate_key: "b/report-copy.pdf".to_string(),
             kept_path: "pdf/report.pdf".to_string(),
+            kept_original_key: "a/report.pdf".to_string(),
             content_hash: "same-hash".to_string(),
         }];
 
         write_report(dir.path(), &records).unwrap();
 
         let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
-        assert!(contents.contains("b/report-copy.pdf\tsame-hash\tpdf/report.pdf"));
+        assert!(contents.contains("b/report-copy.pdf\tsame-hash\tpdf/report.pdf\ta/report.pdf"));
         assert!(contents.contains("1 duplicate(s) removed."));
     }
 

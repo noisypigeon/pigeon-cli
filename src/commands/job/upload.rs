@@ -215,7 +215,15 @@ enum UploadOutcomeKind {
 /// retries is warned about via `multi_progress.println` (load-bearing while
 /// upload bars are live, ADR-0024 §4/ADR-0015) and counted as failed --
 /// never committed, so it's retried again on the job's next invocation.
+/// `level = "debug"` (ADR-0099) -- the JSON log layer's `FmtSpan::CLOSE`
+/// setting (`observability::init`) auto-emits a span-close event every time
+/// this function returns, regardless of this body ever calling an explicit
+/// `tracing::` macro; at the default `pigeon=info` filter that was 142,993
+/// events (66MB) in one real run with zero diagnostic value on the happy
+/// path. `--log-level pigeon=debug` still opts back in; the `warn!` on
+/// actual failure below is untouched.
 #[tracing::instrument(
+    level = "debug",
     skip(task, uploaded_indexes, bucket_config, secret, encryptor, bar, multi_progress),
     fields(source_label = %task.label, file = %task.path.display())
 )]

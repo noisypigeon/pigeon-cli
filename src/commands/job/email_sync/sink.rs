@@ -123,16 +123,19 @@ async fn run_async(
 
 /// Builds a `ProgressBar` with the style shared by every phase of a
 /// `sync`/`sink` run (fetch, and -- per ADR-0013 -- transform/upload), so
-/// they read consistently in scrollback: `{prefix} {bar:40} {pos}/{len}`.
-/// Registered on `multi_progress` so concurrent `sync` workers (ADR-0014)
-/// render as simultaneous lines rather than overwriting each other.
+/// they read consistently in scrollback: `{prefix} {bar:40} {pos}/{len}
+/// {msg}`. The trailing `{msg}` (ADR-0099) renders empty unless a caller
+/// calls `set_message` (e.g. `download::DownloadAnnounce`) -- additive and
+/// safe for every other bar that never sets one. Registered on
+/// `multi_progress` so concurrent `sync` workers (ADR-0014) render as
+/// simultaneous lines rather than overwriting each other.
 pub(crate) fn new_progress_bar(
     prefix: String,
     len: u64,
     multi_progress: &MultiProgress,
 ) -> ProgressBar {
     let bar = ProgressBar::new(len);
-    if let Ok(style) = ProgressStyle::with_template("{prefix:24!} {bar:40} {pos}/{len}") {
+    if let Ok(style) = ProgressStyle::with_template("{prefix:24!} {bar:40} {pos}/{len} {msg}") {
         bar.set_style(style);
     }
     bar.set_prefix(prefix);

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use indicatif::MultiProgress;
 
 use crate::commands::job::email_sync::sink;
-use crate::core::data::{ContentIndex, Dedup, sanitize_filename, unique_path};
+use crate::core::data::{ContentIndex, Dedup, after_zip_separator, sanitize_filename, unique_path};
 
 use super::date::SimpleDate;
 
@@ -141,10 +141,11 @@ fn place_one(
         *counter += 1;
         extension_dir.join(format!("{date_label}-{counter}.{}", file.extension))
     } else {
-        let original_name = std::path::Path::new(&file.original_key)
+        let key_tail = after_zip_separator(&file.original_key);
+        let original_name = std::path::Path::new(key_tail)
             .file_name()
             .and_then(|name| name.to_str())
-            .unwrap_or(&file.original_key);
+            .unwrap_or(key_tail);
         unique_path(&extension_dir.join(sanitize_filename(original_name)))
     };
 
@@ -300,6 +301,29 @@ mod tests {
 
         assert_eq!(summary.placed, 1);
         assert!(output.path().join("pdf/report.pdf").exists());
+    }
+
+    #[test]
+    fn place_files_strips_the_zip_member_prefix_from_a_non_media_name() {
+        let output = tempfile::tempdir().unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let mut dedup = dedup_at(staging.path());
+
+        let file = ProcessedFile {
+            original_key: "archive.zip!README".to_string(),
+            scratch_path: stage_scratch(staging.path(), "scratch.bin", b"readme-bytes"),
+            extension: "(none)".to_string(),
+            date: None,
+            content_hash: "hash-readme".to_string(),
+            is_media: false,
+        };
+
+        let (summary, _finished_keys) =
+            place_files(output.path(), vec![file], &mut dedup, &MultiProgress::new());
+
+        assert_eq!(summary.placed, 1);
+        assert!(output.path().join("(none)/README").exists());
+        assert!(!output.path().join("zip!README").exists());
     }
 
     #[test]

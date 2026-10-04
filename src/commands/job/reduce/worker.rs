@@ -51,7 +51,7 @@ async fn process_item(
     task: ReduceTask,
     raw_dir: &Path,
     result_dir: &Path,
-    multi_progress: &MultiProgress,
+    announce: &download::DownloadAnnounce,
 ) -> ItemOutcome {
     let extension = extension_of(&task.key);
     if let Err(err) = download::check_disk_space(raw_dir, task.size) {
@@ -73,7 +73,7 @@ async fn process_item(
         &task.key,
         task.size,
         &raw_path,
-        multi_progress,
+        announce,
     )
     .await
     {
@@ -182,6 +182,7 @@ pub(crate) async fn run_reduce_job(
     let total = tasks.len() as u64;
     let _ = multi_progress.println(format!("Downloading and placing {total} object(s)..."));
     let bar = sink::new_progress_bar("reduce".to_string(), total, &multi_progress);
+    let announce = download::DownloadAnnounce::new(bar.clone());
 
     let mut failure_breakdown = FailureBreakdown::default();
     let mut forwarded = 0usize;
@@ -195,7 +196,7 @@ pub(crate) async fn run_reduce_job(
                 task,
                 &raw_dir,
                 &result_dir,
-                &multi_progress,
+                &announce,
             )
         })
         .buffer_unordered(concurrency.max(1))

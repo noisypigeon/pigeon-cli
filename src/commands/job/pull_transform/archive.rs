@@ -69,6 +69,27 @@ fn is_apple_metadata_entry(entry_name: &str) -> bool {
         .starts_with("._")
 }
 
+/// `true` for `is_apple_metadata_entry`'s noise, or for a `.DS_Store`
+/// sidecar, a `.git` internal, or a `node_modules` vendor file anywhere in
+/// the archive (ADR-0099) -- tooling-generated noise or fully-reproducible
+/// vendor code, never the user's own data, the same reasoning that already
+/// justifies skipping AppleDouble/`__MACOSX` entries outright rather than
+/// archiving them. Matched on path *segments* so a nested `.git`/
+/// `node_modules` anywhere inside a zipped project tree is caught, not just
+/// at the archive root.
+fn is_skippable_zip_entry(entry_name: &str) -> bool {
+    if is_apple_metadata_entry(entry_name) {
+        return true;
+    }
+    let basename = entry_name.rsplit('/').next().unwrap_or(entry_name);
+    if basename == ".DS_Store" {
+        return true;
+    }
+    entry_name
+        .split('/')
+        .any(|segment| segment == ".git" || segment == "node_modules")
+}
+
 /// Streams every regular-file entry out of the zip at `zip_path` into a
 /// fresh file under `raw_dir` (named via `counter`, the same monotonic
 /// allocator `worker.rs` uses for every other scratch/raw file), in order.
@@ -111,11 +132,11 @@ pub(crate) fn expand_to_dir(
             continue;
         }
         let name = entry.name().to_string();
-        if is_apple_metadata_entry(&name) {
+        if is_skippable_zip_entry(&name) {
             tracing::debug!(
                 member = %name,
                 archive = %zip_path.display(),
-                "skipping macOS AppleDouble/__MACOSX metadata entry"
+                "skipping macOS AppleDouble/__MACOSX/.DS_Store/.git/node_modules entry"
             );
             continue;
         }
@@ -282,6 +303,29 @@ mod tests {
                 // counted as a failure.
                 ("__MACOSX/nested/._archive.zip", b"resource-fork-junk"),
                 ("._real.txt", b"resource-fork-junk"),
+            ]),
+        );
+        let counter = AtomicU64::new(0);
+
+        let (members, dropped) = expand_to_dir(&zip_path, &raw_dir, &counter).unwrap();
+
+        assert_eq!(dropped, 0);
+        assert_eq!(members.len(), 1);
+        assert_eq!(members[0].name, "real.txt");
+    }
+
+    #[test]
+    fn expand_to_dir_skips_ds_store_git_and_node_modules_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_dir = dir.path().join("raw");
+        let zip_path = write_zip_file(
+            dir.path(),
+            &build_test_zip(&[
+                ("real.txt", b"hello"),
+                (".DS_Store", b"finder-junk"),
+                ("project/.DS_Store", b"finder-junk"),
+                ("project/.git/config", b"git-internal"),
+                ("project/node_modules/pkg/index.js", b"vendor-code"),
             ]),
         );
         let counter = AtomicU64::new(0);
