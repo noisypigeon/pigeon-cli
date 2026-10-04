@@ -165,7 +165,7 @@ fn next_scratch_path(dir: &Path, counter: &AtomicU64, extension: &str) -> Result
 
 /// Streams `path` through SHA-256 on tokio's blocking-thread pool rather
 /// than the calling async task's own runtime worker thread -- CPU-bound,
-/// same ADR-0088 precedent `dedupe/worker.rs` set, generalized to every
+/// same ADR-0088 precedent `deduplicate/worker.rs` set, generalized to every
 /// `download::sha256_file` call site in this module (ADR-0090).
 async fn hash_file_blocking(path: PathBuf) -> Result<String, String> {
     match tokio::task::spawn_blocking(move || download::sha256_file(&path)).await {
@@ -521,7 +521,7 @@ async fn process_item(
             };
         }
         // CPU-bound (decompression) -- handed to `spawn_blocking` rather
-        // than run inline, same ADR-0088 precedent `dedupe/worker.rs` set,
+        // than run inline, same ADR-0088 precedent `deduplicate/worker.rs` set,
         // generalized here (ADR-0090).
         let expand_path = path.clone();
         let expand_raw_dir = raw_dir.to_path_buf();
@@ -869,7 +869,7 @@ pub(crate) async fn run_pull_transform_job(
     // only inside this block, so they're dropped here, before the upload
     // phase runs, instead of surviving in `run_pull_transform_job`'s own
     // scope through the whole upload phase afterward (ADR-0090, same
-    // ADR-0089 precedent set for `dedupe`).
+    // ADR-0089 precedent set for `deduplicate`).
     let placement_summary = {
         let mut dedup = PullTransformDedup(ContentIndex::load(
             local_output,
@@ -932,7 +932,7 @@ pub(crate) async fn run_pull_transform_job(
 /// code path and one resume mechanism between a fresh run and a resumed
 /// `--upload-only` one (ADR-0090, same ADR-0089 precedent). Reuses the
 /// normal path's exact `pending_upload_tasks(local_output, local_output,
-/// local_output, ...)` call shape -- unlike `dedupe`/`sort`, this job never
+/// local_output, ...)` call shape -- unlike `deduplicate`/`sort`, this job never
 /// adopted a separate `result/` subdirectory, so its upload walk already
 /// (pre-existing, not introduced here) sweeps up `.processed`/
 /// `.content-hashes`/`.uploaded` as literal upload candidates since
@@ -975,7 +975,7 @@ async fn upload_result(
 
 /// Resumes uploading an already-completed local pull-transform run,
 /// skipping the bucket listing/download/classify/recode/placement phases
-/// entirely (ADR-0090's `--upload-only`, same shape as `dedupe`'s
+/// entirely (ADR-0090's `--upload-only`, same shape as `deduplicate`'s
 /// ADR-0089 version). Reuses `upload_result`, the same helper
 /// `run_pull_transform_job`'s own upload tail calls.
 pub(crate) async fn run_upload_only(

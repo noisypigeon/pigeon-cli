@@ -1,5 +1,7 @@
 use crate::commands::job::cli::{JobCommands, JobType};
-use crate::commands::job::{decrypt_files, dedupe, email_pull, email_sync, pull_transform};
+use crate::commands::job::{
+    decrypt_files, deduplicate, email_pull, email_sync, pull_transform, reduce,
+};
 use crate::core::observability::Observable as _;
 
 pub fn dispatch(command: JobCommands) -> i32 {
@@ -47,7 +49,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     yes,
                 ),
-                JobType::Dedupe {
+                JobType::Deduplicate {
                     source_bucket,
                     local_output,
                     remote_output,
@@ -55,13 +57,34 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     upload_only,
                     yes,
-                } => dedupe::wizard::dispatch(
+                } => deduplicate::wizard::dispatch(
                     source_bucket,
                     local_output,
                     remote_output,
                     concurrency,
                     upload_concurrency,
                     upload_only,
+                    yes,
+                ),
+                JobType::Reduce {
+                    source_bucket,
+                    local_output,
+                    remote_output,
+                    concurrency,
+                    upload_concurrency,
+                    upload_only,
+                    force_valuable,
+                    force_reproducible,
+                    yes,
+                } => reduce::wizard::dispatch(
+                    source_bucket,
+                    local_output,
+                    remote_output,
+                    concurrency,
+                    upload_concurrency,
+                    upload_only,
+                    force_valuable,
+                    force_reproducible,
                     yes,
                 ),
                 JobType::DecryptFiles {

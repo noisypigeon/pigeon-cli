@@ -11,6 +11,34 @@ use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 use crate::commands::keyring::store::Store;
 use crate::core::wizard::WizardInput;
 
+/// Resolves which bucket-config to pull from -- mandatory (unlike
+/// `UploadTargetInput`'s optional upload target). Originated independently
+/// in `deduplicate::wizard` and `pull_transform::wizard`; hoisted here once
+/// `reduce` needed the identical logic (ADR-0096 §0, this codebase's usual
+/// "duplicate until the third consumer" precedent).
+pub(crate) struct SourceBucketInput<'a> {
+    pub flag: Option<String>,
+    pub store: &'a Store,
+}
+
+impl WizardInput for SourceBucketInput<'_> {
+    type Value = String;
+
+    fn flag_value(&self) -> Option<Result<String, String>> {
+        self.flag.clone().map(Ok)
+    }
+
+    fn prompt(&self) -> Result<String, String> {
+        self.store
+            .prompt_select_bucket()
+            .map(|bucket_config| bucket_config.alias.clone())
+    }
+
+    fn non_interactive_fallback(&self) -> Result<String, String> {
+        Err("--source-bucket is required when not running interactively".to_string())
+    }
+}
+
 /// Resolves whether (and where) to upload (originally `email_sync`'s
 /// `RemoteOutputInput`, ADR-0021 §5 amendment): `Some(alias)` if the flag is
 /// given (validated by the caller); on a TTY if omitted, asks whether to
@@ -128,7 +156,7 @@ impl WizardInput for EncryptionKeyInput<'_> {
 /// shared by every job whose per-item work is CPU-bound (hashing,
 /// decompression, decryption) rather than I/O-bound, where a flat `4`
 /// (tuned for IMAP/S3-bound jobs) is the wrong default. Originated in
-/// `dedupe/wizard.rs` (ADR-0088); hoisted here once `pull-transform` and
+/// `deduplicate/wizard.rs` (ADR-0088); hoisted here once `pull-transform` and
 /// `decrypt-files` needed the identical logic (ADR-0090, this codebase's
 /// usual "duplicate until the third consumer" precedent).
 pub(crate) fn default_concurrency() -> usize {

@@ -76,9 +76,9 @@ pub(crate) struct UploadTask {
     staging_dir: PathBuf,
     path: PathBuf,
     key: String,
-    /// Which job this task belongs to (e.g. "sort", "dedupe") -- a static
-    /// job-type name, not a per-caller label like `label` above. Used only
-    /// to tag metrics (ADR-0093) with `pigeon_job`.
+    /// Which job this task belongs to (e.g. "pull-transform", "deduplicate")
+    /// -- a static job-type name, not a per-caller label like `label`
+    /// above. Used only to tag metrics (ADR-0093) with `pigeon_job`.
     job: &'static str,
 }
 
@@ -396,8 +396,8 @@ mod tests {
     }
 
     #[test]
-    fn pending_upload_tasks_with_a_pre_seeded_uploaded_index_matches_the_dedupe_layout() {
-        // `dedupe`/`sort`'s own `upload_result` calls `pending_upload_tasks`
+    fn pending_upload_tasks_with_a_pre_seeded_uploaded_index_matches_the_deduplicate_layout() {
+        // `deduplicate`'s own `upload_result` calls `pending_upload_tasks`
         // with `walk_dir == key_root` (both `result_dir`), unlike
         // `email_sync`'s nested-identity-subdirectory layout the other
         // fixtures here use (ADR-0089).
@@ -414,8 +414,8 @@ mod tests {
         .unwrap();
 
         let (tasks, index) = pending_upload_tasks(
-            "dedupe",
-            "dedupe-alias",
+            "deduplicate",
+            "deduplicate-alias",
             staging.path(),
             result_dir.path(),
             result_dir.path(),

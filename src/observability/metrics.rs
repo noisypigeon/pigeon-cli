@@ -47,7 +47,7 @@ pub fn install(port: u16) {
 /// which Alloy's Prometheus scrape config already reserves to identify the
 /// *scrape target* once every instance shares one Cockpit store; colliding
 /// with it would silently relabel this as `exported_job`). `phase` reuses
-/// each job's existing `FailureBreakdown` field names (e.g. dedupe's
+/// each job's existing `FailureBreakdown` field names (e.g. deduplicate's
 /// "download"/"hash"/"place"); `outcome` matches that phase's real semantics
 /// rather than a forced success/failure binary (e.g. pull_transform's
 /// recode step uses "recoded"/"fallback", email_pull's attachment step

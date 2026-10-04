@@ -380,9 +380,36 @@ fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
+/// The lowercased extension of `key`'s final path segment, or `"(none)"`
+/// when there isn't one. Hoisted here (ADR-0096 §0) once `pull_transform`,
+/// `deduplicate`, and `reduce` all needed the identical logic -- this
+/// codebase's usual "duplicate until the third consumer" precedent.
+pub(crate) fn extension_of(key: &str) -> String {
+    Path::new(key)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_else(|| "(none)".to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_of_lowercases_and_strips_the_dot() {
+        assert_eq!(extension_of("Photos/IMG_0001.JPG"), "jpg");
+    }
+
+    #[test]
+    fn extension_of_handles_no_extension() {
+        assert_eq!(extension_of("Photos/README"), "(none)");
+    }
+
+    #[test]
+    fn extension_of_handles_dotfiles_without_extension() {
+        assert_eq!(extension_of(".DS_Store"), "(none)");
+    }
 
     const MESSAGE_HASHES: &str = ".message-hashes";
     const ATTACHMENT_HASHES: &str = ".attachment-hashes";

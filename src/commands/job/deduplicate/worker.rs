@@ -22,8 +22,8 @@ use crate::commands::job::upload::{self, UploadedIndex};
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::core::data::ContentIndex;
 
-use super::dedup::{self, DedupeDedup, HashedFile};
-use super::manifest::{self, DedupeTask, extension_of};
+use super::dedup::{self, DeduplicateDedup, HashedFile};
+use super::manifest::{self, DeduplicateTask, extension_of};
 
 /// A fresh, not-yet-existing path under `dir` named by `counter`
 /// (monotonically increasing, shared across concurrent workers) plus
@@ -146,7 +146,7 @@ async fn process_item(
                     category: FailureCategory::Download,
                 };
             }
-            crate::observability::metrics::record_phase("dedupe", "download", "ok");
+            crate::observability::metrics::record_phase("deduplicate", "download", "ok");
             raw_path
         }
     };
@@ -247,7 +247,7 @@ async fn process_item(
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct DedupeSummary {
+pub(crate) struct DeduplicateSummary {
     pub processed: usize,
     pub failed: usize,
     pub failure_breakdown: FailureBreakdown,
@@ -257,20 +257,20 @@ pub(crate) struct DedupeSummary {
     pub upload_failed: usize,
 }
 
-/// Runs the full dedupe pipeline: `tasks` (from `Job::gather`, already
+/// Runs the full deduplicate pipeline: `tasks` (from `Job::gather`, already
 /// filtered against the `.processed` checkpoint) are downloaded/expanded/
 /// hashed concurrently at `concurrency`, placed sequentially (dedup +
 /// report), then uploaded (if `remote` is given) -- always unencrypted.
-pub(crate) async fn run_dedupe_job(
+pub(crate) async fn run_deduplicate_job(
     bucket_config: &BucketConfig,
     secret: &str,
     local_output: &Path,
-    tasks: Vec<DedupeTask>,
+    tasks: Vec<DeduplicateTask>,
     concurrency: usize,
     upload_concurrency: usize,
     remote: Option<(&BucketConfig, &str)>,
-) -> Result<DedupeSummary, String> {
-    crate::observability::metrics::set_macro_phase("dedupe", false);
+) -> Result<DeduplicateSummary, String> {
+    crate::observability::metrics::set_macro_phase("deduplicate", false);
     let staging_dir = local_output.join(".staging");
     let raw_dir = staging_dir.join("raw");
     let result_dir = local_output.join("result");
@@ -282,7 +282,7 @@ pub(crate) async fn run_dedupe_job(
     let multi_progress = MultiProgress::new();
     let total = tasks.len() as u64;
     let _ = multi_progress.println(format!("Downloading and processing {total} object(s)..."));
-    let bar = sink::new_progress_bar("dedupe".to_string(), total, &multi_progress);
+    let bar = sink::new_progress_bar("deduplicate".to_string(), total, &multi_progress);
 
     let queue: Arc<Mutex<VecDeque<QueueItem>>> = Arc::new(Mutex::new(
         tasks
@@ -347,7 +347,7 @@ pub(crate) async fn run_dedupe_job(
                         depth,
                         members,
                     } => {
-                        crate::observability::metrics::record_phase("dedupe", "archive", "ok");
+                        crate::observability::metrics::record_phase("deduplicate", "archive", "ok");
                         bar.inc_length(members.len() as u64);
                         queue.lock().unwrap().extend(members);
                         if depth == 0 {
@@ -355,7 +355,7 @@ pub(crate) async fn run_dedupe_job(
                         }
                     }
                     ItemOutcome::Hashed { depth, file } => {
-                        crate::observability::metrics::record_phase("dedupe", "hash", "ok");
+                        crate::observability::metrics::record_phase("deduplicate", "hash", "ok");
                         if depth == 0 {
                             finished_root_keys
                                 .lock()
@@ -380,7 +380,7 @@ pub(crate) async fn run_dedupe_job(
                                 "hash"
                             }
                         };
-                        crate::observability::metrics::record_phase("dedupe", phase, "failed");
+                        crate::observability::metrics::record_phase("deduplicate", phase, "failed");
                     }
                 }
 
@@ -393,7 +393,7 @@ pub(crate) async fn run_dedupe_job(
     let mut first_panic = None;
     for handle in handles {
         if let Err(err) = handle.await {
-            tracing::error!(error = %err, "dedupe worker task panicked");
+            tracing::error!(error = %err, "deduplicate worker task panicked");
             if first_panic.is_none() {
                 first_panic = Some(format!("worker task panicked: {err}"));
             }
@@ -421,12 +421,12 @@ pub(crate) async fn run_dedupe_job(
     // human-readable report -- can run well into the GB range for a large,
     // duplicate-heavy bucket), and `placed_keys` all live only inside this
     // block, so they're dropped here, before the upload phase runs, instead
-    // of surviving in `run_dedupe_job`'s own scope through the whole upload
+    // of surviving in `run_deduplicate_job`'s own scope through the whole upload
     // phase afterward (ADR-0089 -- this is what let a real run's RSS keep
     // climbing well past the fetch+hash phase and eventually get OOM-killed
     // partway through upload).
     let placement_summary = {
-        let mut dedup_index = DedupeDedup(ContentIndex::load(
+        let mut dedup_index = DeduplicateDedup(ContentIndex::load(
             &staging_dir,
             dedup::CONTENT_HASHES_FILE,
         )?);
@@ -442,7 +442,7 @@ pub(crate) async fn run_dedupe_job(
         placement_summary
     };
 
-    let mut summary = DedupeSummary {
+    let mut summary = DeduplicateSummary {
         processed: placement_summary.placed,
         failed: failure_breakdown.download
             + failure_breakdown.archive
@@ -479,10 +479,10 @@ pub(crate) async fn run_dedupe_job(
 
 /// Uploads `local_output/result/` to `remote`, resuming via the existing
 /// `.staging/.uploaded` index (ADR-0019/ADR-0024) -- the shared upload tail
-/// both `run_dedupe_job` and `run_upload_only` call, so there's one code
+/// both `run_deduplicate_job` and `run_upload_only` call, so there's one code
 /// path and one resume mechanism between a fresh run and a resumed
 /// `--upload-only` one (ADR-0089). `label` is purely descriptive
-/// (tracing/log context): `run_dedupe_job` passes the source bucket's
+/// (tracing/log context): `run_deduplicate_job` passes the source bucket's
 /// alias (its historical behavior); `run_upload_only`, which never touches
 /// a source bucket at all, passes the remote's own alias instead.
 async fn upload_result(
@@ -497,7 +497,7 @@ async fn upload_result(
     let (remote_bucket, remote_secret) = remote;
 
     let (upload_tasks, uploaded_index) = upload::pending_upload_tasks(
-        "dedupe",
+        "deduplicate",
         label,
         &staging_dir,
         &result_dir,
@@ -518,10 +518,10 @@ async fn upload_result(
     .await)
 }
 
-/// Resumes uploading an already-completed local dedupe run, skipping the
+/// Resumes uploading an already-completed local deduplicate run, skipping the
 /// bucket listing/download/hash/placement phases entirely (ADR-0089's
 /// `--upload-only`). Reuses `upload_result`, the same helper
-/// `run_dedupe_job`'s own upload tail calls.
+/// `run_deduplicate_job`'s own upload tail calls.
 pub(crate) async fn run_upload_only(
     local_output: &Path,
     remote: (&BucketConfig, &str),
