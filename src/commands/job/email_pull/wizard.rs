@@ -419,6 +419,7 @@ async fn dispatch_async(
             (fail(err), report_path)
         }
     };
+    report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
         &report_bucket_config,
         &report_secret,
@@ -581,6 +582,7 @@ async fn dispatch_upload_only(
             (fail(err), report_path)
         }
     };
+    report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
         &report_bucket_config,
         &report_secret,

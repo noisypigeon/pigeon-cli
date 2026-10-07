@@ -98,6 +98,23 @@ pub(crate) fn say(transcript: &Transcript, message: impl AsRef<str>) {
     transcript.line(message);
 }
 
+/// Logs this run's own outcome (ADR-0104) immediately before
+/// `upload_run_artifacts` runs, from inside the still-open `command` span --
+/// so the uploaded `pigeon.jsonl` snapshot always contains at least one line
+/// stating how the run ended, instead of relying solely on
+/// `run_instrumented`'s own "command finished" line, which is written only
+/// *after* the whole dispatch (including this artifact upload) returns --
+/// too late to ever appear in the snapshot it describes. Additive:
+/// `run_instrumented`'s line is unchanged and still the authoritative one
+/// for the live/ambient log.
+pub(crate) fn log_run_outcome(exit_code: i32) {
+    if exit_code == 0 {
+        tracing::info!(exit_code, "job run outcome before artifact upload: success");
+    } else {
+        tracing::error!(exit_code, "job run outcome before artifact upload: failure");
+    }
+}
+
 /// Uploads `report_path`, the shared `pigeon.jsonl` log, and
 /// `transcript_path` to `bucket_config` under `{prefix}/`. Best-effort: a
 /// failure here is `tracing::warn!`-logged but never changes the calling
@@ -189,5 +206,78 @@ mod tests {
         let path = write_summary_report(dir.path(), "email-sync", &"boom".to_string()).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("boom"));
+    }
+
+    /// A minimal `tracing_subscriber::Layer` that captures every event's
+    /// fields into a plain map, for asserting on `log_run_outcome`'s
+    /// (ADR-0104) `tracing::info!`/`error!` calls without needing a global
+    /// subscriber or an extra test-only crate dependency. Mirrors the
+    /// `CapturedEvents`/`CaptureLayer` pattern already established in
+    /// `email_sync/transform.rs`'s test module (ADR-0080); duplicated here
+    /// per this codebase's "duplicate until the third consumer" precedent.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(
+        std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+    );
+
+    struct CaptureLayer(CapturedEvents);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Visitor(std::collections::HashMap<String, String>);
+            impl tracing::field::Visit for Visitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .insert(field.name().to_string(), format!("{value:?}"));
+                }
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+            }
+            let mut visitor = Visitor(std::collections::HashMap::new());
+            event.record(&mut visitor);
+            self.0.0.lock().unwrap().push(visitor.0);
+        }
+    }
+
+    fn capture_events(run: impl FnOnce()) -> Vec<std::collections::HashMap<String, String>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let events = CapturedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(events.clone()));
+        tracing::subscriber::with_default(subscriber, run);
+        events.0.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn log_run_outcome_logs_an_info_line_with_exit_code_zero_on_success() {
+        let events = capture_events(|| log_run_outcome(0));
+        assert_eq!(events.len(), 1);
+        let fields = &events[0];
+        assert_eq!(
+            fields.get("message").map(String::as_str),
+            Some("job run outcome before artifact upload: success")
+        );
+        assert_eq!(fields.get("exit_code").map(String::as_str), Some("0"));
+    }
+
+    #[test]
+    fn log_run_outcome_logs_an_error_line_with_the_nonzero_exit_code_on_failure() {
+        let events = capture_events(|| log_run_outcome(1));
+        assert_eq!(events.len(), 1);
+        let fields = &events[0];
+        assert_eq!(
+            fields.get("message").map(String::as_str),
+            Some("job run outcome before artifact upload: failure")
+        );
+        assert_eq!(fields.get("exit_code").map(String::as_str), Some("1"));
     }
 }
