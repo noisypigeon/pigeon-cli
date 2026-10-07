@@ -397,86 +397,6 @@ pub enum JobType {
         yes: bool,
     },
 
-    /// Runs after `deduplicate`: recursively scans a source bucket
-    /// already organized into top-level `<extension>/` folders, classifies
-    /// each extension as either genuinely valuable or an artifact/piece of
-    /// media (TV, movie, software installer, disk image) that's easily
-    /// reproduced from an external canonical source, and forwards only the
-    /// valuable extensions' objects to a mandatory destination bucket
-    /// (ADR-0096). Reproducible extensions are never even downloaded. Never
-    /// offers encryption; never expands zips (input is already flat).
-    Reduce {
-        /// Alias of a configured bucket-config to pull from. Interactively
-        /// selected from the configured bucket-configs when omitted and
-        /// stdin is a terminal; required otherwise.
-        #[arg(long)]
-        source_bucket: Option<String>,
-
-        /// Local directory to stage and store output under. Defaults to a
-        /// directory under the OS temp directory when omitted.
-        #[arg(long)]
-        local_output: Option<PathBuf>,
-
-        /// Alias of a configured bucket-config to upload the forwarded
-        /// result to. Always uploaded unencrypted. Interactively selected
-        /// from the configured bucket-configs when omitted and stdin is a
-        /// terminal; required otherwise -- uploading is mandatory for this
-        /// job.
-        #[arg(long)]
-        remote_output: Option<String>,
-
-        /// Maximum number of files to download concurrently.
-        #[arg(long)]
-        concurrency: Option<usize>,
-
-        /// Maximum number of files to upload concurrently, independent of
-        /// `--concurrency` (which sizes download work) -- the upload phase
-        /// is network-round-trip-bound, not CPU-bound, so it benefits from
-        /// its own, separately-tuned concurrency (ADR-0091). Interactively
-        /// prompted when omitted and stdin is a terminal; defaults to 16
-        /// otherwise. With `--upload-only`, this is the only concurrency
-        /// flag that has any effect.
-        #[arg(long)]
-        upload_concurrency: Option<usize>,
-
-        /// Resumes uploading an already-completed local reduce run instead
-        /// of starting a new one: skips the bucket listing/download/
-        /// placement phases entirely (and the source bucket credentials
-        /// they'd otherwise need) and uploads straight from an existing
-        /// `--local-output`'s `result/` tree, picking up where a prior
-        /// run's upload phase left off via the same `.staging/.uploaded`
-        /// index (ADR-0090). Requires a `--local-output` from a completed
-        /// prior run (its `.staging/.processed` checkpoint must exist and
-        /// its `result/` must be non-empty).
-        #[arg(long)]
-        upload_only: bool,
-
-        /// Extension (without the leading dot, e.g. `mp3`) to always treat
-        /// as valuable regardless of the built-in classification table.
-        /// Repeatable.
-        #[arg(long)]
-        force_valuable: Vec<String>,
-
-        /// Extension (without the leading dot, e.g. `pdf`) to always treat
-        /// as a reproducible artifact/media file regardless of the
-        /// built-in classification table. Repeatable.
-        #[arg(long)]
-        force_reproducible: Vec<String>,
-
-        /// Alias of a configured bucket-config this run's report, the
-        /// shared observability log, and a transcript of its printed
-        /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
-        /// interactively selected when omitted and stdin is a terminal;
-        /// required otherwise.
-        #[arg(long)]
-        report_bucket: Option<String>,
-
-        /// Skip the final "proceed?" confirmation.
-        #[arg(long)]
-        yes: bool,
-    },
-
     /// Copies data from a configurable source to a configurable
     /// destination by shelling out to the external `rclone` binary, with
     /// its performance/retry flags fixed (not configurable here). Pigeon
@@ -528,7 +448,6 @@ impl Observable for JobType {
             JobType::EmailPull { .. } => "job.email-pull",
             JobType::PullTransform { .. } => "job.pull-transform",
             JobType::Deduplicate { .. } => "job.deduplicate",
-            JobType::Reduce { .. } => "job.reduce",
             JobType::Import { .. } => "job.import",
         }
     }
