@@ -52,7 +52,7 @@ These two are genuinely per-file measurements on every other job (an attempt cou
 
 ## Out of scope
 
-- Implementing `pigeon_upload_attempts_total`/`pigeon_upload_duration_seconds` for import -- would require enabling rclone's `-v`-level per-object transfer logging and parsing per-file completion events instead of only periodic `stats` lines and error lines, a larger change to the fixed flag set ADR-0101 deliberately chose not to expose as configurable.
+- Implementing `pigeon_upload_attempts_total`/`pigeon_upload_duration_seconds` for import -- would require enabling rclone's `-v`-level per-object transfer logging and parsing per-file completion events instead of only periodic `stats` lines and error lines, a larger change to the fixed flag set ADR-0101 deliberately chose not to expose as configurable. ([#28](https://github.com/noisypigeon/pigeon-cli/issues/28))
 - A real-time progress bar for import -- this ADR tails the log for metrics only; `import` still prints no `indicatif` bar, same as before.
 - Classifying rclone's distinct non-zero exit codes into different pigeon-level outcomes (unchanged from ADR-0101).
 
