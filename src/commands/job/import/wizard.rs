@@ -72,8 +72,7 @@ fn default_local_output() -> PathBuf {
 /// Where this run's rclone log (also serving as this job's report) and
 /// transcript are written -- unlike every other job, not a staging area
 /// for transferred data, since rclone transfers directly source ->
-/// destination with no pigeon-side staging. Same shape as
-/// `reduce::wizard::LocalOutputInput`.
+/// destination with no pigeon-side staging.
 struct LocalOutputInput {
     flag: Option<PathBuf>,
 }

@@ -6,6 +6,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0103: removes `pigeon job run reduce` entirely — its automatic valuable/reproducible extension-table filter has been replaced by running `import` then `deduplicate` as two separate, manually-verified steps, with the keep/discard judgment now done by hand. Deletes `src/commands/job/reduce/` wholesale (mirrors ADR-0094's `sort` removal); `pigeon` goes from 7 job types to 6, upload-capable jobs from 5 to 4 ([#29](https://github.com/noisypigeon/pigeon-cli/pull/29)).
 - ADR-0102: fixes `pigeon job run import` reporting `pigeon_job_macro_phase`/`pigeon_upload_bytes_total`/`pigeon_upload_outcomes_total` not at all, and its one `pigeon_job_phase_total` call only once after the whole `rclone copy` subprocess had already exited. Replaces the one-shot log parse with an incrementally-pollable `RcloneLogTailer` and switches `worker.rs` from `Command::output()` to `spawn()` plus a concurrent poll loop racing the child's exit, so metrics update live through a long-running transfer like every other job type ([#27](https://github.com/noisypigeon/pigeon-cli/pull/27)).
 
 ## [0.4.0] - 2026-10-04

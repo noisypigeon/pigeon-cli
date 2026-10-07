@@ -186,7 +186,7 @@ let it go stale silently.
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
 `job.email-sync`, `job.pull-transform`, `job.decrypt-files`,
-`job.deduplicate`, `job.reduce`, `job.email-pull`, `keyring.add`,
+`job.deduplicate`, `job.email-pull`, `keyring.add`,
 `keyring.modify`, `keyring.delete`, `keyring.list`.
 
 **Keyring commands emit no per-operation tracing at all** -- only the two
@@ -212,11 +212,6 @@ the user for the terminal output instead.
   `--upload-only` (resumes uploading an already-completed local run
   without repeating download/hash/placement) is available on the
   installed version before suggesting a full rerun.
-- `reduce`: `download`, `placement` (also `upload`). No hash/archive
-  phases at all -- it classifies by extension only and never expands zips
-  (its input, `deduplicate`'s output, is already flat). A `reduce` run
-  with a large `skipped_low_value` count relative to `forwarded` in its
-  completion summary is working as intended, not a sign of trouble.
 
 **`pigeon_upload_attempts_total` metric** (`upload.rs::upload_one`,
 ADR-0093, replaces the old `"upload started"` log event removed in the
@@ -256,11 +251,6 @@ hasn't already pasted it):
   data was discarded by the per-archive extraction-ratio cap, not just
   noise; the affected root zip is excluded from `.processed`, so a plain
   rerun retries it.
-- `reduce`: `"Forwarded {forwarded} file(s), {failed} failed ({download}
-  download, {placement} placement), {skipped_low_value} skipped
-  (reproducible), {uploaded} uploaded, {unchanged} unchanged,
-  {upload_failed} upload failed."` -- same `--upload-only` resumed-run
-  shape as `deduplicate`'s.
 
 Every job above: a nonzero `failed`/`upload_failed` means the process
 exited with `FAILURE_EXIT_CODE`, not `0`.

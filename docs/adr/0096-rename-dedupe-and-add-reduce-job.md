@@ -2,7 +2,7 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-03.
-- **Status**: Accepted.
+- **Status**: Accepted. The `reduce`-adding half is **reversed by ADR-0103**; the `dedupe` → `deduplicate` rename stands.
 
 ## Context
 

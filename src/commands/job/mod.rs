@@ -7,7 +7,6 @@ pub mod email_pull;
 pub mod email_sync;
 pub mod import;
 pub mod pull_transform;
-pub mod reduce;
 pub(crate) mod report_upload;
 pub(crate) mod shared_wizard;
 pub(crate) mod upload;
