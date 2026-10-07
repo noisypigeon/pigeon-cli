@@ -575,6 +575,7 @@ pub(crate) async fn run_deduplicate_job(
             &multi_progress,
         )
         .await?;
+        log_upload_phase_complete(&upload_summary);
         summary.uploaded = upload_summary.uploaded;
         summary.unchanged = upload_summary.unchanged;
         summary.upload_failed = upload_summary.upload_failed;
@@ -592,6 +593,19 @@ pub(crate) async fn run_deduplicate_job(
 /// always the actual upload destination (ADR-0098 -- `run_deduplicate_job`
 /// previously passed the source bucket's alias here, mislabeling every
 /// upload-phase log line with the wrong bucket).
+/// Logs the upload phase's completion (ADR-0104), matching the shape of
+/// `run_deduplicate_job`'s other three phase-boundary lines (ADR-0099) --
+/// extracted into its own function so it's unit-testable without standing
+/// up a full `run_deduplicate_job`/mock-bucket fixture.
+fn log_upload_phase_complete(summary: &upload::UploadSummary) {
+    tracing::info!(
+        uploaded = summary.uploaded,
+        unchanged = summary.unchanged,
+        upload_failed = summary.upload_failed,
+        "deduplicate: upload phase complete"
+    );
+}
+
 async fn upload_result(
     label: &str,
     local_output: &Path,
@@ -664,5 +678,70 @@ mod tests {
         let a = next_scratch_path(dir.path(), &counter, "jpg").unwrap();
         let b = next_scratch_path(dir.path(), &counter, "jpg").unwrap();
         assert_ne!(a, b);
+    }
+
+    /// Mirrors the `CapturedEvents`/`CaptureLayer` pattern already
+    /// established in `email_sync/transform.rs`'s test module (ADR-0080);
+    /// duplicated here per this codebase's "duplicate until the third
+    /// consumer" precedent.
+    #[derive(Clone, Default)]
+    struct CapturedEvents(
+        std::sync::Arc<std::sync::Mutex<Vec<std::collections::HashMap<String, String>>>>,
+    );
+
+    struct CaptureLayer(CapturedEvents);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            struct Visitor(std::collections::HashMap<String, String>);
+            impl tracing::field::Visit for Visitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    self.0
+                        .insert(field.name().to_string(), format!("{value:?}"));
+                }
+                fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                    self.0.insert(field.name().to_string(), value.to_string());
+                }
+            }
+            let mut visitor = Visitor(std::collections::HashMap::new());
+            event.record(&mut visitor);
+            self.0.0.lock().unwrap().push(visitor.0);
+        }
+    }
+
+    fn capture_events(run: impl FnOnce()) -> Vec<std::collections::HashMap<String, String>> {
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        let events = CapturedEvents::default();
+        let subscriber = tracing_subscriber::registry().with(CaptureLayer(events.clone()));
+        tracing::subscriber::with_default(subscriber, run);
+        events.0.lock().unwrap().clone()
+    }
+
+    #[test]
+    fn log_upload_phase_complete_logs_the_upload_summary_counts() {
+        let summary = upload::UploadSummary {
+            uploaded: 3,
+            unchanged: 2,
+            upload_failed: 1,
+        };
+        let events = capture_events(|| log_upload_phase_complete(&summary));
+        assert_eq!(events.len(), 1);
+        let fields = &events[0];
+        assert_eq!(
+            fields.get("message").map(String::as_str),
+            Some("deduplicate: upload phase complete")
+        );
+        assert_eq!(fields.get("uploaded").map(String::as_str), Some("3"));
+        assert_eq!(fields.get("unchanged").map(String::as_str), Some("2"));
+        assert_eq!(fields.get("upload_failed").map(String::as_str), Some("1"));
     }
 }
