@@ -1,6 +1,10 @@
 use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::Duration;
 
-use super::rclone_log;
+use tokio::io::AsyncReadExt;
+
+use super::rclone_log::{self, RcloneLogTailer};
 
 pub(crate) struct ImportPlan {
     pub source: String,
@@ -15,6 +19,14 @@ pub(crate) struct ImportSummary {
     pub bytes: u64,
     pub log_path: PathBuf,
 }
+
+/// How often the still-running rclone subprocess's JSON log is re-read for
+/// live metrics (ADR-0102) -- deliberately independent of rclone's own
+/// fixed `--stats 30s` interval (which governs how often a cumulative-totals
+/// line actually appears in the log), just frequent enough that a per-object
+/// error line surfaces as a `tracing::warn!` close to when it happened,
+/// rather than only once the whole subprocess exits.
+const LOG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Confirms `rclone` is on `PATH`, checked once up front in the wizard
 /// before any prompts (mirrors `pull_transform::media::check_ffmpeg_available`)
@@ -32,10 +44,67 @@ pub(crate) async fn check_rclone_available() -> Result<(), String> {
     Ok(())
 }
 
+/// Emits this run's live metric deltas for one `poll()` -- shared by the
+/// in-progress polling loop and the final post-exit flush, so both paths
+/// report identically.
+fn emit_delta_metrics(delta: rclone_log::TailDelta) {
+    if delta.is_empty() {
+        return;
+    }
+    if delta.transferred > 0 {
+        crate::observability::metrics::record_phase_count(
+            "import",
+            "transfer",
+            "transferred",
+            delta.transferred,
+            None,
+        );
+    }
+    if delta.errors > 0 {
+        crate::observability::metrics::record_phase_count(
+            "import",
+            "transfer",
+            "failed",
+            delta.errors,
+            None,
+        );
+    }
+    if delta.bytes > 0 {
+        ::metrics::counter!(
+            "pigeon_upload_bytes_total",
+            "pigeon_job" => "import",
+            "instance" => crate::observability::instance(),
+            "destination_bucket" => crate::observability::metrics::NO_BUCKET,
+        )
+        .increment(delta.bytes);
+    }
+    if delta.transferred > 0 {
+        ::metrics::counter!(
+            "pigeon_upload_outcomes_total",
+            "pigeon_job" => "import",
+            "outcome" => "uploaded",
+            "instance" => crate::observability::instance(),
+            "destination_bucket" => crate::observability::metrics::NO_BUCKET,
+        )
+        .increment(delta.transferred);
+    }
+    if delta.errors > 0 {
+        ::metrics::counter!(
+            "pigeon_upload_outcomes_total",
+            "pigeon_job" => "import",
+            "outcome" => "failed",
+            "instance" => crate::observability::instance(),
+            "destination_bucket" => crate::observability::metrics::NO_BUCKET,
+        )
+        .increment(delta.errors);
+    }
+}
+
 /// Runs `rclone copy <source> <destination>` with a fixed set of
 /// performance/retry flags (ADR-0101 -- not configurable per run) and a
-/// structured JSON log redirected to `log_path`, then parses that log for
-/// this run's counts and per-object errors.
+/// structured JSON log redirected to `log_path`, polling that log live
+/// while the subprocess runs (ADR-0102) so `pigeon_job_phase_total`/
+/// `pigeon_upload_*` update mid-run instead of only once at the end.
 pub(crate) async fn run_import_job(
     source: &str,
     destination: &str,
@@ -48,7 +117,7 @@ pub(crate) async fn run_import_job(
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
 
-    let output = tokio::process::Command::new("rclone")
+    let mut child = tokio::process::Command::new("rclone")
         .arg("copy")
         .arg(source)
         .arg(destination)
@@ -76,34 +145,59 @@ pub(crate) async fn run_import_job(
             "--log-file",
         ])
         .arg(log_path)
-        .output()
-        .await
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|err| format!("failed to run rclone: {err}"))?;
 
-    let exit_code = output.status.code();
-
-    // Parse whatever got written to the log regardless of exit status -- a
-    // run that hit a transfer/duration limit or died partway through still
-    // transferred real files worth counting and reporting.
-    let log_summary = rclone_log::parse_and_report(log_path).unwrap_or_else(|err| {
-        tracing::warn!(error = %err, "failed to parse rclone log file");
-        rclone_log::RcloneLogSummary::default()
+    // Drained concurrently, not after `wait()`: a chatty subprocess could
+    // otherwise block forever on a full stderr pipe nobody's reading from
+    // while the poll loop below awaits its exit (`.output()`, used before
+    // ADR-0102 needed a live poll loop alongside it, drained this for free).
+    let mut stderr_pipe = child.stderr.take().expect("stderr was configured as piped");
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = String::new();
+        let _ = stderr_pipe.read_to_string(&mut buf).await;
+        buf
     });
 
-    crate::observability::metrics::record_phase_count(
-        "import",
-        "transfer",
-        "transferred",
-        log_summary.transferred,
-        None,
-    );
-    crate::observability::metrics::record_phase_count(
-        "import",
-        "transfer",
-        "failed",
-        log_summary.errors,
-        None,
-    );
+    // Import has no separate "local work" phase the way download/hash/
+    // placement jobs do (ADR-0093's gauge was designed for that split) --
+    // its entire body of work *is* the transfer, so it goes straight to
+    // "uploading" rather than following the false/then/true pattern every
+    // other job's `run_<job>_job` + `upload.rs` pairing uses.
+    crate::observability::metrics::set_macro_phase("import", true);
+
+    let mut tailer = RcloneLogTailer::new(log_path);
+    let mut wait_handle = tokio::spawn(async move { child.wait().await });
+    let mut poll_interval = tokio::time::interval(LOG_POLL_INTERVAL);
+    // The first `tick()` fires immediately; that poll will almost always
+    // find nothing yet (rclone hasn't opened its `--log-file`), which is
+    // harmless -- `RcloneLogTailer::poll` treats a missing file as "no new
+    // data," not an error.
+    poll_interval.tick().await;
+
+    let exit_status = loop {
+        tokio::select! {
+            join_result = &mut wait_handle => {
+                let wait_result = join_result
+                    .map_err(|err| format!("rclone process join failed: {err}"))?;
+                break wait_result;
+            }
+            _ = poll_interval.tick() => {
+                emit_delta_metrics(tailer.poll());
+            }
+        }
+    };
+    let exit_status = exit_status.map_err(|err| format!("failed to run rclone: {err}"))?;
+
+    // One last read to flush anything written between the final tick and
+    // process exit.
+    emit_delta_metrics(tailer.poll());
+    let log_summary = tailer.summary();
+
+    let exit_code = exit_status.code();
+    let stderr = stderr_task.await.unwrap_or_default();
 
     tracing::info!(
         transferred = log_summary.transferred,
@@ -120,8 +214,7 @@ pub(crate) async fn run_import_job(
         log_path: log_path.to_path_buf(),
     };
 
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+    if !exit_status.success() {
         return Err(format!(
             "rclone copy exited with status {} ({} file(s) transferred, {} error(s)); see {} for details{}",
             exit_code

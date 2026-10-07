@@ -42,11 +42,13 @@ pub fn install(port: u16) {
     }
 }
 
-/// No source `BucketConfig` is in scope at this call site (e.g. an IMAP- or
-/// local-dir-sourced job, or a post-download pass operating on already
-/// -staged local files) -- the label is always present (ADR-0097), just
-/// with this sentinel value, so the metric's label set stays fixed.
-const NO_BUCKET: &str = "n/a";
+/// No source/destination `BucketConfig` is in scope at this call site (e.g.
+/// an IMAP- or local-dir-sourced job, or a post-download pass operating on
+/// already-staged local files) -- the label is always present (ADR-0097),
+/// just with this sentinel value, so the metric's label set stays fixed.
+/// `pub(crate)` so `import` (ADR-0102) can reuse it for `destination_bucket`
+/// on `pigeon_upload_*`, which has no `BucketConfig` on either side.
+pub(crate) const NO_BUCKET: &str = "n/a";
 
 /// Records one item completing one phase of a job's pipeline, live, at the
 /// exact moment it happens (ADR-0093) -- labeled `pigeon_job` (not `job`,

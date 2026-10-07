@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0102: fixes `pigeon job run import` reporting `pigeon_job_macro_phase`/`pigeon_upload_bytes_total`/`pigeon_upload_outcomes_total` not at all, and its one `pigeon_job_phase_total` call only once after the whole `rclone copy` subprocess had already exited. Replaces the one-shot log parse with an incrementally-pollable `RcloneLogTailer` and switches `worker.rs` from `Command::output()` to `spawn()` plus a concurrent poll loop racing the child's exit, so metrics update live through a long-running transfer like every other job type ([#27](https://github.com/noisypigeon/pigeon-cli/pull/27)).
+
 ## [0.4.0] - 2026-10-04
 
 - ADR-0101: adds `pigeon job run import`, a 7th job type that shells out to a single `rclone copy` invocation with fixed performance/retry flags; `--source`/`--destination` are raw rclone `remote:path` strings, never pigeon bucket-configs, since the point is reaching backends pigeon's own S3-only jobs can't. Redirects rclone's logging to a JSON-formatted, pigeon-managed per-run log, parses it after the subprocess exits into structured `tracing`/metrics events, and reuses that same log file as this job's ADR-0100 report artifact ([#25](https://github.com/noisypigeon/pigeon-cli/pull/25)).
