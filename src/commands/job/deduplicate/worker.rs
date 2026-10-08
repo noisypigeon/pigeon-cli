@@ -49,6 +49,7 @@ fn is_zip_key(key: &str) -> bool {
 /// participates in path computation, only in tracking whether *any*
 /// descendant of a given root failed or lost data, so that root can be
 /// excluded from the checkpoint (ADR-0098).
+#[derive(Debug)]
 struct QueueItem {
     source_key: Option<String>,
     display_key: String,
@@ -75,12 +76,14 @@ impl FailureBreakdown {
     }
 }
 
+#[derive(Debug)]
 enum FailureCategory {
     Download,
     Archive,
     Hash,
 }
 
+#[derive(Debug)]
 enum ItemOutcome {
     /// `display_key`/`depth` identify the zip that was expanded (checkpoint
     /// candidate iff `depth == 0`); `members` are queued for the next pass.
@@ -97,6 +100,21 @@ enum ItemOutcome {
     Hashed {
         depth: u32,
         file: HashedFile,
+    },
+    /// A top-level (or, defensively, nested) AppleDouble object (`._*`)
+    /// skipped before any download/open attempt (ADR-0107). Never a
+    /// failure; `depth` decides whether the caller checkpoints it.
+    SkippedAppleDouble {
+        depth: u32,
+    },
+    /// `expand_to_dir` genuinely failed to open this archive (password
+    /// required, corrupt, etc.) -- as opposed to the depth-cap/disk-space
+    /// preconditions, which stay under `Failed { category: Archive }`
+    /// unchanged. Carries the key/error so the caller can itemize it
+    /// (ADR-0107).
+    ArchiveOpenFailed {
+        key: String,
+        error: String,
     },
     Failed {
         category: FailureCategory,
@@ -125,6 +143,19 @@ async fn process_item(
 ) -> (String, ItemOutcome) {
     let root_key = item.root_key.clone();
     let depth = item.depth;
+
+    if archive::is_apple_double_basename(&item.display_key) {
+        tracing::debug!(
+            key = %item.display_key,
+            step = "archive",
+            "skipping macOS AppleDouble object"
+        );
+        if let Some(path) = &item.path {
+            let _ = fs::remove_file(path);
+        }
+        return (root_key, ItemOutcome::SkippedAppleDouble { depth });
+    }
+
     let extension = extension_of(&item.display_key);
     let is_zip = extension == "zip";
 
@@ -237,8 +268,9 @@ async fn process_item(
             Ok(Err(err)) => {
                 tracing::warn!(key = %item.display_key, step = "archive", error = %err, "failed to open zip archive");
                 let _ = fs::remove_file(&path);
-                ItemOutcome::Failed {
-                    category: FailureCategory::Archive,
+                ItemOutcome::ArchiveOpenFailed {
+                    key: item.display_key,
+                    error: err,
                 }
             }
             Err(err) => {
@@ -296,6 +328,15 @@ pub(crate) struct DeduplicateSummary {
     /// too, since dropped data is a real failure, but broken out here so
     /// the wizard can print it as its own distinct, named count.
     pub dropped_members: usize,
+    /// Top-level AppleDouble objects (`._*`) skipped before any
+    /// download/open attempt (ADR-0107) -- never counted in `failed`.
+    pub skipped_apple_double: usize,
+    /// Archives that genuinely failed to open (password-protected,
+    /// corrupt, etc.), already folded into `failed`/
+    /// `failure_breakdown.archive` too, but kept here (and written into
+    /// `deduplicate-report.txt`) so they're individually actionable
+    /// (ADR-0107).
+    pub archive_failures: Vec<archive::ArchiveFailure>,
     pub uploaded: usize,
     pub unchanged: usize,
     pub upload_failed: usize,
@@ -354,6 +395,15 @@ pub(crate) async fn run_deduplicate_job(
     // expanded, regardless of what happened to its members, so a rerun
     // could never retry silently-dropped data (ADR-0098).
     let tainted_roots = Arc::new(Mutex::new(HashSet::<String>::new()));
+    // Top-level AppleDouble objects skipped before any download/open
+    // attempt -- checkpointed unconditionally, separately from
+    // `finished_root_keys` (ADR-0107; see the checkpoint loop below for why
+    // these can't just reuse that list's `is_zip_key` retain gate).
+    let apple_double_skipped_roots = Arc::new(Mutex::new(Vec::<String>::new()));
+    // Archives that genuinely failed to open (password-protected, corrupt,
+    // etc.), itemized by key/error so a run's report can point at exactly
+    // which ones need a human, instead of only a count (ADR-0107).
+    let archive_failures = Arc::new(Mutex::new(Vec::<archive::ArchiveFailure>::new()));
     let command_span = tracing::Span::current();
 
     let worker_count = concurrency.max(1);
@@ -366,6 +416,8 @@ pub(crate) async fn run_deduplicate_job(
         let failure_breakdown = Arc::clone(&failure_breakdown);
         let dropped_members = Arc::clone(&dropped_members);
         let tainted_roots = Arc::clone(&tainted_roots);
+        let apple_double_skipped_roots = Arc::clone(&apple_double_skipped_roots);
+        let archive_failures = Arc::clone(&archive_failures);
         let counter = Arc::clone(&counter);
         let bucket_config = bucket_config.clone();
         let secret = secret.to_string();
@@ -435,6 +487,28 @@ pub(crate) async fn run_deduplicate_job(
                             }
                             hashed_files.lock().unwrap().push(file);
                         }
+                        ItemOutcome::SkippedAppleDouble { depth } => {
+                            if depth == 0 {
+                                apple_double_skipped_roots.lock().unwrap().push(root_key);
+                            }
+                            // Deliberately no failure_breakdown/metrics bump
+                            // -- this is not a failure (ADR-0107's whole
+                            // point).
+                        }
+                        ItemOutcome::ArchiveOpenFailed { key, error } => {
+                            tainted_roots.lock().unwrap().insert(root_key);
+                            failure_breakdown.lock().unwrap().archive += 1;
+                            archive_failures
+                                .lock()
+                                .unwrap()
+                                .push(archive::ArchiveFailure { key, error });
+                            crate::observability::metrics::record_phase(
+                                "deduplicate",
+                                "archive",
+                                "failed",
+                                Some(bucket_config.alias.as_str()),
+                            );
+                        }
                         ItemOutcome::Failed { category } => {
                             tainted_roots.lock().unwrap().insert(root_key);
                             let mut breakdown = failure_breakdown.lock().unwrap();
@@ -502,6 +576,14 @@ pub(crate) async fn run_deduplicate_job(
         .map_err(|_| "internal error: tainted-root set still shared".to_string())?
         .into_inner()
         .map_err(|_| "internal error: tainted-root set lock poisoned".to_string())?;
+    let apple_double_skipped_roots = Arc::try_unwrap(apple_double_skipped_roots)
+        .map_err(|_| "internal error: apple-double root list still shared".to_string())?
+        .into_inner()
+        .map_err(|_| "internal error: apple-double root list lock poisoned".to_string())?;
+    let archive_failures = Arc::try_unwrap(archive_failures)
+        .map_err(|_| "internal error: archive-failure list still shared".to_string())?
+        .into_inner()
+        .map_err(|_| "internal error: archive-failure list lock poisoned".to_string())?;
 
     tracing::info!(
         hashed = files.len(),
@@ -509,6 +591,7 @@ pub(crate) async fn run_deduplicate_job(
         archive_failed = failure_breakdown.archive,
         hash_failed = failure_breakdown.hash,
         dropped_members,
+        skipped_apple_double = apple_double_skipped_roots.len(),
         "deduplicate: download/expand/hash phase complete"
     );
 
@@ -527,13 +610,21 @@ pub(crate) async fn run_deduplicate_job(
         )?);
         let (placement_summary, merge_records, placed_keys) =
             dedup::place_and_report(&result_dir, files, &mut dedup_index, &multi_progress);
-        dedup::write_report(local_output, &merge_records)?;
+        dedup::write_report(local_output, &merge_records, &archive_failures)?;
 
         let placed_keys: std::collections::HashSet<String> = placed_keys.into_iter().collect();
         finished_root_keys.retain(|key| {
             !tainted_roots.contains(key) && (placed_keys.contains(key) || is_zip_key(key))
         });
         for key in &finished_root_keys {
+            manifest::append_checkpoint(&staging_dir, key)?;
+        }
+        // Checkpointed unconditionally and separately from
+        // `finished_root_keys` above -- an AppleDouble object has no
+        // members, so it can never satisfy that list's `placed_keys`/
+        // `is_zip_key` retain gate, and it can never be tainted either
+        // (ADR-0107).
+        for key in &apple_double_skipped_roots {
             manifest::append_checkpoint(&staging_dir, key)?;
         }
         placement_summary
@@ -554,6 +645,8 @@ pub(crate) async fn run_deduplicate_job(
             + placement_summary.failed,
         duplicates_skipped: placement_summary.duplicates_skipped,
         dropped_members,
+        skipped_apple_double: apple_double_skipped_roots.len(),
+        archive_failures,
         ..Default::default()
     };
     summary.failure_breakdown.merge(&failure_breakdown);
@@ -662,6 +755,8 @@ pub(crate) async fn run_upload_only(
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write;
+
     use super::*;
 
     #[test]
@@ -678,6 +773,134 @@ mod tests {
         let a = next_scratch_path(dir.path(), &counter, "jpg").unwrap();
         let b = next_scratch_path(dir.path(), &counter, "jpg").unwrap();
         assert_ne!(a, b);
+    }
+
+    fn unreachable_bucket_config() -> BucketConfig {
+        BucketConfig {
+            alias: "unused".to_string(),
+            endpoint: "http://127.0.0.1:1".to_string(),
+            bucket: "unused".to_string(),
+            access_key_id: "unused".to_string(),
+            encryption_key_alias: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn process_item_skips_a_top_level_apple_double_zip_without_downloading() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_dir = dir.path().join("raw");
+        let counter = Arc::new(AtomicU64::new(0));
+        let bucket_config = unreachable_bucket_config();
+
+        let item = QueueItem {
+            source_key: Some("Facebook/KGraysen/._export-part-2.zip".to_string()),
+            display_key: "Facebook/KGraysen/._export-part-2.zip".to_string(),
+            path: None,
+            depth: 0,
+            size: 4096,
+            root_key: "Facebook/KGraysen/._export-part-2.zip".to_string(),
+        };
+
+        let (_root_key, outcome) = process_item(
+            &bucket_config,
+            "unused-secret",
+            item,
+            &raw_dir,
+            &counter,
+            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
+        )
+        .await;
+
+        assert!(matches!(
+            outcome,
+            ItemOutcome::SkippedAppleDouble { depth: 0 }
+        ));
+        assert!(!raw_dir.exists() || fs::read_dir(&raw_dir).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn process_item_still_expands_a_real_zip_with_a_similar_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_dir = dir.path().join("raw");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let counter = Arc::new(AtomicU64::new(0));
+        let bucket_config = unreachable_bucket_config();
+
+        let zip_path = raw_dir.join("something.zip");
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = zip::ZipWriter::new(file);
+        writer
+            .start_file(
+                "hello.txt",
+                zip::write::SimpleFileOptions::default()
+                    .compression_method(zip::CompressionMethod::Stored),
+            )
+            .unwrap();
+        writer.write_all(b"hello").unwrap();
+        writer.finish().unwrap();
+
+        let item = QueueItem {
+            source_key: None,
+            display_key: "something.zip".to_string(),
+            path: Some(zip_path),
+            depth: 0,
+            size: 0,
+            root_key: "something.zip".to_string(),
+        };
+
+        let (_root_key, outcome) = process_item(
+            &bucket_config,
+            "unused-secret",
+            item,
+            &raw_dir,
+            &counter,
+            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
+        )
+        .await;
+
+        match outcome {
+            ItemOutcome::ZipExpanded { members, .. } => {
+                assert_eq!(members.len(), 1);
+                assert!(members[0].display_key.ends_with("!hello.txt"));
+            }
+            other => panic!("expected ZipExpanded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_item_captures_the_key_and_error_for_a_genuinely_failed_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_dir = dir.path().join("raw");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let counter = Arc::new(AtomicU64::new(0));
+        let bucket_config = unreachable_bucket_config();
+
+        let zip_path = raw_dir.join("some.zip");
+        fs::write(&zip_path, b"not really a zip, just opaque bytes").unwrap();
+
+        let item = QueueItem {
+            source_key: None,
+            display_key: "some.zip".to_string(),
+            path: Some(zip_path),
+            depth: 0,
+            size: 0,
+            root_key: "some.zip".to_string(),
+        };
+
+        let (_root_key, outcome) = process_item(
+            &bucket_config,
+            "unused-secret",
+            item,
+            &raw_dir,
+            &counter,
+            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
+        )
+        .await;
+
+        match outcome {
+            ItemOutcome::ArchiveOpenFailed { key, .. } => assert_eq!(key, "some.zip"),
+            other => panic!("expected ArchiveOpenFailed, got {other:?}"),
+        }
     }
 
     /// Mirrors the `CapturedEvents`/`CaptureLayer` pattern already

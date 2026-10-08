@@ -257,8 +257,8 @@ async fn dispatch_async(
     let report_path = job_local_output.join("deduplicate-report.txt");
     let exit_code = match job.run(plan, concurrency, upload_concurrency).await {
         Ok(summary) => {
-            let message = format!(
-                "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} uploaded, {} unchanged, {} upload failed.",
+            let mut message = format!(
+                "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} AppleDouble object(s) skipped, {} uploaded, {} unchanged, {} upload failed.",
                 summary.processed,
                 summary.failed,
                 summary.failure_breakdown.download,
@@ -266,10 +266,17 @@ async fn dispatch_async(
                 summary.failure_breakdown.hash,
                 summary.duplicates_skipped,
                 summary.dropped_members,
+                summary.skipped_apple_double,
                 summary.uploaded,
                 summary.unchanged,
                 summary.upload_failed
             );
+            if !summary.archive_failures.is_empty() {
+                message.push_str(&format!(
+                    " {} archive(s) need manual attention (see report).",
+                    summary.archive_failures.len()
+                ));
+            }
             report_upload::say(&transcript, message);
             report_upload::say(&transcript, format!("Report: {}", report_path.display()));
             if summary.failed > 0 || summary.upload_failed > 0 {

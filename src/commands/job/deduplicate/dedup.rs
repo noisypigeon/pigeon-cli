@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use indicatif::MultiProgress;
 
 use crate::commands::job::email_sync::sink;
+use crate::commands::job::pull_transform::archive;
 use crate::core::data::{ContentIndex, Dedup, after_zip_separator, sanitize_filename, unique_path};
 
 pub(crate) const CONTENT_HASHES_FILE: &str = ".content-hashes";
@@ -28,6 +29,7 @@ impl Dedup for DeduplicateDedup {
 /// One file finished the concurrent download/expand/hash pipeline,
 /// awaiting placement -- `scratch_path` points at its bytes sitting outside
 /// the final `result/<extension>/` tree.
+#[derive(Debug)]
 pub(crate) struct HashedFile {
     pub original_key: String,
     pub scratch_path: PathBuf,
@@ -177,7 +179,11 @@ fn place_one(
 /// report lives at a predictable, scriptable path every run (ADR-0082 §5).
 /// `kept_original_key` (ADR-0099) is blank whenever the kept copy's hash
 /// predates that change -- see `MergeRecord`'s doc comment.
-pub(crate) fn write_report(local_output: &Path, records: &[MergeRecord]) -> Result<(), String> {
+pub(crate) fn write_report(
+    local_output: &Path,
+    records: &[MergeRecord],
+    archive_failures: &[archive::ArchiveFailure],
+) -> Result<(), String> {
     let mut contents = String::from("duplicate_key\tcontent_hash\tkept_path\tkept_original_key\n");
     for record in records {
         contents.push_str(&format!(
@@ -186,6 +192,14 @@ pub(crate) fn write_report(local_output: &Path, records: &[MergeRecord]) -> Resu
         ));
     }
     contents.push_str(&format!("\n{} duplicate(s) removed.\n", records.len()));
+
+    contents.push_str(&format!(
+        "\n{} archive(s) need manual attention (password-protected or corrupt -- open and resolve by hand, then re-run):\n",
+        archive_failures.len()
+    ));
+    for failure in archive_failures {
+        contents.push_str(&format!("{}\t{}\n", failure.key, failure.error));
+    }
 
     let path = local_output.join("deduplicate-report.txt");
     fs::write(&path, contents).map_err(|err| format!("failed to write {}: {err}", path.display()))
@@ -397,7 +411,7 @@ mod tests {
             content_hash: "same-hash".to_string(),
         }];
 
-        write_report(dir.path(), &records).unwrap();
+        write_report(dir.path(), &records, &[]).unwrap();
 
         let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
         assert!(contents.contains("b/report-copy.pdf\tsame-hash\tpdf/report.pdf\ta/report.pdf"));
@@ -408,9 +422,25 @@ mod tests {
     fn write_report_is_written_even_with_zero_duplicates() {
         let dir = tempfile::tempdir().unwrap();
 
-        write_report(dir.path(), &[]).unwrap();
+        write_report(dir.path(), &[], &[]).unwrap();
 
         let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
         assert!(contents.contains("0 duplicate(s) removed."));
+    }
+
+    #[test]
+    fn write_report_lists_archive_failures_under_a_manual_followup_section() {
+        let dir = tempfile::tempdir().unwrap();
+        let failures = vec![archive::ArchiveFailure {
+            key: "project-emails-snapshot-2025-12-18-views.zip".to_string(),
+            error: "failed to read zip entry 0: unsupported Zip archive: Password required to decrypt file".to_string(),
+        }];
+
+        write_report(dir.path(), &[], &failures).unwrap();
+
+        let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
+        assert!(contents.contains("1 archive(s) need manual attention"));
+        assert!(contents.contains("project-emails-snapshot-2025-12-18-views.zip"));
+        assert!(contents.contains("Password required to decrypt file"));
     }
 }
