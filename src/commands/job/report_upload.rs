@@ -98,6 +98,15 @@ pub(crate) fn say(transcript: &Transcript, message: impl AsRef<str>) {
     transcript.line(message);
 }
 
+/// Records "Error: {err}" to both stdout and the transcript (ADR-0105) --
+/// call immediately before `fail(err)` at any call site where a
+/// `Transcript` is already in scope, so the same failure message that
+/// reaches stderr/pigeon.jsonl also lands in the archived transcript.txt
+/// instead of leaving it empty.
+pub(crate) fn say_error(transcript: &Transcript, err: impl std::fmt::Display) {
+    say(transcript, format!("Error: {err}"));
+}
+
 /// Logs this run's own outcome (ADR-0104) immediately before
 /// `upload_run_artifacts` runs, from inside the still-open `command` span --
 /// so the uploaded `pigeon.jsonl` snapshot always contains at least one line
@@ -206,6 +215,14 @@ mod tests {
         let path = write_summary_report(dir.path(), "email-sync", &"boom".to_string()).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("boom"));
+    }
+
+    #[test]
+    fn say_error_prefixes_and_records_the_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let (transcript, path) = new_transcript(dir.path()).unwrap();
+        say_error(&transcript, "boom");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Error: boom\n");
     }
 
     /// A minimal `tracing_subscriber::Layer` that captures every event's
