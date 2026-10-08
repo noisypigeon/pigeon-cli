@@ -398,12 +398,14 @@ pub enum JobType {
     },
 
     /// Copies data from a configurable source to a configurable
-    /// destination by shelling out to the external `rclone` binary, with
-    /// its performance/retry flags fixed (not configurable here). Pigeon
-    /// manages no rclone credentials/config -- `--source`/`--destination`
-    /// are raw `remote:path` strings passed straight through to `rclone
-    /// copy`'s argv; `rclone.conf` is provisioned by an external process,
-    /// outside this crate's scope (ADR-0101). Requires `rclone` on `PATH`.
+    /// destination by shelling out to the external `rclone` binary.
+    /// Pigeon manages no rclone credentials/config -- `--source`/
+    /// `--destination` are raw `remote:path` strings passed straight
+    /// through to `rclone copy`'s argv; `rclone.conf` is provisioned by
+    /// an external process, outside this crate's scope (ADR-0101).
+    /// `--transfers`/`--checkers`/`--tpslimit` are overridable
+    /// per-destination (ADR-0108); every other rclone performance/retry
+    /// flag stays fixed. Requires `rclone` on `PATH`.
     Import {
         /// rclone source, e.g. `source:media/`. Interactively prompted
         /// when omitted and stdin is a terminal; required otherwise.
@@ -433,6 +435,22 @@ pub enum JobType {
         /// and stdin is a terminal; required otherwise.
         #[arg(long)]
         report_bucket: Option<String>,
+
+        /// rclone --transfers (concurrent file transfers). Defaults to 8
+        /// (ADR-0106) when omitted.
+        #[arg(long)]
+        transfers: Option<usize>,
+
+        /// rclone --checkers (concurrent list/compare operations).
+        /// Defaults to 16 (ADR-0106) when omitted.
+        #[arg(long)]
+        checkers: Option<usize>,
+
+        /// rclone --tpslimit (transactions/sec ceiling across transfers
+        /// and checkers combined). Unset by default -- no rate cap --
+        /// unless a specific destination needs one (ADR-0108).
+        #[arg(long)]
+        tpslimit: Option<usize>,
 
         /// Skip the final "proceed?" confirmation.
         #[arg(long)]

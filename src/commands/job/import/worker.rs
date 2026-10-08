@@ -10,6 +10,9 @@ pub(crate) struct ImportPlan {
     pub source: String,
     pub destination: String,
     pub log_path: PathBuf,
+    pub transfers: usize,
+    pub checkers: usize,
+    pub tpslimit: Option<usize>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -114,17 +117,21 @@ fn emit_delta_metrics(delta: rclone_log::TailDelta) {
     }
 }
 
-/// Runs `rclone copy <source> <destination>` with a fixed set of
-/// performance/retry flags (ADR-0101 -- not configurable per run; retuned by
-/// ADR-0106 after real runs showed the original concurrency sustained a
-/// request rate well past what Backblaze B2 would tolerate) and a
-/// structured JSON log redirected to `log_path`, polling that log live
-/// while the subprocess runs (ADR-0102) so `pigeon_job_phase_total`/
-/// `pigeon_upload_*` update mid-run instead of only once at the end.
+/// Runs `rclone copy <source> <destination>` with `transfers`/`checkers`/
+/// `tpslimit` resolved per-run (ADR-0108, overriding ADR-0106's prior
+/// fixed `8`/`16`/`10` values -- a Scaleway-backed transfer showed those
+/// fixed values too conservative for every destination) and every other
+/// performance/retry flag still fixed, plus a structured JSON log
+/// redirected to `log_path`, polling that log live while the subprocess
+/// runs (ADR-0102) so `pigeon_job_phase_total`/`pigeon_upload_*` update
+/// mid-run instead of only once at the end.
 pub(crate) async fn run_import_job(
     source: &str,
     destination: &str,
     log_path: &Path,
+    transfers: usize,
+    checkers: usize,
+    tpslimit: Option<usize>,
 ) -> Result<ImportSummary, String> {
     tracing::info!(source, destination, "import: rclone copy starting");
 
@@ -133,17 +140,18 @@ pub(crate) async fn run_import_job(
             .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
     }
 
-    let mut child = tokio::process::Command::new("rclone")
-        .arg("copy")
-        .arg(source)
-        .arg(destination)
-        .args([
-            "--transfers",
-            "8",
-            "--checkers",
-            "16",
-            "--tpslimit",
-            "10",
+    let mut rclone_args: Vec<String> = vec![
+        "--transfers".to_string(),
+        transfers.to_string(),
+        "--checkers".to_string(),
+        checkers.to_string(),
+    ];
+    if let Some(tpslimit) = tpslimit {
+        rclone_args.push("--tpslimit".to_string());
+        rclone_args.push(tpslimit.to_string());
+    }
+    rclone_args.extend(
+        [
             "--fast-list",
             "--buffer-size",
             "32M",
@@ -161,7 +169,16 @@ pub(crate) async fn run_import_job(
             "--log-level",
             "INFO",
             "--log-file",
-        ])
+        ]
+        .iter()
+        .map(|s| s.to_string()),
+    );
+
+    let mut child = tokio::process::Command::new("rclone")
+        .arg("copy")
+        .arg(source)
+        .arg(destination)
+        .args(rclone_args)
         .arg(log_path)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -279,6 +296,41 @@ mod tests {
             source_dir.path().to_str().unwrap(),
             dest_dir.path().to_str().unwrap(),
             &log_path,
+            2,
+            4,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.transferred, 1);
+        assert_eq!(summary.errors, 0);
+        assert!(dest_dir.path().join("hello.txt").exists());
+    }
+
+    /// A `Some(tpslimit)` must not break the rclone invocation -- the
+    /// ADR-0106 default this ADR-0108 reverted is still a valid value to
+    /// opt back into per-destination.
+    #[tokio::test]
+    async fn copies_a_file_with_a_tpslimit_set() {
+        if check_rclone_available().await.is_err() {
+            eprintln!("skipping: rclone not found on PATH");
+            return;
+        }
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        std::fs::write(source_dir.path().join("hello.txt"), b"hello world").unwrap();
+
+        let log_path = log_dir.path().join("rclone.jsonl");
+        let summary = run_import_job(
+            source_dir.path().to_str().unwrap(),
+            dest_dir.path().to_str().unwrap(),
+            &log_path,
+            8,
+            16,
+            Some(10),
         )
         .await
         .unwrap();
