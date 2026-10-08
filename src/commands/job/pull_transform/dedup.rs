@@ -36,6 +36,7 @@ impl Dedup for PullTransformDedup {
 /// pipeline, awaiting placement -- `scratch_path` points at its final bytes
 /// (recoded, or the untouched original on a recode/verify fallback) sitting
 /// outside the final `<local-output>/<extension>/` tree.
+#[derive(Debug)]
 pub(crate) struct ProcessedFile {
     pub original_key: String,
     pub scratch_path: PathBuf,

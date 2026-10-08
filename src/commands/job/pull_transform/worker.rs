@@ -77,6 +77,12 @@ pub(crate) struct PullTransformSummary {
     /// too, since dropped data is a real failure, but broken out here so
     /// the wizard can print it as its own distinct, named count.
     pub dropped_members: usize,
+    /// Top-level AppleDouble objects (`._*`) skipped before any
+    /// download/open attempt (ADR-0107) -- never counted in `failed`.
+    pub skipped_apple_double: usize,
+    /// Archives that genuinely failed to open (password-protected, corrupt,
+    /// etc.), itemized by key/error (ADR-0107).
+    pub archive_failures: Vec<archive::ArchiveFailure>,
 }
 
 /// Broad category driving both processing (does this need `ffmpeg`?) and
@@ -116,6 +122,7 @@ fn classify_extension(key: &str) -> (FileKind, String) {
 /// Only a `depth == 0` item is ever checkpointed -- checkpointing tracks
 /// "was this top-level object fully handled," not "was every last nested
 /// zip member placed" (ADR-0074 §3).
+#[derive(Debug)]
 struct QueueItem {
     source_key: Option<String>,
     display_key: String,
@@ -134,12 +141,14 @@ struct QueueItem {
     root_key: String,
 }
 
+#[derive(Debug)]
 enum FailureCategory {
     Download,
     Archive,
     Classify,
 }
 
+#[derive(Debug)]
 enum ItemOutcome {
     /// `display_key`/`depth` identify the zip that was expanded (checkpoint
     /// candidate iff `depth == 0`); `members` are queued for the next pass.
@@ -167,6 +176,23 @@ enum ItemOutcome {
     /// `Processed`/`ZipExpanded`) never contributes to `finished_root_keys`,
     /// so it's never checkpointed either.
     Skipped,
+    /// A top-level (or, defensively, nested) AppleDouble object (`._*`)
+    /// skipped before any download/open attempt (ADR-0107). Unlike
+    /// `Skipped` above, this *is* checkpointed (depth == 0) -- it will
+    /// never become relevant to a broader `--file-types` filter, so there's
+    /// no reason to ever retry it.
+    SkippedAppleDouble {
+        depth: u32,
+    },
+    /// `expand_to_dir` genuinely failed to open this archive (password
+    /// required, corrupt, etc.) -- as opposed to the depth-cap/disk-space
+    /// preconditions, which stay under `Failed { category: Archive }`
+    /// unchanged. Carries the key/error so the caller can itemize it
+    /// (ADR-0107).
+    ArchiveOpenFailed {
+        key: String,
+        error: String,
+    },
 }
 
 /// A fresh, not-yet-existing path under `dir` named by `counter`
@@ -461,6 +487,19 @@ async fn process_item(
 ) -> (String, ItemOutcome) {
     let root_key = item.root_key.clone();
     let depth = item.depth;
+
+    if archive::is_apple_double_basename(&item.display_key) {
+        tracing::debug!(
+            key = %item.display_key,
+            step = "archive",
+            "skipping macOS AppleDouble object"
+        );
+        if let Some(path) = &item.path {
+            let _ = fs::remove_file(path);
+        }
+        return (root_key, ItemOutcome::SkippedAppleDouble { depth });
+    }
+
     let (kind, extension) = classify_extension(&item.display_key);
 
     // ADR-0077: excluded types are dropped before any download/expansion
@@ -595,8 +634,9 @@ async fn process_item(
             Ok(Err(err)) => {
                 tracing::warn!(key = %item.display_key, step = "archive", error = %err, "failed to open zip archive");
                 let _ = fs::remove_file(&path);
-                ItemOutcome::Failed {
-                    category: FailureCategory::Archive,
+                ItemOutcome::ArchiveOpenFailed {
+                    key: item.display_key,
+                    error: err,
                 }
             }
             Err(err) => {
@@ -743,6 +783,14 @@ pub(crate) async fn run_pull_transform_job(
     // root is excluded from the checkpoint if any descendant failed or lost
     // a member to the extraction-ratio cap.
     let tainted_roots = Arc::new(Mutex::new(HashSet::<String>::new()));
+    // Top-level AppleDouble objects skipped before any download/open
+    // attempt -- checkpointed unconditionally, separately from
+    // `finished_root_keys` (ADR-0107; same reasoning as `deduplicate`'s
+    // worker.rs).
+    let apple_double_skipped_roots = Arc::new(Mutex::new(Vec::<String>::new()));
+    // Archives that genuinely failed to open (password-protected, corrupt,
+    // etc.), itemized by key/error (ADR-0107).
+    let archive_failures = Arc::new(Mutex::new(Vec::<archive::ArchiveFailure>::new()));
     let allowed_extensions = Arc::new(allowed_extensions);
     let expand_zip_keys = Arc::new(expand_zip_keys);
     let command_span = tracing::Span::current();
@@ -760,6 +808,8 @@ pub(crate) async fn run_pull_transform_job(
         let skipped_type_count = Arc::clone(&skipped_type_count);
         let dropped_members = Arc::clone(&dropped_members);
         let tainted_roots = Arc::clone(&tainted_roots);
+        let apple_double_skipped_roots = Arc::clone(&apple_double_skipped_roots);
+        let archive_failures = Arc::clone(&archive_failures);
         let allowed_extensions = Arc::clone(&allowed_extensions);
         let expand_zip_keys = Arc::clone(&expand_zip_keys);
         let counter = Arc::clone(&counter);
@@ -906,6 +956,31 @@ pub(crate) async fn run_pull_transform_job(
                                 Some(bucket_config.alias.as_str()),
                             );
                         }
+                        ItemOutcome::SkippedAppleDouble { depth } => {
+                            if depth == 0 {
+                                apple_double_skipped_roots
+                                    .lock()
+                                    .unwrap()
+                                    .push(root_key.clone());
+                            }
+                            // Deliberately no failure_breakdown/metrics bump
+                            // -- this is not a failure (ADR-0107's whole
+                            // point).
+                        }
+                        ItemOutcome::ArchiveOpenFailed { key, error } => {
+                            tainted_roots.lock().unwrap().insert(root_key.clone());
+                            failure_breakdown.lock().unwrap().archive += 1;
+                            archive_failures
+                                .lock()
+                                .unwrap()
+                                .push(archive::ArchiveFailure { key, error });
+                            crate::observability::metrics::record_phase(
+                                "pull-transform",
+                                "archive",
+                                "failed",
+                                Some(bucket_config.alias.as_str()),
+                            );
+                        }
                     }
 
                     bar.inc(1);
@@ -949,6 +1024,14 @@ pub(crate) async fn run_pull_transform_job(
         .map_err(|_| "internal error: tainted-root set still shared".to_string())?
         .into_inner()
         .map_err(|_| "internal error: tainted-root set lock poisoned".to_string())?;
+    let apple_double_skipped_roots = Arc::try_unwrap(apple_double_skipped_roots)
+        .map_err(|_| "internal error: apple-double root list still shared".to_string())?
+        .into_inner()
+        .map_err(|_| "internal error: apple-double root list lock poisoned".to_string())?;
+    let archive_failures = Arc::try_unwrap(archive_failures)
+        .map_err(|_| "internal error: archive-failure list still shared".to_string())?
+        .into_inner()
+        .map_err(|_| "internal error: archive-failure list lock poisoned".to_string())?;
 
     tracing::info!(
         processed = files.len(),
@@ -957,6 +1040,7 @@ pub(crate) async fn run_pull_transform_job(
         recode_failed = failure_breakdown.recode,
         classify_failed = failure_breakdown.classify,
         dropped_members,
+        skipped_apple_double = apple_double_skipped_roots.len(),
         "pull-transform: download/expand/hash/recode phase complete"
     );
 
@@ -987,6 +1071,12 @@ pub(crate) async fn run_pull_transform_job(
         for key in &finished_root_keys {
             manifest::append_checkpoint(local_output, key)?;
         }
+        // Checkpointed unconditionally and separately from
+        // `finished_root_keys` above -- same reasoning as `deduplicate`'s
+        // worker.rs (ADR-0107).
+        for key in &apple_double_skipped_roots {
+            manifest::append_checkpoint(local_output, key)?;
+        }
         placement_summary
     };
 
@@ -1008,6 +1098,8 @@ pub(crate) async fn run_pull_transform_job(
         recode_fallback_to_original: fallback_count.load(Ordering::SeqCst),
         skipped_type: skipped_type_count.load(Ordering::SeqCst),
         dropped_members,
+        skipped_apple_double: apple_double_skipped_roots.len(),
+        archive_failures,
         ..Default::default()
     };
     summary.failure_breakdown.merge(&failure_breakdown);
@@ -1313,6 +1405,102 @@ mod tests {
             ItemOutcome::ZipExpanded { .. } => {
                 panic!("expected Processed (passthrough), got ZipExpanded")
             }
+            other => panic!("expected Processed (passthrough), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn process_item_skips_a_top_level_apple_double_zip_without_downloading() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_dir = dir.path().join("raw");
+        let scratch_dir = dir.path().join("scratch");
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let bucket_config = BucketConfig {
+            alias: "unused".to_string(),
+            endpoint: "http://127.0.0.1:1".to_string(),
+            bucket: "unused".to_string(),
+            access_key_id: "unused".to_string(),
+            encryption_key_alias: None,
+        };
+
+        let item = QueueItem {
+            source_key: Some("Facebook/KGraysen/._export-part-2.zip".to_string()),
+            display_key: "Facebook/KGraysen/._export-part-2.zip".to_string(),
+            path: None,
+            depth: 0,
+            size: 4096,
+            root_key: "Facebook/KGraysen/._export-part-2.zip".to_string(),
+        };
+
+        let (_root_key, outcome) = process_item(
+            &bucket_config,
+            "unused-secret",
+            item,
+            &raw_dir,
+            &scratch_dir,
+            &counter,
+            &MultiProgress::new(),
+            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
+            &all_extensions(&["zip"]),
+            &all_extensions(&[]),
+            &TranscodeTargets::default(),
+        )
+        .await;
+
+        assert!(matches!(
+            outcome,
+            ItemOutcome::SkippedAppleDouble { depth: 0 }
+        ));
+        assert!(!raw_dir.exists() || fs::read_dir(&raw_dir).unwrap().next().is_none());
+    }
+
+    #[tokio::test]
+    async fn process_item_captures_the_key_and_error_for_a_genuinely_failed_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let raw_dir = dir.path().join("raw");
+        fs::create_dir_all(&raw_dir).unwrap();
+        let scratch_dir = dir.path().join("scratch");
+        let counter = Arc::new(AtomicU64::new(0));
+
+        let bucket_config = BucketConfig {
+            alias: "unused".to_string(),
+            endpoint: "http://127.0.0.1:1".to_string(),
+            bucket: "unused".to_string(),
+            access_key_id: "unused".to_string(),
+            encryption_key_alias: None,
+        };
+
+        let zip_path = raw_dir.join("some.zip");
+        fs::write(&zip_path, b"not really a zip, just opaque bytes").unwrap();
+
+        let item = QueueItem {
+            source_key: None,
+            display_key: "some.zip".to_string(),
+            path: Some(zip_path),
+            depth: 0,
+            size: 36,
+            root_key: "some.zip".to_string(),
+        };
+
+        let (_root_key, outcome) = process_item(
+            &bucket_config,
+            "unused-secret",
+            item,
+            &raw_dir,
+            &scratch_dir,
+            &counter,
+            &MultiProgress::new(),
+            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
+            &all_extensions(&["zip"]),
+            &all_extensions(&["some.zip"]),
+            &TranscodeTargets::default(),
+        )
+        .await;
+
+        match outcome {
+            ItemOutcome::ArchiveOpenFailed { key, .. } => assert_eq!(key, "some.zip"),
+            other => panic!("expected ArchiveOpenFailed, got {other:?}"),
         }
     }
 }
