@@ -49,6 +49,17 @@ pub(crate) struct ExtractedMember {
     pub size: u64,
 }
 
+/// One archive that genuinely failed to open (password-protected, corrupt,
+/// etc.) -- as opposed to an AppleDouble object skipped before any open
+/// attempt was made. Collected by `deduplicate`'s and `pull_transform`'s
+/// worker loops so a run's report can itemize exactly which keys need a
+/// human to unlock or discard, instead of only a count (ADR-0107).
+#[derive(Debug, Clone)]
+pub(crate) struct ArchiveFailure {
+    pub key: String,
+    pub error: String,
+}
+
 /// `true` for a macOS AppleDouble resource-fork sidecar (`._<name>`,
 /// anywhere in the archive) or anything under a `__MACOSX/` metadata
 /// directory -- Finder-written noise that macOS zip tooling attaches
@@ -62,11 +73,17 @@ fn is_apple_metadata_entry(entry_name: &str) -> bool {
     if entry_name.starts_with("__MACOSX/") {
         return true;
     }
-    entry_name
-        .rsplit('/')
-        .next()
-        .unwrap_or(entry_name)
-        .starts_with("._")
+    is_apple_double_basename(entry_name)
+}
+
+/// `true` when `key`'s final `/`-separated segment is a macOS AppleDouble
+/// resource-fork sidecar name (`._<name>`) -- usable on a zip-internal entry
+/// name (via `is_apple_metadata_entry`, which additionally treats a
+/// `__MACOSX/` path prefix as metadata, a convention with no equivalent on a
+/// plain bucket key) or directly on a top-level bucket object's own display
+/// key (ADR-0107).
+pub(crate) fn is_apple_double_basename(key: &str) -> bool {
+    key.rsplit('/').next().unwrap_or(key).starts_with("._")
 }
 
 /// `true` for `is_apple_metadata_entry`'s noise, or for a `.DS_Store`
