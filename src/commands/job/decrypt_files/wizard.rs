@@ -247,6 +247,7 @@ async fn dispatch_async(
             (exit_code, report_path)
         }
         Err(err) => {
+            report_upload::say_error(&transcript, &err);
             let report_path = report_upload::write_summary_report(&output_dir, job_name, &err)
                 .unwrap_or_else(|_| output_dir.join(format!("{job_name}-report.txt")));
             (fail(err), report_path)
@@ -262,4 +263,19 @@ async fn dispatch_async(
     )
     .await;
     exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcript_contains_the_error_message_after_a_post_creation_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (transcript, transcript_path) = report_upload::new_transcript(dir.path()).unwrap();
+        report_upload::say_error(&transcript, "simulated decrypt-files failure");
+        let contents = std::fs::read_to_string(&transcript_path).unwrap();
+        assert!(!contents.is_empty());
+        assert!(contents.contains("simulated decrypt-files failure"));
+    }
 }

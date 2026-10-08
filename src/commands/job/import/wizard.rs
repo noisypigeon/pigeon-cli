@@ -227,7 +227,10 @@ async fn dispatch_async(
             };
             (exit_code, summary.log_path)
         }
-        Err(err) => (fail(err), log_path_for_err),
+        Err(err) => {
+            report_upload::say_error(&transcript, &err);
+            (fail(err), log_path_for_err)
+        }
     };
 
     println!("Report: {}", report_path.display());
@@ -243,4 +246,19 @@ async fn dispatch_async(
     .await;
 
     exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transcript_contains_the_error_message_after_a_post_creation_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let (transcript, transcript_path) = report_upload::new_transcript(dir.path()).unwrap();
+        report_upload::say_error(&transcript, "simulated import failure");
+        let contents = std::fs::read_to_string(&transcript_path).unwrap();
+        assert!(!contents.is_empty());
+        assert!(contents.contains("simulated import failure"));
+    }
 }
