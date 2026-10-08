@@ -48,6 +48,20 @@ pub(crate) async fn check_rclone_available() -> Result<(), String> {
 /// in-progress polling loop and the final post-exit flush, so both paths
 /// report identically.
 fn emit_delta_metrics(delta: rclone_log::TailDelta) {
+    // Logged regardless of `is_empty()` below -- a collapsed-repeats-only
+    // poll (no new transfer/error/byte delta) still has something worth
+    // reporting (ADR-0106); the two are independent concerns.
+    for summary in &delta.collapsed_repeats {
+        tracing::warn!(
+            cause = %summary.cause,
+            first_key = ?summary.first_key,
+            repeated = summary.repeated,
+            step = "transfer",
+            "rclone: {} more object failure(s) with the same cause since the last report",
+            summary.repeated
+        );
+    }
+
     if delta.is_empty() {
         return;
     }
@@ -101,7 +115,9 @@ fn emit_delta_metrics(delta: rclone_log::TailDelta) {
 }
 
 /// Runs `rclone copy <source> <destination>` with a fixed set of
-/// performance/retry flags (ADR-0101 -- not configurable per run) and a
+/// performance/retry flags (ADR-0101 -- not configurable per run; retuned by
+/// ADR-0106 after real runs showed the original concurrency sustained a
+/// request rate well past what Backblaze B2 would tolerate) and a
 /// structured JSON log redirected to `log_path`, polling that log live
 /// while the subprocess runs (ADR-0102) so `pigeon_job_phase_total`/
 /// `pigeon_upload_*` update mid-run instead of only once at the end.
@@ -123,9 +139,11 @@ pub(crate) async fn run_import_job(
         .arg(destination)
         .args([
             "--transfers",
-            "32",
+            "8",
             "--checkers",
-            "64",
+            "16",
+            "--tpslimit",
+            "10",
             "--fast-list",
             "--buffer-size",
             "32M",

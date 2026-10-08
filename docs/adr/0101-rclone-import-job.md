@@ -67,3 +67,13 @@ The rclone JSON log file is not summarized into a second, separate report -- it 
 - `rclone_log.rs` unit tests: synthetic JSON-line fixtures (a normal line, a `stats`-bearing line, an `object`-keyed error line, a non-object error line, a blank/garbage line) confirming `parse_and_report` returns the last stats line's totals and tolerates unparseable lines.
 - `worker::run_import_job` test: skips at runtime (not `#[ignore]`) if `rclone` isn't on `PATH` (mirroring `pull_transform::media`'s ffmpeg-dependent tests); otherwise copies a file between two `tempdir()`s with no `rclone.conf` needed and asserts the transferred/error counts and destination contents.
 - Manual run against a real `rclone.conf`-backed remote, confirming `pigeon.jsonl` carries the `"import: rclone copy starting"`/`"...complete"` lines, the rclone JSON log uploads correctly under the `--report-bucket` run prefix, and an induced failure (bad source path) surfaces a clear error.
+
+## Amendment (2026-10-07): retuned concurrency/rate-limit flags (ADR-0106)
+
+ADR-0106 retunes the fixed flag set in decision point 2 after a 33-run
+review found sustained Backblaze B2 rate-limiting (over 99.9% of ~494K
+sampled WARN/ERROR lines) and several outright job failures from exhausted
+retries. `--transfers`/`--checkers` drop from `32`/`64` to `8`/`16`, and a
+new `--tpslimit 10` caps the request rate explicitly. This stays within
+decision point 2's "fixed, not CLI flags" stance -- the values changed, the
+no-per-run-configurability design didn't.
