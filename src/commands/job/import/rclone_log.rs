@@ -41,17 +41,43 @@ pub(crate) struct RcloneLogSummary {
 /// What changed since the previous `poll()` -- the caller emits metrics
 /// from these deltas rather than the raw cumulative totals, so repeated
 /// polling never double-counts.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct TailDelta {
     pub transferred: u64,
     pub errors: u64,
     pub bytes: u64,
+    /// Consecutive identical-cause error lines collapsed since the last
+    /// poll (ADR-0106), beyond the first occurrence (already emitted live
+    /// by `record_error`). Independent of the numeric fields above -- a
+    /// poll can carry a non-empty `collapsed_repeats` with no new
+    /// transfer/error/byte delta, or vice versa.
+    pub collapsed_repeats: Vec<CollapsedErrorSummary>,
 }
 
 impl TailDelta {
     pub(crate) fn is_empty(&self) -> bool {
         self.transferred == 0 && self.errors == 0 && self.bytes == 0
     }
+}
+
+/// An in-progress run of consecutive error lines sharing the same cause
+/// (ADR-0106) -- tracked so only the first occurrence is logged live and
+/// the rest are counted, not individually logged.
+#[derive(Debug, Clone)]
+struct ErrorStreak {
+    cause: String,
+    first_key: Option<String>,
+    count: u64,
+}
+
+/// A finished streak of more than one consecutive identical-cause error
+/// line, ready for the caller to log as a single "N more" summary (ADR-0106).
+#[derive(Debug, Clone)]
+pub(crate) struct CollapsedErrorSummary {
+    pub cause: String,
+    pub first_key: Option<String>,
+    /// Repeats beyond the first, already-logged occurrence.
+    pub repeated: u64,
 }
 
 /// Incrementally reads an rclone `--use-json-log` file as it grows, for live
@@ -66,6 +92,7 @@ pub(crate) struct RcloneLogTailer {
     offset: u64,
     partial_line: String,
     cumulative: RcloneLogSummary,
+    current_streak: Option<ErrorStreak>,
 }
 
 impl RcloneLogTailer {
@@ -75,6 +102,7 @@ impl RcloneLogTailer {
             offset: 0,
             partial_line: String::new(),
             cumulative: RcloneLogSummary::default(),
+            current_streak: None,
         }
     }
 
@@ -87,17 +115,17 @@ impl RcloneLogTailer {
     pub(crate) fn poll(&mut self) -> TailDelta {
         let mut file = match fs::File::open(&self.log_path) {
             Ok(file) => file,
-            Err(_) => return TailDelta::default(),
+            Err(_) => return self.flush_only_delta(),
         };
         if file.seek(SeekFrom::Start(self.offset)).is_err() {
-            return TailDelta::default();
+            return self.flush_only_delta();
         }
         let mut buf = String::new();
         if file.read_to_string(&mut buf).is_err() {
-            return TailDelta::default();
+            return self.flush_only_delta();
         }
         if buf.is_empty() {
-            return TailDelta::default();
+            return self.flush_only_delta();
         }
 
         let mut chunk = std::mem::take(&mut self.partial_line);
@@ -114,10 +142,16 @@ impl RcloneLogTailer {
         }
 
         let before = self.cumulative.clone();
+        let mut collapsed_repeats = Vec::new();
         for line in lines {
-            self.process_line(line.trim());
+            if let Some(summary) = self.process_line(line.trim()) {
+                collapsed_repeats.push(summary);
+            }
         }
         self.offset += buf.len() as u64;
+        if let Some(summary) = self.flush_error_streak() {
+            collapsed_repeats.push(summary);
+        }
 
         TailDelta {
             transferred: self
@@ -126,15 +160,34 @@ impl RcloneLogTailer {
                 .saturating_sub(before.transferred),
             errors: self.cumulative.errors.saturating_sub(before.errors),
             bytes: self.cumulative.bytes.saturating_sub(before.bytes),
+            collapsed_repeats,
         }
     }
 
-    fn process_line(&mut self, line: &str) {
+    /// A `TailDelta` carrying no numeric change, but still flushing (and
+    /// reporting) any error streak in progress -- used by every early-return
+    /// path in `poll()` (missing file, seek/read failure, no new bytes) so a
+    /// pending streak is never silently dropped just because this particular
+    /// poll happened to see no new log lines.
+    fn flush_only_delta(&mut self) -> TailDelta {
+        let mut delta = TailDelta::default();
+        if let Some(summary) = self.flush_error_streak() {
+            delta.collapsed_repeats.push(summary);
+        }
+        delta
+    }
+
+    /// Returns a `CollapsedErrorSummary` whenever this line's processing
+    /// displaced a prior error streak that had repeats worth reporting --
+    /// e.g. the cause changed mid-batch -- so a streak that closes out
+    /// *before* the end of this poll's whole line batch (not just the one
+    /// still running when the batch ends) is never silently dropped.
+    fn process_line(&mut self, line: &str) -> Option<CollapsedErrorSummary> {
         if line.is_empty() {
-            return;
+            return None;
         }
         let Ok(parsed) = serde_json::from_str::<RcloneLogLine>(line) else {
-            return;
+            return None;
         };
 
         if let Some(stats) = &parsed.stats {
@@ -144,20 +197,63 @@ impl RcloneLogTailer {
         }
 
         if parsed.level.eq_ignore_ascii_case("error") {
-            match &parsed.object {
-                Some(key) => tracing::warn!(
-                    key = %key,
-                    step = "transfer",
-                    error = %parsed.msg,
-                    "rclone object transfer failed"
-                ),
-                None => tracing::warn!(
-                    step = "transfer",
-                    error = %parsed.msg,
-                    "rclone reported an error"
-                ),
-            }
+            return self.record_error(parsed.object, parsed.msg);
         }
+        None
+    }
+
+    /// Logs the first occurrence of a new error cause immediately (same
+    /// shape as before ADR-0106) and silently counts consecutive repeats of
+    /// the same cause instead of logging each one individually. Returns a
+    /// summary of whatever streak was just displaced, if it had any repeats
+    /// worth reporting.
+    fn record_error(
+        &mut self,
+        key: Option<String>,
+        cause: String,
+    ) -> Option<CollapsedErrorSummary> {
+        if let Some(streak) = &mut self.current_streak
+            && streak.cause == cause
+        {
+            streak.count += 1;
+            return None;
+        }
+        let flushed = self.flush_error_streak();
+        match &key {
+            Some(k) => tracing::warn!(
+                key = %k,
+                step = "transfer",
+                error = %cause,
+                "rclone object transfer failed"
+            ),
+            None => tracing::warn!(
+                step = "transfer",
+                error = %cause,
+                "rclone reported an error"
+            ),
+        }
+        self.current_streak = Some(ErrorStreak {
+            cause,
+            first_key: key,
+            count: 1,
+        });
+        flushed
+    }
+
+    /// Ends the current error streak (if any) and, if it had repeats beyond
+    /// the one already logged live, returns a summary for the caller to log
+    /// (ADR-0106). A streak of exactly 1 returns `None` -- nothing to
+    /// summarize beyond what `record_error` already logged.
+    fn flush_error_streak(&mut self) -> Option<CollapsedErrorSummary> {
+        let streak = self.current_streak.take()?;
+        if streak.count <= 1 {
+            return None;
+        }
+        Some(CollapsedErrorSummary {
+            cause: streak.cause,
+            first_key: streak.first_key,
+            repeated: streak.count - 1,
+        })
     }
 
     /// The last-known cumulative totals, for the final "copy complete" log
@@ -287,5 +383,87 @@ mod tests {
         let mut tailer = RcloneLogTailer::new(&path);
         let delta = tailer.poll();
         assert_eq!(delta.errors, 0);
+    }
+
+    #[test]
+    fn repeated_identical_cause_errors_collapse_into_one_summary() {
+        let (_dir, path) = write_log(concat!(
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"a.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"b.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"c.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"d.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"e.txt\"}\n",
+        ));
+        let mut tailer = RcloneLogTailer::new(&path);
+        let delta = tailer.poll();
+        assert_eq!(delta.collapsed_repeats.len(), 1);
+        let summary = &delta.collapsed_repeats[0];
+        assert_eq!(summary.cause, "Too Many Requests");
+        assert_eq!(summary.repeated, 4);
+    }
+
+    #[test]
+    fn a_single_error_does_not_produce_a_collapsed_summary() {
+        let (_dir, path) =
+            write_log("{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"a.txt\"}\n");
+        let mut tailer = RcloneLogTailer::new(&path);
+        let delta = tailer.poll();
+        assert!(delta.collapsed_repeats.is_empty());
+    }
+
+    #[test]
+    fn interleaved_different_causes_each_get_their_own_streak() {
+        let (_dir, path) = write_log(concat!(
+            "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"a.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"cause B\",\"object\":\"b.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"c.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"cause B\",\"object\":\"d.txt\"}\n",
+        ));
+        let mut tailer = RcloneLogTailer::new(&path);
+        let delta = tailer.poll();
+        assert!(delta.collapsed_repeats.is_empty());
+    }
+
+    #[test]
+    fn a_streak_displaced_mid_batch_by_a_cause_change_is_still_reported() {
+        // A repeats 3x, then B starts, within the same poll -- the A streak
+        // closes out *before* the batch ends, not at the trailing flush, so
+        // this locks in that process_line's own mid-batch flush result
+        // isn't silently dropped in favor of only the final streak.
+        let (_dir, path) = write_log(concat!(
+            "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"a.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"b.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"c.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"cause B\",\"object\":\"d.txt\"}\n",
+        ));
+        let mut tailer = RcloneLogTailer::new(&path);
+        let delta = tailer.poll();
+        assert_eq!(delta.collapsed_repeats.len(), 1);
+        assert_eq!(delta.collapsed_repeats[0].cause, "cause A");
+        assert_eq!(delta.collapsed_repeats[0].repeated, 2);
+    }
+
+    #[test]
+    fn a_streak_spanning_multiple_polls_restarts_per_poll() {
+        let (_dir, path) = write_log(concat!(
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"a.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"b.txt\"}\n",
+            "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"c.txt\"}\n",
+        ));
+        let mut tailer = RcloneLogTailer::new(&path);
+        let first = tailer.poll();
+        assert_eq!(first.collapsed_repeats.len(), 1);
+        assert_eq!(first.collapsed_repeats[0].repeated, 2);
+
+        append_log(
+            &path,
+            concat!(
+                "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"d.txt\"}\n",
+                "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"e.txt\"}\n",
+            ),
+        );
+        let second = tailer.poll();
+        assert_eq!(second.collapsed_repeats.len(), 1);
+        assert_eq!(second.collapsed_repeats[0].repeated, 1);
     }
 }
