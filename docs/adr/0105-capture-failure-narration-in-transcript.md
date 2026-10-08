@@ -79,6 +79,15 @@ success path:
   push transcript-creation earlier than it needs to be for failures that
   happen before any local output directory exists.
 - `pigeon.jsonl`'s own completeness for a failed run -- that's ADR-0104.
+- `import/wizard.rs::dispatch_async`'s `job.gather().await` failure site is a
+  `return fail(err)` that bypasses `upload_run_artifacts` entirely -- unlike
+  every other wizard, `import` creates its `Transcript` *before* calling
+  `gather()`, so a transcript is technically in scope there, but writing to
+  it wouldn't help: the early `return` means nothing (not report, not
+  transcript, not `pigeon.jsonl`) gets uploaded today. Fixing this properly
+  means restructuring `dispatch_async` so a gather failure also flows
+  through the function's tail-end upload call -- a separate, larger change
+  than this ADR's one-line-per-site fix, deferred to its own follow-up. ([#32](https://github.com/noisypigeon/pigeon-cli/issues/32))
 
 ## Verification
 
