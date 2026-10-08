@@ -116,3 +116,17 @@ practice for any run that hits sustained rate-limiting.
   WARN count and wall-clock time, comparing against this ADR's baseline
   numbers.
 - `mise run ci` clean.
+
+## Amendment (2026-10-07): the manual verification rerun, and its outcome (ADR-0108)
+
+This ADR's own manual-verification bullet above was attempted against
+`backblaze-google-consolidation` -- except that bucket, despite its
+legacy name, is now hosted on **Scaleway**, not Backblaze B2. The run
+(16GB) hung for over an hour without completing and was killed to avoid
+further billed-VM cost. This doesn't contradict this ADR's B2 findings
+-- B2's 429 flooding was real and these values do address it -- but it
+confirms decision point 3's own fallback condition: one fixed value
+can't serve every provider `import` is used against. ADR-0108 exposes
+`--transfers`/`--checkers`/`--tpslimit` as CLI flags rather than building
+the `--rate-limit-profile` contingency floated here, and reverts
+`--tpslimit`'s default from `10` to unset/no cap.

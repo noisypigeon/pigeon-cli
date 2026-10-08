@@ -77,3 +77,16 @@ retries. `--transfers`/`--checkers` drop from `32`/`64` to `8`/`16`, and a
 new `--tpslimit 10` caps the request rate explicitly. This stays within
 decision point 2's "fixed, not CLI flags" stance -- the values changed, the
 no-per-run-configurability design didn't.
+
+## Amendment (2026-10-07): `--transfers`/`--checkers`/`--tpslimit` become CLI flags (ADR-0108)
+
+ADR-0108 overturns decision point 2's "fixed, not CLI flags" stance for
+exactly these three flags, after a different provider (Scaleway) than the
+one ADR-0106 tuned for (Backblaze B2) showed the same fixed `8`/`16`/`10`
+values too conservative, hanging for over an hour on a 16GB transfer.
+`--transfers`/`--checkers` become optional CLI flags defaulting to
+ADR-0106's values; `--tpslimit` becomes an optional CLI flag defaulting to
+**unset/no cap**, reverting ADR-0106's hardcoded `10`. Every other fixed
+flag (`--retries`, `--buffer-size`, `--multi-thread-*`, `--fast-list`)
+stays fixed -- this is a narrow reopening, not a reversal of the broader
+anti-flag-sprawl rationale.
