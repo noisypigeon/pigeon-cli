@@ -900,35 +900,67 @@ fn job_run_pull_transform_without_ffmpeg_on_path_fails_fast_with_a_clear_error()
 }
 
 #[test]
-fn job_run_help_lists_import() {
+fn job_run_help_lists_rclone() {
     pigeon()
         .args(["job", "run", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("import"));
+        .stdout(predicate::str::contains("rclone"));
 }
 
 #[test]
-fn job_run_import_help_shows_source_destination_and_report_bucket_flags() {
+fn job_run_rclone_help_lists_copy_and_delete() {
     pigeon()
-        .args(["job", "run", "import", "--help"])
+        .args(["job", "run", "rclone", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--source"))
-        .stdout(predicate::str::contains("--destination"))
+        .stdout(predicate::str::contains("copy"))
+        .stdout(predicate::str::contains("delete"));
+}
+
+#[test]
+fn job_run_rclone_copy_help_shows_source_path_destination_path_and_report_bucket_flags() {
+    pigeon()
+        .args(["job", "run", "rclone", "copy", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source-path"))
+        .stdout(predicate::str::contains("--destination-path"))
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--transfers"))
+        .stdout(predicate::str::contains("--checkers"))
+        .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--yes"))
-        // ADR-0101: import's rclone performance/retry flags are fixed, not
-        // CLI flags, and it never resolves a pigeon bucket-config for
-        // source/destination.
+        // ADR-0101: this job's rclone performance/retry flags beyond
+        // transfers/checkers/tpslimit are fixed, not CLI flags, and it
+        // never resolves a pigeon bucket-config for source/destination.
         .stdout(predicate::str::contains("--source-bucket").not())
         .stdout(predicate::str::contains("--concurrency").not())
         .stdout(predicate::str::contains("--encryption-key").not());
 }
 
 #[test]
-fn job_run_import_without_source_fails_fast_non_interactively() {
+fn job_run_rclone_delete_help_shows_source_path_and_report_bucket_flags_but_not_destination_or_transfer_flags()
+ {
+    pigeon()
+        .args(["job", "run", "rclone", "delete", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--source-path"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--checkers"))
+        .stdout(predicate::str::contains("--yes"))
+        // ADR-0110: delete has no destination and no file-transfer tuning
+        // -- `rclone purge` moves no file content.
+        .stdout(predicate::str::contains("--destination-path").not())
+        .stdout(predicate::str::contains("--transfers").not())
+        .stdout(predicate::str::contains("--tpslimit").not());
+}
+
+#[test]
+fn job_run_rclone_copy_without_source_path_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
@@ -936,8 +968,9 @@ fn job_run_import_without_source_fails_fast_non_interactively() {
         .args([
             "job",
             "run",
-            "import",
-            "--destination",
+            "rclone",
+            "copy",
+            "--destination-path",
             "dest:",
             "--local-output",
             local_output.path().to_str().unwrap(),
@@ -947,12 +980,12 @@ fn job_run_import_without_source_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--source is required when not running interactively",
+            "--source-path is required when not running interactively",
         ));
 }
 
 #[test]
-fn job_run_import_without_destination_fails_fast_non_interactively() {
+fn job_run_rclone_copy_without_destination_path_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
@@ -960,8 +993,9 @@ fn job_run_import_without_destination_fails_fast_non_interactively() {
         .args([
             "job",
             "run",
-            "import",
-            "--source",
+            "rclone",
+            "copy",
+            "--source-path",
             "source:media/",
             "--local-output",
             local_output.path().to_str().unwrap(),
@@ -971,12 +1005,12 @@ fn job_run_import_without_destination_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--destination is required when not running interactively",
+            "--destination-path is required when not running interactively",
         ));
 }
 
 #[test]
-fn job_run_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
+fn job_run_rclone_copy_without_rclone_on_path_fails_fast_with_a_clear_error() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
     let empty_path_dir = TempDir::new().unwrap();
@@ -986,11 +1020,60 @@ fn job_run_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
         .args([
             "job",
             "run",
-            "import",
-            "--source",
+            "rclone",
+            "copy",
+            "--source-path",
             "source:media/",
-            "--destination",
+            "--destination-path",
             "dest:",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("was not found on PATH"));
+}
+
+#[test]
+fn job_run_rclone_delete_without_source_path_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "rclone",
+            "delete",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--source-path is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_rclone_delete_without_rclone_on_path_fails_fast_with_a_clear_error() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "rclone",
+            "delete",
+            "--source-path",
+            "source:media/",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--yes",

@@ -146,3 +146,11 @@ configurable; each needs updating to describe the new override surface.
   an explicit `--transfers`/`--checkers` raise and no `--tpslimit`,
   confirming it completes in a reasonable time where the ADR-0106 defaults
   previously hung for over an hour.
+
+## Amendment (2026-10-09): restructured into `rclone copy`/`rclone delete` (ADR-0110)
+
+ADR-0110 renames this job `"import"` -> `"rclone-copy"`, nested under
+`pigeon job run rclone copy`. The three flags this ADR exposed
+(`--transfers`/`--checkers`/`--tpslimit`) are preserved unchanged on `copy`;
+they are deliberately not offered on the new sibling `delete` action, which
+has no file-transfer concurrency or rate concept to tune.

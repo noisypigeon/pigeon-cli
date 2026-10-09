@@ -130,3 +130,10 @@ can't serve every provider `import` is used against. ADR-0108 exposes
 `--transfers`/`--checkers`/`--tpslimit` as CLI flags rather than building
 the `--rate-limit-profile` contingency floated here, and reverts
 `--tpslimit`'s default from `10` to unset/no cap.
+
+## Amendment (2026-10-09): restructured into `rclone copy`/`rclone delete` (ADR-0110)
+
+ADR-0110 renames this job `"import"` -> `"rclone-copy"`. The tuned `8`/`16`
+defaults this ADR established are preserved unchanged on the new `copy`
+action; the new sibling `delete` action reuses the same `--checkers`
+default of `16`.

@@ -29,6 +29,10 @@ struct RcloneStats {
     transfers: u64,
     #[serde(default)]
     errors: u64,
+    /// rclone's own purge-mode counter -- present on every rclone JSON
+    /// stats line regardless of operation, `0` for a pure copy.
+    #[serde(default)]
+    deletes: u64,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -36,6 +40,7 @@ pub(crate) struct RcloneLogSummary {
     pub transferred: u64,
     pub errors: u64,
     pub bytes: u64,
+    pub deletes: u64,
 }
 
 /// What changed since the previous `poll()` -- the caller emits metrics
@@ -46,6 +51,7 @@ pub(crate) struct TailDelta {
     pub transferred: u64,
     pub errors: u64,
     pub bytes: u64,
+    pub deletes: u64,
     /// Consecutive identical-cause error lines collapsed since the last
     /// poll (ADR-0106), beyond the first occurrence (already emitted live
     /// by `record_error`). Independent of the numeric fields above -- a
@@ -56,7 +62,7 @@ pub(crate) struct TailDelta {
 
 impl TailDelta {
     pub(crate) fn is_empty(&self) -> bool {
-        self.transferred == 0 && self.errors == 0 && self.bytes == 0
+        self.transferred == 0 && self.errors == 0 && self.bytes == 0 && self.deletes == 0
     }
 }
 
@@ -93,16 +99,22 @@ pub(crate) struct RcloneLogTailer {
     partial_line: String,
     cumulative: RcloneLogSummary,
     current_streak: Option<ErrorStreak>,
+    /// The `step` field value this tailer's own per-object `tracing::warn!`
+    /// lines carry -- `"transfer"` for a copy tailer, `"delete"` for a
+    /// delete tailer (ADR-0110). Shared error-handling code, so this can't
+    /// stay a bare literal the way it did when only one action existed.
+    step: &'static str,
 }
 
 impl RcloneLogTailer {
-    pub(crate) fn new(log_path: &Path) -> Self {
+    pub(crate) fn new(log_path: &Path, step: &'static str) -> Self {
         Self {
             log_path: log_path.to_path_buf(),
             offset: 0,
             partial_line: String::new(),
             cumulative: RcloneLogSummary::default(),
             current_streak: None,
+            step,
         }
     }
 
@@ -160,6 +172,7 @@ impl RcloneLogTailer {
                 .saturating_sub(before.transferred),
             errors: self.cumulative.errors.saturating_sub(before.errors),
             bytes: self.cumulative.bytes.saturating_sub(before.bytes),
+            deletes: self.cumulative.deletes.saturating_sub(before.deletes),
             collapsed_repeats,
         }
     }
@@ -194,6 +207,7 @@ impl RcloneLogTailer {
             self.cumulative.transferred = stats.transfers;
             self.cumulative.errors = stats.errors;
             self.cumulative.bytes = stats.bytes;
+            self.cumulative.deletes = stats.deletes;
         }
 
         if parsed.level.eq_ignore_ascii_case("error") {
@@ -219,15 +233,20 @@ impl RcloneLogTailer {
             return None;
         }
         let flushed = self.flush_error_streak();
+        let action_failed_msg = if self.step == "delete" {
+            "rclone object deletion failed"
+        } else {
+            "rclone object transfer failed"
+        };
         match &key {
             Some(k) => tracing::warn!(
                 key = %k,
-                step = "transfer",
+                step = self.step,
                 error = %cause,
-                "rclone object transfer failed"
+                "{action_failed_msg}"
             ),
             None => tracing::warn!(
-                step = "transfer",
+                step = self.step,
                 error = %cause,
                 "rclone reported an error"
             ),
@@ -284,7 +303,7 @@ mod tests {
     #[test]
     fn polling_an_empty_log_returns_a_zeroed_delta() {
         let (_dir, path) = write_log("");
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert!(delta.is_empty());
         assert_eq!(tailer.summary().transferred, 0);
@@ -293,7 +312,8 @@ mod tests {
     #[test]
     fn polling_a_missing_file_is_not_an_error() {
         let dir = tempfile::tempdir().unwrap();
-        let mut tailer = RcloneLogTailer::new(&dir.path().join("not-yet-created.jsonl"));
+        let mut tailer =
+            RcloneLogTailer::new(&dir.path().join("not-yet-created.jsonl"), "transfer");
         let delta = tailer.poll();
         assert!(delta.is_empty());
     }
@@ -301,7 +321,7 @@ mod tests {
     #[test]
     fn tolerates_garbage_and_blank_lines() {
         let (_dir, path) = write_log("not json\n\n   \n{\"level\":\"info\"}\n");
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert!(delta.is_empty());
     }
@@ -312,7 +332,7 @@ mod tests {
             "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,\"errors\":0}}\n",
             "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":100,\"transfers\":5,\"errors\":1}}\n",
         ));
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert_eq!(delta.transferred, 5);
         assert_eq!(delta.errors, 1);
@@ -321,11 +341,24 @@ mod tests {
     }
 
     #[test]
+    fn a_deletes_bearing_stats_line_is_tracked_distinctly_from_transfers() {
+        let (_dir, path) = write_log(
+            "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":0,\"transfers\":0,\"deletes\":7,\"errors\":0}}\n",
+        );
+        let mut tailer = RcloneLogTailer::new(&path, "delete");
+        let delta = tailer.poll();
+        assert_eq!(delta.deletes, 7);
+        assert_eq!(delta.transferred, 0);
+        assert_eq!(delta.bytes, 0);
+        assert_eq!(tailer.summary().deletes, 7);
+    }
+
+    #[test]
     fn second_poll_only_reports_the_new_delta() {
         let (_dir, path) = write_log(
             "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,\"errors\":0}}\n",
         );
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let first = tailer.poll();
         assert_eq!(first.transferred, 1);
 
@@ -344,7 +377,7 @@ mod tests {
         let (_dir, path) = write_log(
             "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,\"errors\":0}}\n",
         );
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         tailer.poll();
         let second = tailer.poll();
         assert!(second.is_empty());
@@ -355,7 +388,7 @@ mod tests {
         let (_dir, path) = write_log(
             "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,",
         );
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let first = tailer.poll();
         assert!(first.is_empty());
 
@@ -371,7 +404,7 @@ mod tests {
             "{\"level\":\"error\",\"msg\":\"permission denied\",\"object\":\"foo/bar.txt\"}\n",
             "{\"level\":\"info\",\"msg\":\"done\",\"stats\":{\"bytes\":1,\"transfers\":1,\"errors\":1}}\n",
         ));
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert_eq!(delta.transferred, 1);
         assert_eq!(delta.errors, 1);
@@ -380,7 +413,7 @@ mod tests {
     #[test]
     fn non_object_error_line_does_not_fail_parsing() {
         let (_dir, path) = write_log("{\"level\":\"error\",\"msg\":\"fatal error\"}\n");
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert_eq!(delta.errors, 0);
     }
@@ -394,7 +427,7 @@ mod tests {
             "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"d.txt\"}\n",
             "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"e.txt\"}\n",
         ));
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert_eq!(delta.collapsed_repeats.len(), 1);
         let summary = &delta.collapsed_repeats[0];
@@ -406,7 +439,7 @@ mod tests {
     fn a_single_error_does_not_produce_a_collapsed_summary() {
         let (_dir, path) =
             write_log("{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"a.txt\"}\n");
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert!(delta.collapsed_repeats.is_empty());
     }
@@ -419,7 +452,7 @@ mod tests {
             "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"c.txt\"}\n",
             "{\"level\":\"error\",\"msg\":\"cause B\",\"object\":\"d.txt\"}\n",
         ));
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert!(delta.collapsed_repeats.is_empty());
     }
@@ -436,7 +469,7 @@ mod tests {
             "{\"level\":\"error\",\"msg\":\"cause A\",\"object\":\"c.txt\"}\n",
             "{\"level\":\"error\",\"msg\":\"cause B\",\"object\":\"d.txt\"}\n",
         ));
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let delta = tailer.poll();
         assert_eq!(delta.collapsed_repeats.len(), 1);
         assert_eq!(delta.collapsed_repeats[0].cause, "cause A");
@@ -450,7 +483,7 @@ mod tests {
             "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"b.txt\"}\n",
             "{\"level\":\"error\",\"msg\":\"Too Many Requests\",\"object\":\"c.txt\"}\n",
         ));
-        let mut tailer = RcloneLogTailer::new(&path);
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
         let first = tailer.poll();
         assert_eq!(first.collapsed_repeats.len(), 1);
         assert_eq!(first.collapsed_repeats[0].repeated, 2);

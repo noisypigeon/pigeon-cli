@@ -1,6 +1,6 @@
-use crate::commands::job::cli::{JobCommands, JobType};
+use crate::commands::job::cli::{JobCommands, JobType, RcloneAction, RcloneArgs};
 use crate::commands::job::{
-    decrypt_files, deduplicate, email_pull, email_sync, import, pull_transform,
+    decrypt_files, deduplicate, email_pull, email_sync, pull_transform, rclone,
 };
 use crate::core::observability::Observable as _;
 
@@ -76,26 +76,42 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     job_name,
                     yes,
                 ),
-                JobType::Import {
-                    source,
-                    destination,
-                    local_output,
-                    report_bucket,
-                    transfers,
-                    checkers,
-                    tpslimit,
-                    yes,
-                } => import::wizard::dispatch(
-                    source,
-                    destination,
-                    local_output,
-                    report_bucket,
-                    transfers,
-                    checkers,
-                    tpslimit,
-                    job_name,
-                    yes,
-                ),
+                JobType::Rclone(RcloneArgs { action }) => match action {
+                    RcloneAction::Copy {
+                        source_path,
+                        destination_path,
+                        local_output,
+                        report_bucket,
+                        transfers,
+                        checkers,
+                        tpslimit,
+                        yes,
+                    } => rclone::wizard::dispatch_copy(
+                        source_path,
+                        destination_path,
+                        local_output,
+                        report_bucket,
+                        transfers,
+                        checkers,
+                        tpslimit,
+                        job_name,
+                        yes,
+                    ),
+                    RcloneAction::Delete {
+                        source_path,
+                        local_output,
+                        report_bucket,
+                        checkers,
+                        yes,
+                    } => rclone::wizard::dispatch_delete(
+                        source_path,
+                        local_output,
+                        report_bucket,
+                        checkers,
+                        job_name,
+                        yes,
+                    ),
+                },
                 JobType::DecryptFiles {
                     input_dir,
                     output_dir,
