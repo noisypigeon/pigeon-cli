@@ -9,19 +9,19 @@ use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
 use crate::core::wizard::WizardInput;
 
-use super::ImportJob;
 use super::worker;
+use super::{RcloneCopyJob, RcloneDeleteJob};
 
-/// Resolves the rclone source, e.g. `source:media/`. A plain string, not a
-/// pigeon bucket-config alias -- `import` never looks this up against the
-/// keyring (ADR-0101). Structurally identical to
+/// Resolves the rclone source path, e.g. `source:media/`. A plain string,
+/// not a pigeon bucket-config alias -- this job never looks it up against
+/// the keyring (ADR-0101). Structurally identical to
 /// `shared_wizard::SourceBucketInput`'s flag/prompt/error shape; kept local
-/// since no second consumer exists yet.
-struct SourceInput {
+/// since no second consumer exists yet. Shared by both `copy` and `delete`.
+struct SourcePathInput {
     flag: Option<String>,
 }
 
-impl WizardInput for SourceInput {
+impl WizardInput for SourcePathInput {
     type Value = String;
 
     fn flag_value(&self) -> Option<Result<String, String>> {
@@ -30,23 +30,23 @@ impl WizardInput for SourceInput {
 
     fn prompt(&self) -> Result<String, String> {
         Input::<String>::new()
-            .with_prompt("rclone source (e.g. 'source:media/')")
+            .with_prompt("rclone source path (e.g. 'source:media/')")
             .interact_text()
-            .map_err(|err| format!("failed to read source: {err}"))
+            .map_err(|err| format!("failed to read source path: {err}"))
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--source is required when not running interactively".to_string())
+        Err("--source-path is required when not running interactively".to_string())
     }
 }
 
-/// Resolves the rclone destination, e.g. `destination:`. Same shape as
-/// `SourceInput`.
-struct DestinationInput {
+/// Resolves the rclone destination path, e.g. `destination:`. Same shape as
+/// `SourcePathInput`. `copy` only -- `delete` has no destination.
+struct DestinationPathInput {
     flag: Option<String>,
 }
 
-impl WizardInput for DestinationInput {
+impl WizardInput for DestinationPathInput {
     type Value = String;
 
     fn flag_value(&self) -> Option<Result<String, String>> {
@@ -55,18 +55,18 @@ impl WizardInput for DestinationInput {
 
     fn prompt(&self) -> Result<String, String> {
         Input::<String>::new()
-            .with_prompt("rclone destination (e.g. 'destination:')")
+            .with_prompt("rclone destination path (e.g. 'destination:')")
             .interact_text()
-            .map_err(|err| format!("failed to read destination: {err}"))
+            .map_err(|err| format!("failed to read destination path: {err}"))
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--destination is required when not running interactively".to_string())
+        Err("--destination-path is required when not running interactively".to_string())
     }
 }
 
 /// Flat default for `TransfersInput` (ADR-0108) -- matches ADR-0106's
-/// tuned value, now overridable rather than fixed.
+/// tuned value, now overridable rather than fixed. `copy` only.
 const TRANSFERS_DEFAULT: usize = 8;
 
 /// Resolves rclone's `--transfers` (concurrent file transfers). Falls
@@ -99,8 +99,8 @@ impl WizardInput for TransfersInput {
     }
 }
 
-/// Flat default for `CheckersInput` (ADR-0108) -- matches ADR-0106's
-/// tuned value, now overridable rather than fixed.
+/// Flat default for `CheckersInput` (ADR-0106) -- shared by `copy` and
+/// `delete` (purge still enumerates objects before deleting them).
 const CHECKERS_DEFAULT: usize = 16;
 
 /// Resolves rclone's `--checkers` (concurrent list/compare operations).
@@ -139,6 +139,7 @@ impl WizardInput for CheckersInput {
 /// reverting ADR-0106's hardcoded `10` default: a single default rate
 /// ceiling has been shown wrong in both directions -- too loose for B2,
 /// too tight for Scaleway -- so the safer default is no cap at all).
+/// `copy` only -- `delete` has no `--tpslimit` flag at all (ADR-0110).
 struct TpslimitInput {
     flag: Option<usize>,
 }
@@ -178,7 +179,7 @@ fn default_local_output() -> PathBuf {
 /// Where this run's rclone log (also serving as this job's report) and
 /// transcript are written -- unlike every other job, not a staging area
 /// for transferred data, since rclone transfers directly source ->
-/// destination with no pigeon-side staging.
+/// destination with no pigeon-side staging. Shared by both actions.
 struct LocalOutputInput {
     flag: Option<PathBuf>,
 }
@@ -205,11 +206,12 @@ impl WizardInput for LocalOutputInput {
     }
 }
 
-/// Entry point for `pigeon job run import` (ADR-0101).
+/// Entry point for `pigeon job run rclone copy` (ADR-0101, restructured by
+/// ADR-0110).
 #[allow(clippy::too_many_arguments)]
-pub fn dispatch(
-    source: Option<String>,
-    destination: Option<String>,
+pub fn dispatch_copy(
+    source_path: Option<String>,
+    destination_path: Option<String>,
     local_output: Option<PathBuf>,
     report_bucket: Option<String>,
     transfers: Option<usize>,
@@ -225,9 +227,9 @@ pub fn dispatch(
         Ok(runtime) => runtime,
         Err(err) => return fail(format!("failed to start async runtime: {err}")),
     };
-    runtime.block_on(dispatch_async(
-        source,
-        destination,
+    runtime.block_on(dispatch_copy_async(
+        source_path,
+        destination_path,
         local_output,
         report_bucket,
         transfers,
@@ -239,9 +241,9 @@ pub fn dispatch(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn dispatch_async(
-    source: Option<String>,
-    destination: Option<String>,
+async fn dispatch_copy_async(
+    source_path: Option<String>,
+    destination_path: Option<String>,
     local_output: Option<PathBuf>,
     report_bucket: Option<String>,
     transfers: Option<usize>,
@@ -272,11 +274,15 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     };
 
-    let source = match (SourceInput { flag: source }).resolve() {
+    let source = match (SourcePathInput { flag: source_path }).resolve() {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let destination = match (DestinationInput { flag: destination }).resolve() {
+    let destination = match (DestinationPathInput {
+        flag: destination_path,
+    })
+    .resolve()
+    {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -330,7 +336,7 @@ async fn dispatch_async(
     let log_path = local_output.join(format!("rclone-{run_id}.jsonl"));
     let log_path_for_err = log_path.clone();
 
-    let job = ImportJob {
+    let job = RcloneCopyJob {
         source,
         destination,
         log_path,
@@ -378,6 +384,149 @@ async fn dispatch_async(
     exit_code
 }
 
+/// Entry point for `pigeon job run rclone delete` (ADR-0110).
+pub fn dispatch_delete(
+    source_path: Option<String>,
+    local_output: Option<PathBuf>,
+    report_bucket: Option<String>,
+    checkers: Option<usize>,
+    job_name: &'static str,
+    yes: bool,
+) -> i32 {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(err) => return fail(format!("failed to start async runtime: {err}")),
+    };
+    runtime.block_on(dispatch_delete_async(
+        source_path,
+        local_output,
+        report_bucket,
+        checkers,
+        job_name,
+        yes,
+    ))
+}
+
+async fn dispatch_delete_async(
+    source_path: Option<String>,
+    local_output: Option<PathBuf>,
+    report_bucket: Option<String>,
+    checkers: Option<usize>,
+    job_name: &'static str,
+    yes: bool,
+) -> i32 {
+    let _sampler =
+        crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
+
+    if let Err(err) = worker::check_rclone_available().await {
+        return fail(err);
+    }
+
+    let keyring_store_path = match Store::default_path() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    let keyring_store = match Store::load(&keyring_store_path) {
+        Ok(store) => store,
+        Err(err) => return fail(err),
+    };
+
+    let source = match (SourcePathInput { flag: source_path }).resolve() {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let checkers = match (CheckersInput { flag: checkers }).resolve() {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let (report_bucket_config, report_secret) =
+        match report_upload::resolve(report_bucket, &keyring_store) {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        };
+
+    println!("Source: {source}");
+    println!("WARNING: this will recursively and permanently delete everything under this path.");
+
+    match (ConfirmInput { yes }).resolve() {
+        Ok(true) => {}
+        Ok(false) => {
+            println!("Cancelled.");
+            return 0;
+        }
+        Err(err) => return fail(err),
+    }
+
+    if let Err(err) = std::fs::create_dir_all(&local_output) {
+        return fail(format!(
+            "failed to create {}: {err}",
+            local_output.display()
+        ));
+    }
+
+    let run_id = report_upload::generate_run_id();
+    let run_prefix = report_upload::run_prefix(job_name, &run_id);
+    let (transcript, transcript_path) = match report_upload::new_transcript(&local_output) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    // Distinct name from `copy`'s `rclone-{run_id}.jsonl` so a shared
+    // `--local-output` directory never conflates the two actions' logs.
+    let log_path = local_output.join(format!("rclone-purge-{run_id}.jsonl"));
+    let log_path_for_err = log_path.clone();
+
+    let job = RcloneDeleteJob {
+        source,
+        log_path,
+        checkers,
+    };
+    let plan = match job.gather().await {
+        Ok(plan) => plan,
+        Err(err) => return fail(err),
+    };
+
+    let (exit_code, report_path) = match job.run(plan, 1, 1).await {
+        Ok(summary) => {
+            let message = format!(
+                "Deleted {} object(s), {} error(s).",
+                summary.deleted, summary.errors
+            );
+            report_upload::say(&transcript, message);
+            let exit_code = if summary.errors > 0 {
+                FAILURE_EXIT_CODE
+            } else {
+                0
+            };
+            (exit_code, summary.log_path)
+        }
+        Err(err) => {
+            report_upload::say_error(&transcript, &err);
+            (fail(err), log_path_for_err)
+        }
+    };
+
+    println!("Report: {}", report_path.display());
+
+    report_upload::log_run_outcome(exit_code);
+    report_upload::upload_run_artifacts(
+        &report_bucket_config,
+        &report_secret,
+        &run_prefix,
+        &report_path,
+        &transcript_path,
+    )
+    .await;
+
+    exit_code
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,10 +535,10 @@ mod tests {
     fn transcript_contains_the_error_message_after_a_post_creation_failure() {
         let dir = tempfile::tempdir().unwrap();
         let (transcript, transcript_path) = report_upload::new_transcript(dir.path()).unwrap();
-        report_upload::say_error(&transcript, "simulated import failure");
+        report_upload::say_error(&transcript, "simulated rclone copy failure");
         let contents = std::fs::read_to_string(&transcript_path).unwrap();
         assert!(!contents.is_empty());
-        assert!(contents.contains("simulated import failure"));
+        assert!(contents.contains("simulated rclone copy failure"));
     }
 
     #[test]
@@ -426,5 +575,23 @@ mod tests {
     fn tpslimit_input_falls_back_to_no_cap_when_not_interactive() {
         let input = TpslimitInput { flag: None };
         assert_eq!(input.non_interactive_fallback(), Ok(None));
+    }
+
+    #[test]
+    fn source_path_input_non_interactive_fallback_errors() {
+        let input = SourcePathInput { flag: None };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Err("--source-path is required when not running interactively".to_string())
+        );
+    }
+
+    #[test]
+    fn destination_path_input_non_interactive_fallback_errors() {
+        let input = DestinationPathInput { flag: None };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Err("--destination-path is required when not running interactively".to_string())
+        );
     }
 }

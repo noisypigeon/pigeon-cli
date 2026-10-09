@@ -90,3 +90,12 @@ ADR-0106's values; `--tpslimit` becomes an optional CLI flag defaulting to
 flag (`--retries`, `--buffer-size`, `--multi-thread-*`, `--fast-list`)
 stays fixed -- this is a narrow reopening, not a reversal of the broader
 anti-flag-sprawl rationale.
+
+## Amendment (2026-10-09): restructured into `rclone copy`/`rclone delete` (ADR-0110)
+
+ADR-0110 nests this job under `pigeon job run rclone`, renaming
+`--source`/`--destination` to `--source-path`/`--destination-path` on a new
+`copy` action and adding a sibling `delete` action (`rclone purge`). The
+"raw passthrough string, not a bucket-config alias" design this ADR
+established survives; the flag names, job identity (`"import"` ->
+`"rclone-copy"`), and CLI shape described above do not.

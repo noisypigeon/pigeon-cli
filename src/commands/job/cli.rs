@@ -401,26 +401,41 @@ pub enum JobType {
         yes: bool,
     },
 
+    /// Shells out to the external `rclone` binary for copy/delete
+    /// operations against raw rclone `remote:path` strings. Pigeon manages
+    /// no rclone credentials/config -- `rclone.conf` is provisioned by an
+    /// external process, outside this crate's scope (ADR-0101, restructured
+    /// by ADR-0110). See subcommands for the available actions. Requires
+    /// `rclone` on `PATH`.
+    Rclone(RcloneArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct RcloneArgs {
+    #[command(subcommand)]
+    pub action: RcloneAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum RcloneAction {
     /// Copies data from a configurable source to a configurable
-    /// destination by shelling out to the external `rclone` binary.
-    /// Pigeon manages no rclone credentials/config -- `--source`/
-    /// `--destination` are raw `remote:path` strings passed straight
-    /// through to `rclone copy`'s argv; `rclone.conf` is provisioned by
-    /// an external process, outside this crate's scope (ADR-0101).
-    /// `--transfers`/`--checkers`/`--tpslimit` are overridable
-    /// per-destination (ADR-0108); every other rclone performance/retry
-    /// flag stays fixed. Requires `rclone` on `PATH`.
-    Import {
+    /// destination by shelling out to `rclone copy`. `--source-path`/
+    /// `--destination-path` are raw `remote:path` strings passed straight
+    /// through to `rclone copy`'s argv, never pigeon `BucketConfig`/keyring
+    /// aliases (ADR-0101). `--transfers`/`--checkers`/`--tpslimit` are
+    /// overridable per-destination (ADR-0108); every other rclone
+    /// performance/retry flag stays fixed.
+    Copy {
         /// rclone source, e.g. `source:media/`. Interactively prompted
         /// when omitted and stdin is a terminal; required otherwise.
         #[arg(long)]
-        source: Option<String>,
+        source_path: Option<String>,
 
         /// rclone destination, e.g. `destination:`. Interactively
         /// prompted when omitted and stdin is a terminal; required
         /// otherwise.
         #[arg(long)]
-        destination: Option<String>,
+        destination_path: Option<String>,
 
         /// Local directory this run's rclone log (also serving as this
         /// job's report) and transcript are written under. Defaults to a
@@ -460,6 +475,44 @@ pub enum JobType {
         #[arg(long)]
         yes: bool,
     },
+
+    /// Recursively and permanently deletes everything under a configurable
+    /// source path by shelling out to `rclone purge` (ADR-0110).
+    /// Irreversible -- there is no `--dry-run` and no undo beyond the
+    /// existing `--yes`/interactive confirmation. Unlike `copy`, there is
+    /// no destination and no per-file transfer-rate tuning, since purge
+    /// transfers no file content.
+    Delete {
+        /// rclone source to recursively and permanently delete, e.g.
+        /// `source:media/`. Interactively prompted when omitted and stdin
+        /// is a terminal; required otherwise.
+        #[arg(long)]
+        source_path: Option<String>,
+
+        /// Local directory this run's rclone log (also serving as this
+        /// job's report) and transcript are written under. Defaults to a
+        /// directory under the OS temp directory when omitted.
+        #[arg(long)]
+        local_output: Option<PathBuf>,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
+        /// rclone --checkers (concurrent list operations during
+        /// enumeration). Defaults to 16 when omitted.
+        #[arg(long)]
+        checkers: Option<usize>,
+
+        /// Skip the final "proceed?" confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 impl Observable for JobType {
@@ -470,7 +523,10 @@ impl Observable for JobType {
             JobType::EmailPull { .. } => "job.email-pull",
             JobType::PullTransform { .. } => "job.pull-transform",
             JobType::Deduplicate { .. } => "job.deduplicate",
-            JobType::Import { .. } => "job.import",
+            JobType::Rclone(args) => match args.action {
+                RcloneAction::Copy { .. } => "job.rclone-copy",
+                RcloneAction::Delete { .. } => "job.rclone-delete",
+            },
         }
     }
 }

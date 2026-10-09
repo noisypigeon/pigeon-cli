@@ -62,3 +62,11 @@ These two are genuinely per-file measurements on every other job (an attempt cou
 - `rclone_log.rs` unit tests: a line split across two polls is counted exactly once (not double-counted, not dropped); a poll against a not-yet-created log file returns a zeroed delta instead of erroring; a second poll with no new log data returns a zeroed delta; existing error-line/garbage-tolerance/last-stats-wins coverage still passes against the new incremental API.
 - `worker.rs`'s existing `copies_a_file_between_two_local_directories` end-to-end test (skipped if `rclone` isn't on `PATH`) still passes under the new spawn+poll model.
 - Manual run against a real `rclone.conf`-backed remote with a multi-minute transfer: `curl localhost:9091/metrics` shows `pigeon_job_macro_phase{pigeon_job="import"}` at `1`, and `pigeon_upload_bytes_total`/`pigeon_job_phase_total` counts increasing across multiple distinct scrapes while the transfer is still running, not just once at the end; an induced per-object error surfaces as a `tracing::warn!` promptly rather than only after exit.
+
+## Amendment (2026-10-09): restructured into `rclone copy`/`rclone delete` (ADR-0110)
+
+ADR-0110 renames this job `"import"` -> `"rclone-copy"` and adds a sibling
+`"rclone-delete"` action. The live-tailing mechanism this ADR introduced
+(`RcloneLogTailer`, the `tokio::select!` poll loop, per-poll delta metrics)
+is preserved unchanged in spirit, generalized to parameterize per-action
+metric names/labels and add a `deletes` counter for the new action.
