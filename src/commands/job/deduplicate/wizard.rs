@@ -134,6 +134,19 @@ impl WizardInput for LocalOutputInput {
     }
 }
 
+/// Creates `--local-output` if it doesn't exist yet (ADR-0111) -- without
+/// this, a fresh path fails later with a raw OS error from
+/// `report_upload::new_transcript`, the first step that actually requires
+/// the directory to exist. Matches the pattern `rclone copy`/`rclone
+/// delete` already use (ADR-0110). Deliberately not called from
+/// `dispatch_upload_only`: that path requires `--local-output` to already
+/// hold a completed prior run, so auto-creating a missing directory there
+/// would mask "nothing to resume" with a different, equally wrong, empty
+/// state.
+fn ensure_local_output_dir(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path).map_err(|err| format!("failed to create {}: {err}", path.display()))
+}
+
 fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
     let mut value = bytes as f64;
@@ -327,6 +340,10 @@ async fn dispatch_async(
             return 0;
         }
         Err(err) => return fail(err),
+    }
+
+    if let Err(err) = ensure_local_output_dir(&job.local_output) {
+        return fail(err);
     }
 
     let run_id = report_upload::generate_run_id();
@@ -588,6 +605,42 @@ mod tests {
         let path = default_local_output();
         assert!(path.starts_with(std::env::temp_dir()));
         assert_eq!(path.file_name().unwrap(), "pigeon-job");
+    }
+
+    #[test]
+    fn ensure_local_output_dir_creates_a_missing_nested_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("does").join("not").join("exist-yet");
+        assert!(!target.exists());
+
+        ensure_local_output_dir(&target).unwrap();
+
+        assert!(target.is_dir());
+    }
+
+    #[test]
+    fn ensure_local_output_dir_is_a_no_op_when_the_directory_already_exists() {
+        let dir = tempfile::tempdir().unwrap();
+
+        ensure_local_output_dir(dir.path()).unwrap();
+
+        assert!(dir.path().is_dir());
+    }
+
+    #[test]
+    fn ensure_local_output_dir_reports_a_clear_error_on_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        // A plain file where a path component needs to be a directory, so
+        // `create_dir_all` fails with a real OS error (ENOTDIR) rather than
+        // succeeding -- confirms the error message names the offending path.
+        let blocker = dir.path().join("blocker");
+        fs::write(&blocker, b"not a directory").unwrap();
+        let target = blocker.join("nested");
+
+        let err = ensure_local_output_dir(&target).unwrap_err();
+
+        assert!(err.contains("failed to create"));
+        assert!(err.contains(&target.display().to_string()));
     }
 
     #[test]
