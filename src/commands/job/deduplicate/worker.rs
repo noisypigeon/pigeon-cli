@@ -48,7 +48,10 @@ fn is_zip_key(key: &str) -> bool {
 /// task's own `display_key`, unchanged through every descendant -- it never
 /// participates in path computation, only in tracking whether *any*
 /// descendant of a given root failed or lost data, so that root can be
-/// excluded from the checkpoint (ADR-0098).
+/// excluded from the checkpoint (ADR-0098). `bucket_alias` (ADR-0109) names
+/// which of this run's (possibly several) source buckets this item's root
+/// task came from -- copied unchanged onto every zip-member descendant,
+/// since a zip's members always share their parent's bucket.
 #[derive(Debug)]
 struct QueueItem {
     source_key: Option<String>,
@@ -57,6 +60,7 @@ struct QueueItem {
     depth: u32,
     size: u64,
     root_key: String,
+    bucket_alias: String,
 }
 
 #[derive(Debug, Default)]
@@ -134,8 +138,7 @@ enum ItemOutcome {
 /// warning logged here would be missing the `command`/`instance` fields
 /// the rest of `pigeon.jsonl` relies on.
 async fn process_item(
-    bucket_config: &BucketConfig,
-    secret: &str,
+    buckets: &HashMap<String, (BucketConfig, String)>,
     item: QueueItem,
     raw_dir: &Path,
     counter: &Arc<AtomicU64>,
@@ -162,6 +165,15 @@ async fn process_item(
     let path = match item.path {
         Some(path) => path,
         None => {
+            let Some((bucket_config, secret)) = buckets.get(&item.bucket_alias) else {
+                tracing::warn!(key = %item.display_key, bucket_alias = %item.bucket_alias, step = "download", "unknown source bucket alias");
+                return (
+                    root_key,
+                    ItemOutcome::Failed {
+                        category: FailureCategory::Download,
+                    },
+                );
+            };
             let key = item.source_key.as_deref().unwrap_or(&item.display_key);
             if let Err(err) = download::check_disk_space(raw_dir, item.size) {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "not enough disk space");
@@ -256,6 +268,7 @@ async fn process_item(
                         depth: depth + 1,
                         size: member.size,
                         root_key: root_key.clone(),
+                        bucket_alias: item.bucket_alias.clone(),
                     })
                     .collect();
                 ItemOutcome::ZipExpanded {
@@ -294,6 +307,7 @@ async fn process_item(
             depth,
             file: HashedFile {
                 original_key: item.display_key,
+                bucket_alias: item.bucket_alias,
                 scratch_path: path,
                 extension,
                 content_hash,
@@ -346,15 +360,26 @@ pub(crate) struct DeduplicateSummary {
 /// filtered against the `.processed` checkpoint) are downloaded/expanded/
 /// hashed concurrently at `concurrency`, placed sequentially (dedup +
 /// report), then uploaded (if `remote` is given) -- always unencrypted.
+/// `source_buckets` (ADR-0109) holds every source bucket this run can pull
+/// from, keyed by alias at the top so each queued item's own
+/// `bucket_alias` resolves to the right `(BucketConfig, secret)` pair.
 pub(crate) async fn run_deduplicate_job(
-    bucket_config: &BucketConfig,
-    secret: &str,
+    source_buckets: &[(BucketConfig, String)],
     local_output: &Path,
     tasks: Vec<DeduplicateTask>,
     concurrency: usize,
     upload_concurrency: usize,
     remote: Option<(&BucketConfig, &str)>,
 ) -> Result<DeduplicateSummary, String> {
+    let buckets: HashMap<String, (BucketConfig, String)> = source_buckets
+        .iter()
+        .map(|(bucket_config, secret)| {
+            (
+                bucket_config.alias.clone(),
+                (bucket_config.clone(), secret.clone()),
+            )
+        })
+        .collect();
     crate::observability::metrics::set_macro_phase("deduplicate", false);
     let staging_dir = local_output.join(".staging");
     let raw_dir = staging_dir.join("raw");
@@ -380,26 +405,33 @@ pub(crate) async fn run_deduplicate_job(
                 depth: 0,
                 size: task.size,
                 root_key: task.key,
+                bucket_alias: task.bucket_alias,
             })
             .collect(),
     ));
     let in_flight = Arc::new(AtomicUsize::new(0));
 
     let hashed_files = Arc::new(Mutex::new(Vec::<HashedFile>::new()));
-    let finished_root_keys = Arc::new(Mutex::new(Vec::<String>::new()));
+    // `(bucket_alias, root_key)` -- compound-keyed (ADR-0109), same
+    // collision reasoning as the `.processed` checkpoint itself: two
+    // different source buckets can share an identical root key string, so
+    // tracking by bare key alone could taint/finish the wrong bucket's root.
+    let finished_root_keys = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     let failure_breakdown = Arc::new(Mutex::new(FailureBreakdown::default()));
     let dropped_members = Arc::new(AtomicUsize::new(0));
     // Any root whose descendant failed outright, or lost a member to the
     // extraction-ratio cap, is excluded from the checkpoint below -- a root
     // zip was previously checkpointed unconditionally the moment it
     // expanded, regardless of what happened to its members, so a rerun
-    // could never retry silently-dropped data (ADR-0098).
-    let tainted_roots = Arc::new(Mutex::new(HashSet::<String>::new()));
+    // could never retry silently-dropped data (ADR-0098). Compound-keyed by
+    // `(bucket_alias, root_key)` for the same reason as `finished_root_keys`
+    // above.
+    let tainted_roots = Arc::new(Mutex::new(HashSet::<(String, String)>::new()));
     // Top-level AppleDouble objects skipped before any download/open
     // attempt -- checkpointed unconditionally, separately from
     // `finished_root_keys` (ADR-0107; see the checkpoint loop below for why
     // these can't just reuse that list's `is_zip_key` retain gate).
-    let apple_double_skipped_roots = Arc::new(Mutex::new(Vec::<String>::new()));
+    let apple_double_skipped_roots = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     // Archives that genuinely failed to open (password-protected, corrupt,
     // etc.), itemized by key/error so a run's report can point at exactly
     // which ones need a human, instead of only a count (ADR-0107).
@@ -419,8 +451,7 @@ pub(crate) async fn run_deduplicate_job(
         let apple_double_skipped_roots = Arc::clone(&apple_double_skipped_roots);
         let archive_failures = Arc::clone(&archive_failures);
         let counter = Arc::clone(&counter);
-        let bucket_config = bucket_config.clone();
-        let secret = secret.to_string();
+        let buckets = buckets.clone();
         let raw_dir = raw_dir.clone();
         let announce = announce.clone();
         let bar = bar.clone();
@@ -438,9 +469,9 @@ pub(crate) async fn run_deduplicate_job(
                     };
                     in_flight.fetch_add(1, Ordering::SeqCst);
 
+                    let bucket_alias = item.bucket_alias.clone();
                     let (root_key, outcome) =
-                        process_item(&bucket_config, &secret, item, &raw_dir, &counter, &announce)
-                            .await;
+                        process_item(&buckets, item, &raw_dir, &counter, &announce).await;
 
                     match outcome {
                         ItemOutcome::ZipExpanded {
@@ -453,22 +484,28 @@ pub(crate) async fn run_deduplicate_job(
                                 "deduplicate",
                                 "archive",
                                 "ok",
-                                Some(bucket_config.alias.as_str()),
+                                Some(bucket_alias.as_str()),
                             );
                             bar.inc_length(members.len() as u64);
                             queue.lock().unwrap().extend(members);
                             if depth == 0 {
-                                finished_root_keys.lock().unwrap().push(display_key);
+                                finished_root_keys
+                                    .lock()
+                                    .unwrap()
+                                    .push((bucket_alias.clone(), display_key));
                             }
                             if dropped > 0 {
                                 failure_breakdown.lock().unwrap().archive += dropped;
                                 dropped_members.fetch_add(dropped, Ordering::SeqCst);
-                                tainted_roots.lock().unwrap().insert(root_key);
+                                tainted_roots
+                                    .lock()
+                                    .unwrap()
+                                    .insert((bucket_alias.clone(), root_key));
                                 crate::observability::metrics::record_phase(
                                     "deduplicate",
                                     "archive",
                                     "failed",
-                                    Some(bucket_config.alias.as_str()),
+                                    Some(bucket_alias.as_str()),
                                 );
                             }
                         }
@@ -477,26 +514,32 @@ pub(crate) async fn run_deduplicate_job(
                                 "deduplicate",
                                 "hash",
                                 "ok",
-                                Some(bucket_config.alias.as_str()),
+                                Some(bucket_alias.as_str()),
                             );
                             if depth == 0 {
                                 finished_root_keys
                                     .lock()
                                     .unwrap()
-                                    .push(file.original_key.clone());
+                                    .push((bucket_alias.clone(), file.original_key.clone()));
                             }
                             hashed_files.lock().unwrap().push(file);
                         }
                         ItemOutcome::SkippedAppleDouble { depth } => {
                             if depth == 0 {
-                                apple_double_skipped_roots.lock().unwrap().push(root_key);
+                                apple_double_skipped_roots
+                                    .lock()
+                                    .unwrap()
+                                    .push((bucket_alias, root_key));
                             }
                             // Deliberately no failure_breakdown/metrics bump
                             // -- this is not a failure (ADR-0107's whole
                             // point).
                         }
                         ItemOutcome::ArchiveOpenFailed { key, error } => {
-                            tainted_roots.lock().unwrap().insert(root_key);
+                            tainted_roots
+                                .lock()
+                                .unwrap()
+                                .insert((bucket_alias.clone(), root_key));
                             failure_breakdown.lock().unwrap().archive += 1;
                             archive_failures
                                 .lock()
@@ -506,11 +549,14 @@ pub(crate) async fn run_deduplicate_job(
                                 "deduplicate",
                                 "archive",
                                 "failed",
-                                Some(bucket_config.alias.as_str()),
+                                Some(bucket_alias.as_str()),
                             );
                         }
                         ItemOutcome::Failed { category } => {
-                            tainted_roots.lock().unwrap().insert(root_key);
+                            tainted_roots
+                                .lock()
+                                .unwrap()
+                                .insert((bucket_alias.clone(), root_key));
                             let mut breakdown = failure_breakdown.lock().unwrap();
                             let phase = match category {
                                 FailureCategory::Download => {
@@ -530,7 +576,7 @@ pub(crate) async fn run_deduplicate_job(
                                 "deduplicate",
                                 phase,
                                 "failed",
-                                Some(bucket_config.alias.as_str()),
+                                Some(bucket_alias.as_str()),
                             );
                         }
                     }
@@ -612,20 +658,22 @@ pub(crate) async fn run_deduplicate_job(
             dedup::place_and_report(&result_dir, files, &mut dedup_index, &multi_progress);
         dedup::write_report(local_output, &merge_records, &archive_failures)?;
 
-        let placed_keys: std::collections::HashSet<String> = placed_keys.into_iter().collect();
-        finished_root_keys.retain(|key| {
-            !tainted_roots.contains(key) && (placed_keys.contains(key) || is_zip_key(key))
+        let placed_keys: std::collections::HashSet<(String, String)> =
+            placed_keys.into_iter().collect();
+        finished_root_keys.retain(|(bucket_alias, key)| {
+            !tainted_roots.contains(&(bucket_alias.clone(), key.clone()))
+                && (placed_keys.contains(&(bucket_alias.clone(), key.clone())) || is_zip_key(key))
         });
-        for key in &finished_root_keys {
-            manifest::append_checkpoint(&staging_dir, key)?;
+        for (bucket_alias, key) in &finished_root_keys {
+            manifest::append_checkpoint(&staging_dir, bucket_alias, key)?;
         }
         // Checkpointed unconditionally and separately from
         // `finished_root_keys` above -- an AppleDouble object has no
         // members, so it can never satisfy that list's `placed_keys`/
         // `is_zip_key` retain gate, and it can never be tainted either
         // (ADR-0107).
-        for key in &apple_double_skipped_roots {
-            manifest::append_checkpoint(&staging_dir, key)?;
+        for (bucket_alias, key) in &apple_double_skipped_roots {
+            manifest::append_checkpoint(&staging_dir, bucket_alias, key)?;
         }
         placement_summary
     };
@@ -785,12 +833,20 @@ mod tests {
         }
     }
 
+    fn unreachable_buckets() -> HashMap<String, (BucketConfig, String)> {
+        let bucket_config = unreachable_bucket_config();
+        HashMap::from([(
+            bucket_config.alias.clone(),
+            (bucket_config, "unused-secret".to_string()),
+        )])
+    }
+
     #[tokio::test]
     async fn process_item_skips_a_top_level_apple_double_zip_without_downloading() {
         let dir = tempfile::tempdir().unwrap();
         let raw_dir = dir.path().join("raw");
         let counter = Arc::new(AtomicU64::new(0));
-        let bucket_config = unreachable_bucket_config();
+        let buckets = unreachable_buckets();
 
         let item = QueueItem {
             source_key: Some("Facebook/KGraysen/._export-part-2.zip".to_string()),
@@ -799,11 +855,11 @@ mod tests {
             depth: 0,
             size: 4096,
             root_key: "Facebook/KGraysen/._export-part-2.zip".to_string(),
+            bucket_alias: "unused".to_string(),
         };
 
         let (_root_key, outcome) = process_item(
-            &bucket_config,
-            "unused-secret",
+            &buckets,
             item,
             &raw_dir,
             &counter,
@@ -824,7 +880,7 @@ mod tests {
         let raw_dir = dir.path().join("raw");
         fs::create_dir_all(&raw_dir).unwrap();
         let counter = Arc::new(AtomicU64::new(0));
-        let bucket_config = unreachable_bucket_config();
+        let buckets = unreachable_buckets();
 
         let zip_path = raw_dir.join("something.zip");
         let file = fs::File::create(&zip_path).unwrap();
@@ -846,11 +902,11 @@ mod tests {
             depth: 0,
             size: 0,
             root_key: "something.zip".to_string(),
+            bucket_alias: "unused".to_string(),
         };
 
         let (_root_key, outcome) = process_item(
-            &bucket_config,
-            "unused-secret",
+            &buckets,
             item,
             &raw_dir,
             &counter,
@@ -873,7 +929,7 @@ mod tests {
         let raw_dir = dir.path().join("raw");
         fs::create_dir_all(&raw_dir).unwrap();
         let counter = Arc::new(AtomicU64::new(0));
-        let bucket_config = unreachable_bucket_config();
+        let buckets = unreachable_buckets();
 
         let zip_path = raw_dir.join("some.zip");
         fs::write(&zip_path, b"not really a zip, just opaque bytes").unwrap();
@@ -885,11 +941,11 @@ mod tests {
             depth: 0,
             size: 0,
             root_key: "some.zip".to_string(),
+            bucket_alias: "unused".to_string(),
         };
 
         let (_root_key, outcome) = process_item(
-            &bucket_config,
-            "unused-secret",
+            &buckets,
             item,
             &raw_dir,
             &counter,

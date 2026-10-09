@@ -59,7 +59,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                 JobType::Deduplicate {
                     source_bucket,
                     local_output,
-                    remote_output,
+                    destination_bucket,
                     concurrency,
                     upload_concurrency,
                     upload_only,
@@ -68,7 +68,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                 } => deduplicate::wizard::dispatch(
                     source_bucket,
                     local_output,
-                    remote_output,
+                    destination_bucket,
                     concurrency,
                     upload_concurrency,
                     upload_only,

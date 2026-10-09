@@ -718,7 +718,7 @@ fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
         .success()
         .stdout(predicate::str::contains("--source-bucket"))
         .stdout(predicate::str::contains("--local-output"))
-        .stdout(predicate::str::contains("--remote-output"))
+        .stdout(predicate::str::contains("--destination-bucket"))
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--upload-concurrency"))
         .stdout(predicate::str::contains("--upload-only"))
@@ -761,9 +761,9 @@ fn job_run_deduplicate_upload_only_without_a_completed_run_fails_fast() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
-    // No --source-bucket, no --remote-output: the preflight check (ADR-0089)
-    // must fail before either would ever be resolved, since this empty
-    // --local-output never ran a deduplicate pass at all.
+    // No --source-bucket, no --destination-bucket: the preflight check
+    // (ADR-0089) must fail before either would ever be resolved, since this
+    // empty --local-output never ran a deduplicate pass at all.
     pigeon_in(&config_dir)
         .args([
             "job",
@@ -779,6 +779,71 @@ fn job_run_deduplicate_upload_only_without_a_completed_run_fails_fast() {
         .code(1)
         .stderr(predicate::str::contains(
             "no completed deduplicate run found",
+        ));
+}
+
+#[test]
+fn job_run_deduplicate_accepts_a_repeated_source_bucket_flag() {
+    // Two --source-bucket occurrences (ADR-0109) -- neither bucket exists,
+    // so this just exercises that the repeated flag parses into a Vec and
+    // every alias gets validated (the second, unknown one is what trips the
+    // failure), not that a real multi-bucket run succeeds end-to-end.
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "deduplicate",
+            "--source-bucket",
+            "no-such-bucket-a",
+            "--source-bucket",
+            "no-such-bucket-b",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no bucket-config named 'no-such-bucket-a'",
+        ));
+}
+
+#[test]
+fn job_run_deduplicate_upload_only_without_destination_bucket_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    // A completed-looking prior run, so the preflight check passes and
+    // --destination-bucket's own resolution is actually reached.
+    fs::create_dir_all(local_output.path().join(".staging")).unwrap();
+    fs::write(
+        local_output.path().join(".staging").join(".processed"),
+        b"bucket-a\ta.txt\n",
+    )
+    .unwrap();
+    fs::create_dir_all(local_output.path().join("result")).unwrap();
+    fs::write(local_output.path().join("result").join("a.txt"), b"a").unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "deduplicate",
+            "--upload-only",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--destination-bucket is required with --upload-only",
         ));
 }
 

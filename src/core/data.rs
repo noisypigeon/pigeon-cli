@@ -31,17 +31,23 @@ pub(crate) trait Dedup {
 /// empty when the entry predates ADR-0099 or was committed by a caller that
 /// only ever uses the plain `Dedup::commit` (original key is never
 /// retroactively backfilled, since a hash is only ever committed once).
+/// `source_bucket_alias` (ADR-0109) is likewise empty unless committed via
+/// `commit_with_key_and_bucket` -- only `deduplicate::dedup` does that
+/// today, to record which of its (possibly several) source buckets a kept
+/// file came from.
 #[derive(Clone)]
 struct ContentIndexEntry {
     relative_path: String,
     original_key: String,
+    source_bucket_alias: String,
 }
 
 /// One dotfile's worth of `<hex-md5>\t<relative-path>\t<original-key>`
-/// entries -- a durable, append-only content-hash index backing
-/// byte-identical-content deduplication (originally ADR-0012, for `pigeon
-/// email`'s message/attachment dedup; genericized by ADR-0020 for reuse by
-/// other transforms; relocated by ADR-0023; gained the tab-separated
+/// entries (optionally a 4th `\t<source-bucket-alias>` field, ADR-0109) --
+/// a durable, append-only content-hash index backing byte-identical-content
+/// deduplication (originally ADR-0012, for `pigeon email`'s message/
+/// attachment dedup; genericized by ADR-0020 for reuse by other
+/// transforms; relocated by ADR-0023; gained the tab-separated
 /// `original-key` field in ADR-0099). The relative path stored is
 /// caller-defined -- typically relative to wherever that caller's own
 /// transformed output lives.
@@ -54,11 +60,13 @@ pub(crate) struct ContentIndex {
 impl ContentIndex {
     /// Loads `staging_dir/file_name`. A missing file (first run) is an empty
     /// index. A line containing a tab is read as the current
-    /// `<hash>\t<relative_path>\t<original_key>` format (the trailing
-    /// `original_key` field is optional, for forward compatibility); a line
-    /// with no tab falls back to the pre-ADR-0099
-    /// `<hash> <relative_path>` format, with `original_key` defaulting to
-    /// `""`. Lines matching neither shape are skipped leniently.
+    /// `<hash>\t<relative_path>\t<original_key>\t<source_bucket_alias>`
+    /// format (the trailing `original_key`/`source_bucket_alias` fields are
+    /// each optional, for forward compatibility with older 2-/3-field
+    /// lines); a line with no tab falls back to the pre-ADR-0099
+    /// `<hash> <relative_path>` format, with both trailing fields
+    /// defaulting to `""`. Lines matching neither shape are skipped
+    /// leniently.
     pub(crate) fn load(
         staging_dir: &Path,
         file_name: &'static str,
@@ -73,12 +81,15 @@ impl ContentIndex {
             .lines()
             .filter_map(|line| {
                 if let Some((hash, rest)) = line.split_once('\t') {
-                    let (relative_path, original_key) = rest.split_once('\t').unwrap_or((rest, ""));
+                    let (relative_path, rest) = rest.split_once('\t').unwrap_or((rest, ""));
+                    let (original_key, source_bucket_alias) =
+                        rest.split_once('\t').unwrap_or((rest, ""));
                     Some((
                         hash.to_string(),
                         ContentIndexEntry {
                             relative_path: relative_path.to_string(),
                             original_key: original_key.to_string(),
+                            source_bucket_alias: source_bucket_alias.to_string(),
                         },
                     ))
                 } else {
@@ -88,6 +99,7 @@ impl ContentIndex {
                             ContentIndexEntry {
                                 relative_path: relative_path.to_string(),
                                 original_key: String::new(),
+                                source_bucket_alias: String::new(),
                             },
                         )
                     })
@@ -110,12 +122,23 @@ impl ContentIndex {
     }
 
     /// Like `check`, but also returns the original source key of the kept
-    /// file (ADR-0099) -- `""` when the entry predates ADR-0099 or was
-    /// committed via the plain `commit`/`Dedup::commit`.
-    pub(crate) fn check_with_original_key(&self, hash: &str) -> Option<(&str, &str)> {
-        self.entries
-            .get(hash)
-            .map(|entry| (entry.relative_path.as_str(), entry.original_key.as_str()))
+    /// file (ADR-0099) and the source bucket alias it was downloaded from
+    /// (ADR-0109) -- both `""` when the entry predates the respective ADR
+    /// or was committed via the plain `commit`/`commit_with_key`/
+    /// `Dedup::commit`. Only `deduplicate::dedup` calls this today; every
+    /// other `ContentIndex` consumer has no multi-bucket concept and
+    /// doesn't need the extra field.
+    pub(crate) fn check_with_original_key_and_bucket(
+        &self,
+        hash: &str,
+    ) -> Option<(&str, &str, &str)> {
+        self.entries.get(hash).map(|entry| {
+            (
+                entry.relative_path.as_str(),
+                entry.original_key.as_str(),
+                entry.source_bucket_alias.as_str(),
+            )
+        })
     }
 
     /// Appends one `<hash> <relative_path>` line to `staging_dir/file_name`
@@ -130,7 +153,10 @@ impl ContentIndex {
     /// Like `commit`, but also durably records `original_key` (ADR-0099) --
     /// the source key of the file being kept under `relative_path` -- as a
     /// third tab-separated field, so a later duplicate's report row can
-    /// name where the copy it was merged into actually came from.
+    /// name where the copy it was merged into actually came from. Writes
+    /// exactly 3 tab-separated fields, unchanged since ADR-0099 -- every
+    /// caller except `deduplicate::dedup` (which uses
+    /// `commit_with_key_and_bucket` instead) still goes through this.
     pub(crate) fn commit_with_key(
         &mut self,
         hash: &str,
@@ -150,6 +176,44 @@ impl ContentIndex {
             ContentIndexEntry {
                 relative_path: relative_path.to_string(),
                 original_key: original_key.to_string(),
+                source_bucket_alias: String::new(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Like `commit_with_key`, but also durably records which source
+    /// bucket-config `original_key` was downloaded from (ADR-0109), as a
+    /// 4th tab-separated field -- so a later duplicate's report row can
+    /// name not just which key was kept, but which of this run's (possibly
+    /// several) source buckets it came from. Only `deduplicate::dedup`
+    /// calls this; every other `ContentIndex` consumer (`pull_transform`,
+    /// `email_sync`, `email_pull`) has no multi-bucket concept and keeps
+    /// writing plain 3-field lines via `commit_with_key`.
+    pub(crate) fn commit_with_key_and_bucket(
+        &mut self,
+        hash: &str,
+        relative_path: &str,
+        original_key: &str,
+        source_bucket_alias: &str,
+    ) -> Result<(), String> {
+        let path = self.staging_dir.join(self.file_name);
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
+        writeln!(
+            file,
+            "{hash}\t{relative_path}\t{original_key}\t{source_bucket_alias}"
+        )
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        self.entries.insert(
+            hash.to_string(),
+            ContentIndexEntry {
+                relative_path: relative_path.to_string(),
+                original_key: original_key.to_string(),
+                source_bucket_alias: source_bucket_alias.to_string(),
             },
         );
         Ok(())
@@ -519,15 +583,38 @@ mod tests {
 
         assert_eq!(index.check("hash-a"), Some("pdf/report.pdf"));
         assert_eq!(
-            index.check_with_original_key("hash-a"),
-            Some(("pdf/report.pdf", "docs/report.pdf"))
+            index.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf", ""))
         );
 
         // Reload from disk to confirm the 3-field line persisted correctly.
         let reloaded = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
         assert_eq!(
-            reloaded.check_with_original_key("hash-a"),
-            Some(("pdf/report.pdf", "docs/report.pdf"))
+            reloaded.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf", ""))
+        );
+    }
+
+    #[test]
+    fn content_index_commit_with_key_and_bucket_round_trips_the_source_bucket_alias() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut index = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+
+        index
+            .commit_with_key_and_bucket("hash-a", "pdf/report.pdf", "docs/report.pdf", "bucket-a")
+            .unwrap();
+
+        assert_eq!(index.check("hash-a"), Some("pdf/report.pdf"));
+        assert_eq!(
+            index.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf", "bucket-a"))
+        );
+
+        // Reload from disk to confirm the 4-field line persisted correctly.
+        let reloaded = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+        assert_eq!(
+            reloaded.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf", "bucket-a"))
         );
     }
 
@@ -539,8 +626,8 @@ mod tests {
         index.commit("hash-a", "pdf/report.pdf").unwrap();
 
         assert_eq!(
-            index.check_with_original_key("hash-a"),
-            Some(("pdf/report.pdf", ""))
+            index.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "", ""))
         );
     }
 
@@ -557,8 +644,25 @@ mod tests {
 
         assert_eq!(index.check("hash-a"), Some("pdf/report.pdf"));
         assert_eq!(
-            index.check_with_original_key("hash-a"),
-            Some(("pdf/report.pdf", ""))
+            index.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "", ""))
+        );
+    }
+
+    #[test]
+    fn content_index_load_is_backward_compatible_with_the_old_3_field_format() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join(".content-hashes"),
+            "hash-a\tpdf/report.pdf\tdocs/report.pdf\n",
+        )
+        .unwrap();
+
+        let index = ContentIndex::load(dir.path(), ".content-hashes").unwrap();
+
+        assert_eq!(
+            index.check_with_original_key_and_bucket("hash-a"),
+            Some(("pdf/report.pdf", "docs/report.pdf", ""))
         );
     }
 
