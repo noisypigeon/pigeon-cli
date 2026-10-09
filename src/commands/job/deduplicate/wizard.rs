@@ -1,12 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use dialoguer::Input;
+use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
-    ConfirmInput, CpuConcurrencyInput, SourceBucketInput, UploadConcurrencyInput, UploadTargetInput,
+    ConfirmInput, CpuConcurrencyInput, UploadConcurrencyInput, UploadTargetInput,
 };
+use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
@@ -16,6 +17,92 @@ use crate::core::wizard::WizardInput;
 use super::DeduplicateJob;
 use super::manifest::{self, TypeSummary};
 use super::worker;
+
+/// Resolves which bucket-config(s) to pull from and combine into one
+/// shared staging tree -- mandatory, at least one required (ADR-0109).
+/// Deliberately a `deduplicate`-local type, not a generalization of
+/// `shared_wizard::SourceBucketInput` (which stays single-alias for its
+/// other consumer, `pull_transform::wizard`) -- per this codebase's
+/// "duplicate until the third consumer" precedent (ADR-0082's own
+/// Out-of-scope section), one consumer doesn't justify generalizing a
+/// shared type. Shaped after `email_sync::wizard::IdentitiesInput`, the
+/// closest existing "mandatory, no-safe-default, multi-value, alias-
+/// resolved" wizard input.
+struct SourceBucketsInput<'a> {
+    flag: Vec<String>,
+    store: &'a Store,
+}
+
+impl WizardInput for SourceBucketsInput<'_> {
+    type Value = Vec<String>;
+
+    fn flag_value(&self) -> Option<Result<Vec<String>, String>> {
+        if self.flag.is_empty() {
+            return None;
+        }
+        Some(
+            self.flag
+                .iter()
+                .map(|alias| {
+                    self.store
+                        .bucket_configs()
+                        .find(|bucket_config| &bucket_config.alias == alias)
+                        .map(|_| alias.clone())
+                        .ok_or_else(|| format!("no bucket-config named '{alias}'"))
+                })
+                .collect(),
+        )
+    }
+
+    fn prompt(&self) -> Result<Vec<String>, String> {
+        let all: Vec<&BucketConfig> = self.store.bucket_configs().collect();
+        if all.is_empty() {
+            return Err(
+                "no bucket-configs configured; run 'pigeon keyring add bucket' first".to_string(),
+            );
+        }
+        let labels: Vec<String> = all
+            .iter()
+            .map(|bucket_config| {
+                format!(
+                    "{} ({}, {})",
+                    bucket_config.alias, bucket_config.endpoint, bucket_config.bucket
+                )
+            })
+            .collect();
+        let selected = MultiSelect::with_theme(&ColorfulTheme::default())
+            .with_prompt("Select source bucket-config(s)")
+            .items(&labels)
+            .interact()
+            .map_err(|err| format!("failed to read bucket selection: {err}"))?;
+        if selected.is_empty() {
+            return Err("at least one source bucket-config must be selected".to_string());
+        }
+        Ok(selected
+            .into_iter()
+            .map(|index| all[index].alias.clone())
+            .collect())
+    }
+
+    fn non_interactive_fallback(&self) -> Result<Vec<String>, String> {
+        Err("--source-bucket is required when not running interactively".to_string())
+    }
+}
+
+/// Looks up `alias` against `store`'s configured bucket-configs and fetches
+/// its keychain secret -- the same three-step lookup every job's other
+/// bucket-config inputs already do (e.g. `report_upload::resolve`). Used to
+/// resolve each of `SourceBucketsInput`'s already-validated aliases into a
+/// usable `(BucketConfig, secret)` pair.
+fn resolve_bucket(alias: &str, store: &Store) -> Result<(BucketConfig, String), String> {
+    let bucket_config = store
+        .bucket_configs()
+        .find(|bucket_config| bucket_config.alias == alias)
+        .ok_or_else(|| format!("no bucket-config named '{alias}'"))?
+        .clone();
+    let secret = credentials::get_secret(&bucket_config.alias)?;
+    Ok((bucket_config, secret))
+}
 
 fn default_local_output() -> PathBuf {
     std::env::temp_dir().join("pigeon-job")
@@ -82,9 +169,9 @@ fn print_type_summary(summaries: &[TypeSummary]) {
 /// Entry point for `pigeon job run deduplicate` (ADR-0082).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
-    source_bucket: Option<String>,
+    source_bucket: Vec<String>,
     local_output: Option<PathBuf>,
-    remote_output: Option<String>,
+    destination_bucket: Option<String>,
     concurrency: Option<usize>,
     upload_concurrency: Option<usize>,
     upload_only: bool,
@@ -102,7 +189,7 @@ pub fn dispatch(
     runtime.block_on(dispatch_async(
         source_bucket,
         local_output,
-        remote_output,
+        destination_bucket,
         concurrency,
         upload_concurrency,
         upload_only,
@@ -114,9 +201,9 @@ pub fn dispatch(
 
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_async(
-    source_bucket: Option<String>,
+    source_bucket: Vec<String>,
     local_output: Option<PathBuf>,
-    remote_output: Option<String>,
+    destination_bucket: Option<String>,
     concurrency: Option<usize>,
     upload_concurrency: Option<usize>,
     upload_only: bool,
@@ -141,7 +228,7 @@ async fn dispatch_async(
     if upload_only {
         return dispatch_upload_only(
             local_output,
-            remote_output,
+            destination_bucket,
             upload_concurrency,
             report_bucket,
             job_name,
@@ -151,24 +238,21 @@ async fn dispatch_async(
         .await;
     }
 
-    let source_alias = match (SourceBucketInput {
+    let source_aliases = match (SourceBucketsInput {
         flag: source_bucket,
         store: &keyring_store,
     })
     .resolve()
     {
-        Ok(alias) => alias,
+        Ok(aliases) => aliases,
         Err(err) => return fail(err),
     };
-    let source_bucket_config = match keyring_store
-        .bucket_configs()
-        .find(|bucket_config| bucket_config.alias == source_alias)
+    let source_buckets = match source_aliases
+        .iter()
+        .map(|alias| resolve_bucket(alias, &keyring_store))
+        .collect::<Result<Vec<_>, _>>()
     {
-        Some(bucket_config) => bucket_config.clone(),
-        None => return fail(format!("no bucket-config named '{source_alias}'")),
-    };
-    let source_secret = match credentials::get_secret(&source_bucket_config.alias) {
-        Ok(secret) => secret,
+        Ok(buckets) => buckets,
         Err(err) => return fail(err),
     };
 
@@ -178,8 +262,7 @@ async fn dispatch_async(
     };
 
     let mut job = DeduplicateJob {
-        source_bucket: source_bucket_config,
-        source_secret,
+        source_buckets,
         local_output,
         remote: None,
     };
@@ -196,7 +279,7 @@ async fn dispatch_async(
     println!("{} pending object(s) found.", plan.tasks.len());
 
     let resolved_remote_alias = match (UploadTargetInput {
-        flag: remote_output,
+        flag: destination_bucket,
         store: &keyring_store,
     })
     .resolve()
@@ -328,7 +411,7 @@ fn upload_only_preflight_ok(local_output: &Path) -> bool {
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_upload_only(
     local_output: Option<PathBuf>,
-    remote_output: Option<String>,
+    destination_bucket: Option<String>,
     upload_concurrency: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
@@ -348,13 +431,13 @@ async fn dispatch_upload_only(
     }
 
     let remote_alias = match (UploadTargetInput {
-        flag: remote_output,
+        flag: destination_bucket,
         store: keyring_store,
     })
     .resolve()
     {
         Ok(Some(alias)) => alias,
-        Ok(None) => return fail("--remote-output is required with --upload-only"),
+        Ok(None) => return fail("--destination-bucket is required with --upload-only"),
         Err(err) => return fail(err),
     };
     let remote_bucket_config = match keyring_store

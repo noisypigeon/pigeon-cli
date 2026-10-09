@@ -28,10 +28,13 @@ impl Dedup for DeduplicateDedup {
 
 /// One file finished the concurrent download/expand/hash pipeline,
 /// awaiting placement -- `scratch_path` points at its bytes sitting outside
-/// the final `result/<extension>/` tree.
+/// the final `result/<extension>/` tree. `bucket_alias` (ADR-0109) names
+/// which of this run's (possibly several) source buckets `original_key` was
+/// downloaded from.
 #[derive(Debug)]
 pub(crate) struct HashedFile {
     pub original_key: String,
+    pub bucket_alias: String,
     pub scratch_path: PathBuf,
     pub extension: String,
     pub content_hash: String,
@@ -41,11 +44,16 @@ pub(crate) struct HashedFile {
 /// (`write_report`). `kept_original_key` (ADR-0099) is the source key of
 /// whichever file was kept under `kept_path` -- blank when that hash was
 /// committed before ADR-0099 (never retroactively backfilled, since a hash
-/// is only ever committed once).
+/// is only ever committed once). `duplicate_bucket_alias`/
+/// `kept_bucket_alias` (ADR-0109) name which source bucket the duplicate
+/// and the kept copy respectively came from -- both blank under the same
+/// pre-ADR-0109 circumstances as `kept_original_key`.
 pub(crate) struct MergeRecord {
     pub duplicate_key: String,
+    pub duplicate_bucket_alias: String,
     pub kept_path: String,
     pub kept_original_key: String,
+    pub kept_bucket_alias: String,
     pub content_hash: String,
 }
 
@@ -79,13 +87,16 @@ fn is_undated_key(key: &str) -> bool {
 ///
 /// A single file's placement failure is logged and simply omitted from the
 /// returned `finished_keys` list (retried next run), rather than aborting
-/// the whole pass.
+/// the whole pass. Each `finished_keys` entry is `(bucket_alias, key)`
+/// (ADR-0109), compound-keyed for the same collision reason as every other
+/// cross-bucket tracking structure in this job (two source buckets can
+/// share an identical key string).
 pub(crate) fn place_and_report(
     result_dir: &Path,
     mut files: Vec<HashedFile>,
     dedup: &mut DeduplicateDedup,
     multi_progress: &MultiProgress,
-) -> (PlacementSummary, Vec<MergeRecord>, Vec<String>) {
+) -> (PlacementSummary, Vec<MergeRecord>, Vec<(String, String)>) {
     files.sort_by(|a, b| {
         is_undated_key(&a.original_key)
             .cmp(&is_undated_key(&b.original_key))
@@ -99,17 +110,22 @@ pub(crate) fn place_and_report(
 
     for file in files {
         bar.inc(1);
-        match dedup.0.check_with_original_key(&file.content_hash) {
-            Some((kept_path, kept_original_key)) => {
+        match dedup
+            .0
+            .check_with_original_key_and_bucket(&file.content_hash)
+        {
+            Some((kept_path, kept_original_key, kept_bucket_alias)) => {
                 records.push(MergeRecord {
                     duplicate_key: file.original_key.clone(),
+                    duplicate_bucket_alias: file.bucket_alias.clone(),
                     kept_path: kept_path.to_string(),
                     kept_original_key: kept_original_key.to_string(),
+                    kept_bucket_alias: kept_bucket_alias.to_string(),
                     content_hash: file.content_hash.clone(),
                 });
                 let _ = fs::remove_file(&file.scratch_path);
                 summary.duplicates_skipped += 1;
-                finished_keys.push(file.original_key);
+                finished_keys.push((file.bucket_alias, file.original_key));
             }
             None => {
                 if let Err(err) = place_one(result_dir, &file, dedup) {
@@ -130,7 +146,7 @@ pub(crate) fn place_and_report(
                 }
                 summary.placed += 1;
                 crate::observability::metrics::record_phase("deduplicate", "placement", "ok", None);
-                finished_keys.push(file.original_key);
+                finished_keys.push((file.bucket_alias, file.original_key));
             }
         }
     }
@@ -168,9 +184,12 @@ fn place_one(
         file.extension,
         final_path.file_name().unwrap().to_string_lossy()
     );
-    dedup
-        .0
-        .commit_with_key(&file.content_hash, &relative_path, &file.original_key)
+    dedup.0.commit_with_key_and_bucket(
+        &file.content_hash,
+        &relative_path,
+        &file.original_key,
+        &file.bucket_alias,
+    )
 }
 
 /// Writes a plain-text, tab-separated merge report to
@@ -179,16 +198,26 @@ fn place_one(
 /// report lives at a predictable, scriptable path every run (ADR-0082 §5).
 /// `kept_original_key` (ADR-0099) is blank whenever the kept copy's hash
 /// predates that change -- see `MergeRecord`'s doc comment.
+/// `duplicate_bucket_alias`/`kept_bucket_alias` (ADR-0109) are appended as
+/// trailing columns rather than interspersed, so anything already parsing
+/// this file's first four columns positionally keeps working.
 pub(crate) fn write_report(
     local_output: &Path,
     records: &[MergeRecord],
     archive_failures: &[archive::ArchiveFailure],
 ) -> Result<(), String> {
-    let mut contents = String::from("duplicate_key\tcontent_hash\tkept_path\tkept_original_key\n");
+    let mut contents = String::from(
+        "duplicate_key\tcontent_hash\tkept_path\tkept_original_key\tduplicate_bucket_alias\tkept_bucket_alias\n",
+    );
     for record in records {
         contents.push_str(&format!(
-            "{}\t{}\t{}\t{}\n",
-            record.duplicate_key, record.content_hash, record.kept_path, record.kept_original_key
+            "{}\t{}\t{}\t{}\t{}\t{}\n",
+            record.duplicate_key,
+            record.content_hash,
+            record.kept_path,
+            record.kept_original_key,
+            record.duplicate_bucket_alias,
+            record.kept_bucket_alias
         ));
     }
     contents.push_str(&format!("\n{} duplicate(s) removed.\n", records.len()));
@@ -227,6 +256,7 @@ mod tests {
 
         let file = HashedFile {
             original_key: "docs/report.pdf".to_string(),
+            bucket_alias: "bucket-a".to_string(),
             scratch_path: stage_scratch(staging.path(), "scratch.pdf", b"pdf-bytes"),
             extension: "pdf".to_string(),
             content_hash: "hash-a".to_string(),
@@ -242,7 +272,10 @@ mod tests {
         assert_eq!(summary.placed, 1);
         assert_eq!(summary.duplicates_skipped, 0);
         assert!(records.is_empty());
-        assert_eq!(finished_keys, vec!["docs/report.pdf".to_string()]);
+        assert_eq!(
+            finished_keys,
+            vec![("bucket-a".to_string(), "docs/report.pdf".to_string())]
+        );
         assert!(result_dir.path().join("pdf/report.pdf").exists());
         assert_eq!(dedup.check("hash-a"), Some("pdf/report.pdf"));
     }
@@ -255,6 +288,7 @@ mod tests {
 
         let file = HashedFile {
             original_key: "archive.zip!README".to_string(),
+            bucket_alias: "bucket-a".to_string(),
             scratch_path: stage_scratch(staging.path(), "scratch.bin", b"readme-bytes"),
             extension: "(none)".to_string(),
             content_hash: "hash-readme".to_string(),
@@ -268,7 +302,10 @@ mod tests {
         );
 
         assert_eq!(summary.placed, 1);
-        assert_eq!(finished_keys, vec!["archive.zip!README".to_string()]);
+        assert_eq!(
+            finished_keys,
+            vec![("bucket-a".to_string(), "archive.zip!README".to_string())]
+        );
         assert!(result_dir.path().join("(none)/README").exists());
         assert!(!result_dir.path().join("zip!README").exists());
     }
@@ -279,15 +316,19 @@ mod tests {
         let result_dir = tempfile::tempdir().unwrap();
         let mut dedup = dedup_at(staging.path());
 
+        // Two different source buckets sharing the same duplicate content --
+        // exactly the cross-bucket scenario ADR-0109 adds support for.
         let files = vec![
             HashedFile {
                 original_key: "a/report.pdf".to_string(),
+                bucket_alias: "bucket-a".to_string(),
                 scratch_path: stage_scratch(staging.path(), "a.pdf", b"same-bytes"),
                 extension: "pdf".to_string(),
                 content_hash: "same-hash".to_string(),
             },
             HashedFile {
                 original_key: "b/report-copy.pdf".to_string(),
+                bucket_alias: "bucket-b".to_string(),
                 scratch_path: stage_scratch(staging.path(), "b.pdf", b"same-bytes"),
                 extension: "pdf".to_string(),
                 content_hash: "same-hash".to_string(),
@@ -301,8 +342,10 @@ mod tests {
         assert_eq!(summary.duplicates_skipped, 1);
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].duplicate_key, "b/report-copy.pdf");
+        assert_eq!(records[0].duplicate_bucket_alias, "bucket-b");
         assert_eq!(records[0].kept_path, "pdf/report.pdf");
         assert_eq!(records[0].kept_original_key, "a/report.pdf");
+        assert_eq!(records[0].kept_bucket_alias, "bucket-a");
         assert_eq!(records[0].content_hash, "same-hash");
         assert_eq!(finished_keys.len(), 2);
         assert_eq!(
@@ -338,12 +381,14 @@ mod tests {
         let files = vec![
             HashedFile {
                 original_key: "jpg/0000-00-00-image-370.jpg".to_string(),
+                bucket_alias: "bucket-a".to_string(),
                 scratch_path: stage_scratch(staging.path(), "undated.jpg", b"same-bytes"),
                 extension: "jpg".to_string(),
                 content_hash: "same-hash".to_string(),
             },
             HashedFile {
                 original_key: "2018/jpg/2018-01-02-image-12.jpg".to_string(),
+                bucket_alias: "bucket-a".to_string(),
                 scratch_path: stage_scratch(staging.path(), "dated.jpg", b"same-bytes"),
                 extension: "jpg".to_string(),
                 content_hash: "same-hash".to_string(),
@@ -380,12 +425,14 @@ mod tests {
         let files = vec![
             HashedFile {
                 original_key: "a/report.pdf".to_string(),
+                bucket_alias: "bucket-a".to_string(),
                 scratch_path: stage_scratch(staging.path(), "a.pdf", b"aaa"),
                 extension: "pdf".to_string(),
                 content_hash: "hash-a".to_string(),
             },
             HashedFile {
                 original_key: "b/report.pdf".to_string(),
+                bucket_alias: "bucket-a".to_string(),
                 scratch_path: stage_scratch(staging.path(), "b.pdf", b"bbb"),
                 extension: "pdf".to_string(),
                 content_hash: "hash-b".to_string(),
@@ -406,15 +453,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let records = vec![MergeRecord {
             duplicate_key: "b/report-copy.pdf".to_string(),
+            duplicate_bucket_alias: "bucket-b".to_string(),
             kept_path: "pdf/report.pdf".to_string(),
             kept_original_key: "a/report.pdf".to_string(),
+            kept_bucket_alias: "bucket-a".to_string(),
             content_hash: "same-hash".to_string(),
         }];
 
         write_report(dir.path(), &records, &[]).unwrap();
 
         let contents = fs::read_to_string(dir.path().join("deduplicate-report.txt")).unwrap();
-        assert!(contents.contains("b/report-copy.pdf\tsame-hash\tpdf/report.pdf\ta/report.pdf"));
+        assert!(contents.contains(
+            "b/report-copy.pdf\tsame-hash\tpdf/report.pdf\ta/report.pdf\tbucket-b\tbucket-a"
+        ));
         assert!(contents.contains("1 duplicate(s) removed."));
     }
 

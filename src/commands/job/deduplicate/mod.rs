@@ -29,10 +29,12 @@ pub(crate) use manifest::{DeduplicatePlan, gather_pending};
 pub(crate) use worker::DeduplicateSummary;
 
 /// No `encryptor` field at all -- a permanent scoping decision (ADR-0082
-/// §0), not a temporarily-unused slot.
+/// §0), not a temporarily-unused slot. `source_buckets` (ADR-0109) can name
+/// more than one bucket-config -- every one is downloaded into one shared
+/// local staging tree and deduplicated across the combined set, not
+/// per-bucket.
 pub(crate) struct DeduplicateJob {
-    pub source_bucket: BucketConfig,
-    pub source_secret: String,
+    pub source_buckets: Vec<(BucketConfig, String)>,
     pub local_output: PathBuf,
     pub remote: Option<(BucketConfig, String)>,
 }
@@ -42,12 +44,7 @@ impl Job for DeduplicateJob {
     type Summary = DeduplicateSummary;
 
     async fn gather(&self) -> Result<DeduplicatePlan, String> {
-        gather_pending(
-            &self.source_bucket,
-            &self.source_secret,
-            &self.local_output.join(".staging"),
-        )
-        .await
+        gather_pending(&self.source_buckets, &self.local_output.join(".staging")).await
     }
 
     async fn run(
@@ -61,8 +58,7 @@ impl Job for DeduplicateJob {
             .as_ref()
             .map(|(bucket_config, secret)| (bucket_config, secret.as_str()));
         worker::run_deduplicate_job(
-            &self.source_bucket,
-            &self.source_secret,
+            &self.source_buckets,
             &self.local_output,
             plan.tasks,
             concurrency,

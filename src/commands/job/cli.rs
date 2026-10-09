@@ -339,11 +339,15 @@ pub enum JobType {
     /// is no file-type or zip-expansion selection, and this job never
     /// offers encryption.
     Deduplicate {
-        /// Alias of a configured bucket-config to pull from. Interactively
-        /// selected from the configured bucket-configs when omitted and
-        /// stdin is a terminal; required otherwise.
+        /// Alias of a configured bucket-config to pull from. Repeat the
+        /// flag for more than one (`--source-bucket a --source-bucket b`)
+        /// -- every listed bucket is downloaded into one shared local
+        /// staging tree and deduplicated across the combined set, not
+        /// per-bucket (ADR-0109). Interactively multi-selected from the
+        /// configured bucket-configs when omitted and stdin is a terminal;
+        /// at least one is required otherwise.
         #[arg(long)]
-        source_bucket: Option<String>,
+        source_bucket: Vec<String>,
 
         /// Local directory to stage and store output under. Defaults to a
         /// directory under the OS temp directory when omitted.
@@ -352,9 +356,9 @@ pub enum JobType {
 
         /// Alias of a configured bucket-config to upload the deduped
         /// result to, once local processing is complete. Always uploaded
-        /// unencrypted.
+        /// unencrypted. Single bucket only (ADR-0109).
         #[arg(long)]
-        remote_output: Option<String>,
+        destination_bucket: Option<String>,
 
         /// Maximum number of files to download/hash concurrently.
         #[arg(long)]
