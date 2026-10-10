@@ -1083,3 +1083,178 @@ fn job_run_rclone_delete_without_rclone_on_path_fails_fast_with_a_clear_error() 
         .code(1)
         .stderr(predicate::str::contains("was not found on PATH"));
 }
+
+#[test]
+fn job_run_help_lists_transform() {
+    pigeon()
+        .args(["job", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("transform"));
+}
+
+#[test]
+fn job_run_transform_help_shows_input_file_type_source_path_destination_path_and_rclone_flags() {
+    pigeon()
+        .args(["job", "run", "transform", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--input-file-type"))
+        .stdout(predicate::str::contains("--source-path"))
+        .stdout(predicate::str::contains("--destination-path"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--concurrency"))
+        .stdout(predicate::str::contains("--transfers"))
+        .stdout(predicate::str::contains("--checkers"))
+        .stdout(predicate::str::contains("--tpslimit"))
+        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--yes"))
+        // ADR-0112: raw rclone path strings, not pigeon bucket-config
+        // aliases, and no separate upload phase of the shape
+        // --upload-concurrency sizes.
+        .stdout(predicate::str::contains("--source-bucket").not())
+        .stdout(predicate::str::contains("--encryption-key").not())
+        .stdout(predicate::str::contains("--upload-concurrency").not());
+}
+
+#[test]
+fn job_run_transform_without_input_file_type_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--source-path",
+            "source:png/",
+            "--destination-path",
+            "dest:jpg/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--input-file-type is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_transform_with_invalid_input_file_type_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "gif",
+            "--source-path",
+            "source:png/",
+            "--destination-path",
+            "dest:jpg/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("unknown --input-file-type 'gif'"));
+}
+
+#[test]
+fn job_run_transform_without_source_path_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--destination-path",
+            "dest:jpg/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--source-path is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_transform_without_destination_path_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--source-path",
+            "source:png/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--destination-path is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_error() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--source-path",
+            "source:png/",
+            "--destination-path",
+            "dest:jpg/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--yes",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("was not found on PATH"));
+}

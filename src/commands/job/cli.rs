@@ -408,6 +408,82 @@ pub enum JobType {
     /// by ADR-0110). See subcommands for the available actions. Requires
     /// `rclone` on `PATH`.
     Rclone(RcloneArgs),
+
+    /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
+    /// maximum-quality `.jpg` (ADR-0112): shells out to `rclone` to pull
+    /// `--source-path` into a local staging tree, transcodes/copies them
+    /// locally, then shells out to `rclone` again to push the result to
+    /// `--destination-path`. `--source-path`/`--destination-path` are raw
+    /// rclone `remote:path` strings, same semantics as the `rclone` job's
+    /// own flags of the same name -- never pigeon `BucketConfig`/keyring
+    /// aliases. Deduplication is never involved -- every output file's
+    /// name is derived deterministically and is unique by construction;
+    /// duplicate source content is deliberately retained at separate
+    /// destination names. A single transcode failure (e.g. a HEIC file the
+    /// local `ffmpeg` build can't decode) aborts the whole run, though
+    /// every file placed before the failure stays checkpointed for a
+    /// resumed rerun. Requires both `rclone` and `ffmpeg`/`ffprobe` on
+    /// `PATH`.
+    Transform {
+        /// Which input format this run transcodes: `png`, `jpeg`, or
+        /// `heic`. Interactively selected when omitted and stdin is a
+        /// terminal; required otherwise.
+        #[arg(long)]
+        input_file_type: Option<String>,
+
+        /// rclone source, e.g. `source:png/`. Interactively prompted when
+        /// omitted and stdin is a terminal; required otherwise.
+        #[arg(long)]
+        source_path: Option<String>,
+
+        /// rclone destination, e.g. `destination:jpg/`. Interactively
+        /// prompted when omitted and stdin is a terminal; required
+        /// otherwise.
+        #[arg(long)]
+        destination_path: Option<String>,
+
+        /// Local directory this run stages pulled source files, transcoded
+        /// results, and bookkeeping under. Defaults to a directory under
+        /// the OS temp directory when omitted.
+        #[arg(long)]
+        local_output: Option<PathBuf>,
+
+        /// Maximum number of files to transcode concurrently (the ffmpeg
+        /// phase only -- `rclone` manages its own internal parallelism via
+        /// `--transfers`/`--checkers`). Interactively prompted (a
+        /// cores-based default) when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        concurrency: Option<usize>,
+
+        /// rclone --transfers, used by both the pull and push rclone
+        /// invocations. Defaults to 8 when omitted.
+        #[arg(long)]
+        transfers: Option<usize>,
+
+        /// rclone --checkers, used by both rclone invocations. Defaults to
+        /// 16 when omitted.
+        #[arg(long)]
+        checkers: Option<usize>,
+
+        /// rclone --tpslimit, used by both rclone invocations. Unset by
+        /// default -- no rate cap.
+        #[arg(long)]
+        tpslimit: Option<usize>,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
+        /// Skip the final "proceed?" confirmation.
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -527,6 +603,7 @@ impl Observable for JobType {
                 RcloneAction::Copy { .. } => "job.rclone-copy",
                 RcloneAction::Delete { .. } => "job.rclone-delete",
             },
+            JobType::Transform { .. } => "job.transform",
         }
     }
 }
