@@ -11,7 +11,6 @@
 //! stays fixed. `delete` (`rclone purge`) has no destination and no
 //! transfer-tuning flags at all.
 
-mod rclone_log;
 pub mod wizard;
 mod worker;
 

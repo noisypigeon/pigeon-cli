@@ -1,6 +1,6 @@
 use crate::commands::job::cli::{JobCommands, JobType, RcloneAction, RcloneArgs};
 use crate::commands::job::{
-    decrypt_files, deduplicate, email_pull, email_sync, pull_transform, rclone,
+    decrypt_files, deduplicate, email_pull, email_sync, pull_transform, rclone, transform,
 };
 use crate::core::observability::Observable as _;
 
@@ -112,6 +112,30 @@ pub fn dispatch(command: JobCommands) -> i32 {
                         yes,
                     ),
                 },
+                JobType::Transform {
+                    input_file_type,
+                    source_path,
+                    destination_path,
+                    local_output,
+                    concurrency,
+                    transfers,
+                    checkers,
+                    tpslimit,
+                    report_bucket,
+                    yes,
+                } => transform::wizard::dispatch(
+                    input_file_type,
+                    source_path,
+                    destination_path,
+                    local_output,
+                    concurrency,
+                    transfers,
+                    checkers,
+                    tpslimit,
+                    report_bucket,
+                    job_name,
+                    yes,
+                ),
                 JobType::DecryptFiles {
                     input_dir,
                     output_dir,
