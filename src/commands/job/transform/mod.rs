@@ -10,6 +10,7 @@
 //! the per-file pipeline's full shape, `push`'s for the per-file push leg,
 //! and `placement`'s for the naming scheme.
 
+mod destination;
 mod format;
 mod manifest;
 mod media;
