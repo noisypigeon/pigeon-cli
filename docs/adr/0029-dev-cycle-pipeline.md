@@ -64,3 +64,16 @@ this ADR's `CHANGELOG.md`, with step 4 above appending a bullet to both.
 ADR-0086 collapses that back to one file (the repo now holds only this one
 crate, so the repo-wide tier was redundant) — step 4's changelog bullet goes
 to the single surviving `CHANGELOG.md` again, as originally decided here.
+
+## Amendment (2026-10-10): releases automated (ADR-0117)
+
+ADR-0117 reverses step 6 ("Releases stay manual") — cutting `[Unreleased]`
+into a dated version section and running `cargo publish` now happen
+automatically on every merge to `main`, via a new GitHub Actions workflow,
+rather than as a separate manual act. This creates one narrow, explicitly-
+noted exception to steps 1 and 5's "every substantive change goes through
+a branch + PR + squash-merge": the release workflow's own
+`chore(release): vX.Y.Z` commit is pushed directly to `main` with no PR of
+its own — there's no way to open a PR for the commit that releases the
+thing a PR would contain, and it's release bookkeeping, not a substantive
+change in this ADR's sense.
