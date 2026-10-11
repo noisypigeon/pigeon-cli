@@ -248,7 +248,7 @@ pub fn dispatch(
     tpslimit: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -268,7 +268,7 @@ pub fn dispatch(
         tpslimit,
         report_bucket,
         job_name,
-        yes,
+        non_interactive,
     ))
 }
 
@@ -284,7 +284,7 @@ async fn dispatch_async(
     tpslimit: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as every
     // other job's dispatch_async (ADR-0073).
@@ -313,45 +313,45 @@ async fn dispatch_async(
     let input_file_type = match (InputFileTypeInput {
         flag: input_file_type,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let source_path = match (SourcePathInput { flag: source_path }).resolve() {
+    let source_path = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let destination_path = match (DestinationPathInput {
         flag: destination_path,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let transfers = match (TransfersInput { flag: transfers }).resolve() {
+    let transfers = match (TransfersInput { flag: transfers }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let checkers = match (CheckersInput { flag: checkers }).resolve() {
+    let checkers = match (CheckersInput { flag: checkers }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let tpslimit = match (TpslimitInput { flag: tpslimit }).resolve() {
+    let tpslimit = match (TpslimitInput { flag: tpslimit }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, &keyring_store) {
+        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -360,7 +360,7 @@ async fn dispatch_async(
     println!("Source:          {source_path}");
     println!("Destination:     {destination_path}");
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");

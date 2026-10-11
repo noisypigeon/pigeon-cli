@@ -192,7 +192,7 @@ pub fn dispatch(
     upload_only: bool,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -211,7 +211,7 @@ pub fn dispatch(
         upload_only,
         report_bucket,
         job_name,
-        yes,
+        non_interactive,
     ))
 }
 
@@ -226,7 +226,7 @@ async fn dispatch_async(
     upload_only: bool,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as
     // `email_sync::wizard::dispatch_async` (ADR-0073).
@@ -250,7 +250,7 @@ async fn dispatch_async(
             upload_concurrency,
             report_bucket,
             job_name,
-            yes,
+            non_interactive,
             &keyring_store,
         )
         .await;
@@ -260,13 +260,13 @@ async fn dispatch_async(
         flag: identities,
         store: &keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(identities) => identities,
         Err(err) => return fail(err),
     };
 
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -317,7 +317,7 @@ async fn dispatch_async(
         flag: remote_output,
         store: &keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(alias) => alias,
         Err(err) => return fail(err),
@@ -341,7 +341,7 @@ async fn dispatch_async(
         flag: concurrency,
         total_pending,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
@@ -349,18 +349,18 @@ async fn dispatch_async(
     let upload_concurrency = match (UploadConcurrencyInput {
         flag: upload_concurrency,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, &keyring_store) {
+        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");
@@ -455,19 +455,19 @@ async fn dispatch_upload_only(
     upload_concurrency: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
     keyring_store: &Store,
 ) -> i32 {
     let selected_identities = match (IdentitiesInput {
         flag: identities,
         store: keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(identities) => identities,
         Err(err) => return fail(err),
     };
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -503,7 +503,7 @@ async fn dispatch_upload_only(
         flag: remote_output,
         store: keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(Some(alias)) => alias,
         Ok(None) => return fail("--remote-output is required with --upload-only"),
@@ -524,18 +524,18 @@ async fn dispatch_upload_only(
     let upload_concurrency = match (UploadConcurrencyInput {
         flag: upload_concurrency,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, keyring_store) {
+        match report_upload::resolve(report_bucket, keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");

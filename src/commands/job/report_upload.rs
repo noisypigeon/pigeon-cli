@@ -25,8 +25,9 @@ use crate::observability::{self, transcript::Transcript};
 pub(crate) fn resolve(
     flag: Option<String>,
     store: &Store,
+    non_interactive: bool,
 ) -> Result<(BucketConfig, String), String> {
-    let alias = (ReportBucketInput { flag, store }).resolve()?;
+    let alias = (ReportBucketInput { flag, store }).resolve(non_interactive)?;
     let bucket_config = store
         .bucket_configs()
         .find(|bucket_config| bucket_config.alias == alias)

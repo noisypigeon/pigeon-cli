@@ -324,7 +324,7 @@ fn job_run_email_sync_help_shows_identities_and_concurrency_flags() {
         .stdout(predicate::str::contains("--max-connections-per-identity"))
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--yes"));
+        .stdout(predicate::str::contains("--non-interactive"));
 }
 
 #[test]
@@ -348,7 +348,7 @@ fn job_run_email_sync_upload_only_without_a_completed_run_fails_fast() {
             "first-last",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -372,7 +372,7 @@ fn job_run_email_sync_without_identities_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -399,7 +399,7 @@ fn job_run_email_sync_with_unknown_identity_fails_fast() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -432,7 +432,7 @@ fn job_run_email_pull_help_shows_identities_and_concurrency_flags() {
         .stdout(predicate::str::contains("--max-connections-per-identity"))
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0081 §4: email-pull never offers encryption, at all.
         .stdout(predicate::str::contains("--encryption-key").not());
 }
@@ -458,7 +458,7 @@ fn job_run_email_pull_upload_only_without_a_completed_run_fails_fast() {
             "first-last",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -482,7 +482,7 @@ fn job_run_email_pull_without_identities_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -509,7 +509,7 @@ fn job_run_email_pull_with_unknown_identity_fails_fast() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -539,7 +539,7 @@ fn job_run_decrypt_files_help_shows_input_output_and_key_flags() {
         .stdout(predicate::str::contains("--encryption-key"))
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0091: decrypt-files has no upload phase, so it never gets
         // --upload-concurrency.
         .stdout(predicate::str::contains("--upload-concurrency").not());
@@ -561,7 +561,7 @@ fn job_run_decrypt_files_without_input_dir_fails_fast_non_interactively() {
             "primary",
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -589,7 +589,7 @@ fn job_run_decrypt_files_rejects_same_input_and_output_dir() {
             "primary",
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -641,7 +641,7 @@ fn job_run_pull_transform_upload_only_without_a_completed_run_fails_fast() {
             "--upload-only",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -665,7 +665,7 @@ fn job_run_pull_transform_without_source_bucket_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -691,7 +691,7 @@ fn job_run_pull_transform_with_unknown_bucket_fails_fast() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -723,7 +723,7 @@ fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--upload-concurrency"))
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0082 §0/§1: deduplicate never offers encryption or file-type/
         // zip-expansion selection -- every file is always processed and
         // every zip is always expanded.
@@ -746,7 +746,7 @@ fn job_run_deduplicate_without_source_bucket_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -772,7 +772,7 @@ fn job_run_deduplicate_upload_only_without_a_completed_run_fails_fast() {
             "--upload-only",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -804,7 +804,7 @@ fn job_run_deduplicate_accepts_a_repeated_source_bucket_flag() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -837,7 +837,7 @@ fn job_run_deduplicate_upload_only_without_destination_bucket_fails_fast() {
             "--upload-only",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -863,7 +863,7 @@ fn job_run_deduplicate_with_unknown_bucket_fails_fast() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -891,7 +891,7 @@ fn job_run_pull_transform_without_ffmpeg_on_path_fails_fast_with_a_clear_error()
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -931,7 +931,7 @@ fn job_run_rclone_copy_help_shows_source_path_destination_path_and_report_bucket
         .stdout(predicate::str::contains("--transfers"))
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
-        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0101: this job's rclone performance/retry flags beyond
         // transfers/checkers/tpslimit are fixed, not CLI flags, and it
         // never resolves a pigeon bucket-config for source/destination.
@@ -951,7 +951,7 @@ fn job_run_rclone_delete_help_shows_source_path_and_report_bucket_flags_but_not_
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--checkers"))
-        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0110: delete has no destination and no file-transfer tuning
         // -- `rclone purge` moves no file content.
         .stdout(predicate::str::contains("--destination-path").not())
@@ -974,7 +974,7 @@ fn job_run_rclone_copy_without_source_path_fails_fast_non_interactively() {
             "dest:",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -999,7 +999,7 @@ fn job_run_rclone_copy_without_destination_path_fails_fast_non_interactively() {
             "source:media/",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1028,7 +1028,7 @@ fn job_run_rclone_copy_without_rclone_on_path_fails_fast_with_a_clear_error() {
             "dest:",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1049,7 +1049,7 @@ fn job_run_rclone_delete_without_source_path_fails_fast_non_interactively() {
             "delete",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1076,7 +1076,7 @@ fn job_run_rclone_delete_without_rclone_on_path_fails_fast_with_a_clear_error() 
             "source:media/",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1108,7 +1108,7 @@ fn job_run_transform_help_shows_input_file_type_source_path_destination_path_and
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--yes"))
+        .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0112: raw rclone path strings, not pigeon bucket-config
         // aliases, and no separate upload phase of the shape
         // --upload-concurrency sizes.
@@ -1135,7 +1135,7 @@ fn job_run_transform_without_input_file_type_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1165,7 +1165,7 @@ fn job_run_transform_with_invalid_input_file_type_fails_fast() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1191,7 +1191,7 @@ fn job_run_transform_without_source_path_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1219,7 +1219,7 @@ fn job_run_transform_without_destination_path_fails_fast_non_interactively() {
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()
@@ -1251,7 +1251,7 @@ fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_er
             local_output.path().to_str().unwrap(),
             "--concurrency",
             "4",
-            "--yes",
+            "--non-interactive",
         ])
         .assert()
         .failure()

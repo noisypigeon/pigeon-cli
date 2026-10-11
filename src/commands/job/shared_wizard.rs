@@ -267,20 +267,21 @@ impl WizardInput for UploadConcurrencyInput {
     }
 }
 
-/// The final "proceed?" gate, identical across every job: `--yes` skips it
-/// outright; otherwise prompts on a TTY, and errors outside one (there's no
-/// sane way to read a yes/no answer from a pipe without an established
-/// convention for it here -- requiring `--yes` for a non-interactive run is
-/// simpler and safer than inventing one solely for this prompt).
+/// The final "proceed?" gate, identical across every job: `--non-interactive`
+/// skips it outright; otherwise prompts on a TTY, and errors outside one
+/// (there's no sane way to read a yes/no answer from a pipe without an
+/// established convention for it here -- requiring `--non-interactive` for a
+/// non-interactive run is simpler and safer than inventing one solely for
+/// this prompt).
 pub(crate) struct ConfirmInput {
-    pub yes: bool,
+    pub non_interactive: bool,
 }
 
 impl WizardInput for ConfirmInput {
     type Value = bool;
 
     fn flag_value(&self) -> Option<Result<bool, String>> {
-        self.yes.then_some(Ok(true))
+        self.non_interactive.then_some(Ok(true))
     }
 
     fn prompt(&self) -> Result<bool, String> {
@@ -293,7 +294,7 @@ impl WizardInput for ConfirmInput {
 
     fn non_interactive_fallback(&self) -> Result<bool, String> {
         Err(
-            "confirmation is required when not running interactively (pass --yes to skip)"
+            "confirmation is required when not running interactively (pass --non-interactive to skip)"
                 .to_string(),
         )
     }

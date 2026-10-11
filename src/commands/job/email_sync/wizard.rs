@@ -22,13 +22,13 @@ use super::{
 
 /// Resolves which identities to run against: `--identities` if given (every
 /// alias must already exist), an interactive `MultiSelect` if omitted and
-/// stdin is a terminal, or a hard error otherwise.
+/// stdin is a terminal (and `--non-interactive` wasn't passed), or a hard
+/// error otherwise.
 ///
-/// Per ADR-0021 §8's narrow `--yes` semantics: `--yes` only skips the final
-/// proceed confirmation. A missing `--identities` outside a TTY is always
-/// an error, regardless of `--yes` -- silently defaulting to "every
-/// configured identity" would be a much worse failure mode for a scripted/
-/// cron invocation than a fast, explicit error naming the missing flag.
+/// A missing `--identities` when non-interactive (ADR-0114) is always an
+/// error -- silently defaulting to "every configured identity" would be a
+/// much worse failure mode for a scripted/cron invocation than a fast,
+/// explicit error naming the missing flag.
 struct IdentitiesInput<'a> {
     flag: Option<Vec<String>>,
     store: &'a Store,
@@ -207,8 +207,8 @@ fn print_concurrency_estimate(total_pending_messages: usize) {
 
 /// Resolves the concurrency to run at: `--concurrency` if given, an
 /// interactive prompt (with the estimate table above) if omitted and stdin
-/// is a terminal, or a hard error otherwise -- same narrow-`--yes` rule as
-/// `IdentitiesInput`.
+/// is a terminal (and not `--non-interactive`), or a hard error otherwise --
+/// same rule as `IdentitiesInput`.
 struct ConcurrencyInput {
     flag: Option<usize>,
     total_pending: usize,
@@ -252,7 +252,7 @@ pub fn dispatch(
     upload_only: bool,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -272,7 +272,7 @@ pub fn dispatch(
         upload_only,
         report_bucket,
         job_name,
-        yes,
+        non_interactive,
     ))
 }
 
@@ -288,7 +288,7 @@ async fn dispatch_async(
     upload_only: bool,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return fail(...)`
     // below drops it, aborting the sampling task automatically (ADR-0073).
@@ -313,7 +313,7 @@ async fn dispatch_async(
             upload_concurrency,
             report_bucket,
             job_name,
-            yes,
+            non_interactive,
             &keyring_store,
         )
         .await;
@@ -323,13 +323,13 @@ async fn dispatch_async(
         flag: identities,
         store: &keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(identities) => identities,
         Err(err) => return fail(err),
     };
 
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -384,7 +384,7 @@ async fn dispatch_async(
         flag: remote_output,
         store: &keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(alias) => alias,
         Err(err) => return fail(err),
@@ -416,7 +416,7 @@ async fn dispatch_async(
             .as_ref()
             .and_then(|(bc, _)| bc.encryption_key_alias.clone()),
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(alias) => alias,
         Err(err) => return fail(err),
@@ -439,7 +439,7 @@ async fn dispatch_async(
         flag: concurrency,
         total_pending,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
@@ -447,18 +447,18 @@ async fn dispatch_async(
     let upload_concurrency = match (UploadConcurrencyInput {
         flag: upload_concurrency,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, &keyring_store) {
+        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");
@@ -565,19 +565,19 @@ async fn dispatch_upload_only(
     upload_concurrency: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
     keyring_store: &Store,
 ) -> i32 {
     let selected_identities = match (IdentitiesInput {
         flag: identities,
         store: keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(identities) => identities,
         Err(err) => return fail(err),
     };
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -615,7 +615,7 @@ async fn dispatch_upload_only(
         flag: remote_output,
         store: keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(Some(alias)) => alias,
         Ok(None) => return fail("--remote-output is required with --upload-only"),
@@ -639,7 +639,7 @@ async fn dispatch_upload_only(
         uploading: true,
         bucket_default: remote_bucket_config.encryption_key_alias.clone(),
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(alias) => alias,
         Err(err) => return fail(err),
@@ -661,18 +661,18 @@ async fn dispatch_upload_only(
     let upload_concurrency = match (UploadConcurrencyInput {
         flag: upload_concurrency,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, keyring_store) {
+        match report_upload::resolve(report_bucket, keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");
@@ -801,7 +801,7 @@ mod tests {
             (LocalOutputInput {
                 flag: Some(given.clone())
             })
-            .resolve()
+            .resolve(false)
             .unwrap(),
             given
         );
@@ -815,7 +815,7 @@ mod tests {
                 flag: Some("backup".to_string()),
                 store: &store,
             })
-            .resolve()
+            .resolve(false)
             .unwrap(),
             Some("backup".to_string())
         );
