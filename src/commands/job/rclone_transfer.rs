@@ -147,6 +147,19 @@ pub(crate) fn log_collapsed_repeats(step: &'static str, delta: &TailDelta) {
 /// every other caller (`rclone::worker::run_copy_job`) passes `None` and
 /// sees no behavior change at all -- the tailer always populates
 /// `TailDelta::copied_objects` regardless of whether anyone's listening.
+///
+/// `files_from` (ADR-0124), when given, appends `--files-from-raw <path>`,
+/// restricting the copy to exactly the relative paths listed in that file --
+/// `transform`'s pull phase uses this to exclude files already fully pushed
+/// to `--destination-path` in a prior run *before* downloading their bytes
+/// at all, rather than downloading them and discovering they're redundant
+/// afterward. `--files-from-raw` (not the plain `--files-from`) is used
+/// deliberately: entries here are literal file names straight from an
+/// `rclone lsjson` listing, not user-authored glob patterns, and a real
+/// filename can itself contain glob metacharacters (`*`, `?`, `[`) that
+/// plain `--files-from` would otherwise try to interpret as a pattern.
+/// Every other caller (`rclone::worker::run_copy_job`) passes `None` and is
+/// unaffected.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_rclone_copy(
     source: &str,
@@ -160,6 +173,7 @@ pub(crate) async fn run_rclone_copy(
     phase_label: &'static str,
     emit_upload_metrics: bool,
     on_copied: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    files_from: Option<&Path>,
 ) -> Result<RcloneLogSummary, String> {
     tracing::info!(
         source,
@@ -187,6 +201,10 @@ pub(crate) async fn run_rclone_copy(
         rclone_args.push("--include".to_string());
         rclone_args.push(format!("*.{extension}"));
         rclone_args.push("--ignore-case".to_string());
+    }
+    if let Some(files_from) = files_from {
+        rclone_args.push("--files-from-raw".to_string());
+        rclone_args.push(files_from.display().to_string());
     }
     rclone_args.extend(
         [
@@ -337,6 +355,7 @@ mod tests {
             "transfer",
             true,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -374,6 +393,7 @@ mod tests {
             "test-job",
             "pull",
             false,
+            None,
             None,
         )
         .await
@@ -414,6 +434,7 @@ mod tests {
             "transfer",
             true,
             Some(tx),
+            None,
         )
         .await
         .unwrap();
@@ -424,5 +445,47 @@ mod tests {
         }
         received.sort();
         assert_eq!(received, vec!["a.txt".to_string(), "b.txt".to_string()]);
+    }
+
+    /// `files_from` (ADR-0124) restricts the copy to exactly the relative
+    /// paths listed in the given file, using `--files-from-raw` so a literal
+    /// filename is never reinterpreted as a glob pattern.
+    #[tokio::test]
+    async fn files_from_restricts_the_copy_to_exactly_the_listed_relative_paths() {
+        if check_rclone_available().await.is_err() {
+            eprintln!("skipping: rclone not found on PATH");
+            return;
+        }
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        std::fs::write(source_dir.path().join("a.txt"), b"a").unwrap();
+        std::fs::write(source_dir.path().join("b.txt"), b"b").unwrap();
+
+        let files_from_path = log_dir.path().join("files-from.txt");
+        std::fs::write(&files_from_path, "a.txt\n").unwrap();
+
+        let log_path = log_dir.path().join("rclone.jsonl");
+        let summary = run_rclone_copy(
+            source_dir.path().to_str().unwrap(),
+            dest_dir.path().to_str().unwrap(),
+            None,
+            &log_path,
+            2,
+            4,
+            None,
+            "test-job",
+            "pull",
+            false,
+            None,
+            Some(&files_from_path),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(summary.transferred, 1);
+        assert!(dest_dir.path().join("a.txt").exists());
+        assert!(!dest_dir.path().join("b.txt").exists());
     }
 }
