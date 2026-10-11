@@ -30,7 +30,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-      - run: mise run ci
+      - run: mise run fmt-check
+      - run: mise run lint
 
       - name: Cut release and publish
         id: release
