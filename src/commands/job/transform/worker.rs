@@ -33,6 +33,22 @@
 //! queued, if it can't confirm a size/modtime match -- so a `dispatched` set
 //! guards against double-enqueueing, on top of `placement::place_one`'s own
 //! independent hard-error-on-collision backstop.
+//!
+//! **Local disk usage (ADR-0124).** Nothing above downloads or retains more
+//! than it needs to: before Phase A's pull is even spawned,
+//! `destination::list_source_relative_paths` lists the source tree
+//! (metadata only, no bytes) and `files_needing_pull` filters out anything
+//! whose `placement::compute_destination_name` is already present at the
+//! destination, so an already-done file from a prior run is never
+//! downloaded again at all -- `enqueue`'s own post-download check against
+//! the same destination listing stays in place as a second, independent
+//! backstop, not the primary filter anymore. And once a freshly-pulled
+//! file's own pipeline finishes pushing it, `process_one` deletes both its
+//! local source and placed-result copies immediately (`remove_local_copy`)
+//! -- so steady-state local disk usage during a run is bounded by the
+//! in-flight window (`--concurrency`/`--transfers` wide), not by the total
+//! size of the source/destination trees. A file that fails is deliberately
+//! left in place on disk for diagnosis.
 
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
@@ -281,7 +297,34 @@ async fn process_one(
     )
     .await?;
 
+    // This file's bytes are now durably present at `destination_path` --
+    // the local source and result copies no longer serve any purpose
+    // (ADR-0124). Deleting them here, inside this file's own concurrent
+    // task, is safe without any synchronization: each task only ever
+    // touches its own two distinct paths.
+    remove_local_copy(&pending_file.absolute_path);
+    remove_local_copy(&final_path);
+
     Ok(final_path)
+}
+
+/// Best-effort local cleanup once a file is confirmed durably pushed
+/// (ADR-0124). `transform` has no `--upload-only`/local-state-dependent
+/// resume mechanism to preserve by keeping these files around -- unlike
+/// `deduplicate`/`pull_transform`, which deliberately retain their own
+/// `result/` tree for exactly that purpose -- every phase here is already
+/// independently rerun-safe via the remote destination listing, not local
+/// state. A removal failure (e.g. a permissions issue) is logged and
+/// otherwise ignored: it must never turn an already-successful push into a
+/// failed `Outcome`.
+fn remove_local_copy(path: &Path) {
+    if let Err(err) = std::fs::remove_file(path) {
+        tracing::warn!(
+            path = %path.display(),
+            error = %err,
+            "transform: failed to remove local file after successful push"
+        );
+    }
 }
 
 fn outcome_for(input_file_type: InputFileType) -> Outcome {
@@ -323,6 +366,45 @@ fn enqueue(
         relative_path,
         absolute_path,
     });
+}
+
+/// Filters `source_relative_paths` down to the ones that still need
+/// pulling: a relative path whose `placement::compute_destination_name` is
+/// already present in `existing_destination_filenames` is already fully
+/// done and must not be downloaded again at all (ADR-0124) -- this
+/// supersedes ADR-0120's "Accepted limitation" that Phase A could only ever
+/// re-pull already-done files on a rerun. That limitation assumed the
+/// destination's hash-based naming was one-way and therefore unusable as a
+/// pull-side filter; in fact `compute_destination_name` is a pure *forward*
+/// function of `(source_path, relative_path)` alone, needing no file
+/// content, so the same "already done" check `enqueue` performs after
+/// download can just as well run before it, against a lightweight,
+/// metadata-only listing of the source tree.
+fn files_needing_pull(
+    source_relative_paths: Vec<String>,
+    source_path: &str,
+    output_extension: &str,
+    existing_destination_filenames: &HashSet<String>,
+) -> Vec<String> {
+    source_relative_paths
+        .into_iter()
+        .filter(|relative_path| {
+            let destination_name =
+                placement::compute_destination_name(source_path, relative_path, output_extension);
+            !existing_destination_filenames.contains(&destination_name)
+        })
+        .collect()
+}
+
+/// Writes `relative_paths` newline-delimited under `staging_dir`, for
+/// `rclone_transfer::run_rclone_copy`'s `files_from` parameter (ADR-0124).
+fn write_files_from(staging_dir: &Path, relative_paths: &[String]) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(staging_dir)
+        .map_err(|err| format!("failed to create {}: {err}", staging_dir.display()))?;
+    let path = staging_dir.join("pull-files-from.txt");
+    std::fs::write(&path, relative_paths.join("\n"))
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    Ok(path)
 }
 
 /// Runs the whole per-file pipeline. `Err` is reserved for infrastructure-
@@ -368,34 +450,62 @@ pub(crate) async fn run_transform_job(
         );
     }
 
+    // ADR-0124: compute which source files still need pulling *before*
+    // spawning Phase A at all -- a file already fully done at the
+    // destination is excluded here, never downloaded in the first place,
+    // rather than discovered redundant only after its bytes already landed
+    // locally (ADR-0120's "Accepted limitation").
+    let source_relative_paths = destination::list_source_relative_paths(
+        &plan.source_path,
+        plan.input_file_type.extension(),
+    )
+    .await?;
+    let files_to_pull = files_needing_pull(
+        source_relative_paths,
+        &plan.source_path,
+        output_extension,
+        &existing_destination_filenames,
+    );
+
     let (copied_tx, mut copied_rx) = mpsc::unbounded_channel();
     let pull_log_path = plan
         .local_output
         .join(format!("rclone-pull-{}.jsonl", plan.run_id));
-    let mut pull_handle = tokio::spawn({
-        let source_path = plan.source_path.clone();
-        let source_dir_str = source_dir.display().to_string();
-        let extension = plan.input_file_type.extension();
-        let transfers = plan.transfers;
-        let checkers = plan.checkers;
-        let tpslimit = plan.tpslimit;
-        async move {
-            rclone_transfer::run_rclone_copy(
-                &source_path,
-                &source_dir_str,
-                Some(extension),
-                &pull_log_path,
-                transfers,
-                checkers,
-                tpslimit,
-                "transform",
-                "pull",
-                false,
-                Some(copied_tx),
-            )
-            .await
-        }
-    });
+    let mut pull_handle = if files_to_pull.is_empty() {
+        // Nothing to pull -- every matching source file is already done.
+        // Skip spawning `rclone` entirely rather than running it against an
+        // empty files-from list.
+        tokio::spawn(async move {
+            drop(copied_tx);
+            Ok::<_, String>(crate::commands::job::rclone_log::RcloneLogSummary::default())
+        })
+    } else {
+        let files_from_path = write_files_from(&staging_dir(&plan.local_output), &files_to_pull)?;
+        tokio::spawn({
+            let source_path = plan.source_path.clone();
+            let source_dir_str = source_dir.display().to_string();
+            let transfers = plan.transfers;
+            let checkers = plan.checkers;
+            let tpslimit = plan.tpslimit;
+            async move {
+                rclone_transfer::run_rclone_copy(
+                    &source_path,
+                    &source_dir_str,
+                    None,
+                    &pull_log_path,
+                    transfers,
+                    checkers,
+                    tpslimit,
+                    "transform",
+                    "pull",
+                    false,
+                    Some(copied_tx),
+                    Some(&files_from_path),
+                )
+                .await
+            }
+        })
+    };
 
     let push_semaphore = Arc::new(Semaphore::new(plan.transfers.max(1)));
     let mut in_flight: JoinSet<(String, Result<PathBuf, String>)> = JoinSet::new();
@@ -726,6 +836,24 @@ mod tests {
             .collect();
         assert_eq!(pushed_names.len(), 2);
 
+        // ADR-0124: once a file is durably pushed, its local source and
+        // result copies must be gone -- steady-state disk usage should not
+        // scale with the whole dataset.
+        assert!(
+            std::fs::read_dir(source_dir(&local_output))
+                .unwrap()
+                .next()
+                .is_none(),
+            "local source/ should be empty after every file is pushed"
+        );
+        assert!(
+            std::fs::read_dir(result_dir(&local_output))
+                .unwrap()
+                .next()
+                .is_none(),
+            "local result/ should be empty after every file is pushed"
+        );
+
         // A rerun must be a no-op: nothing left pending, nothing re-pushed.
         let rerun_summary = run_transform_job(&plan, 2).await.unwrap();
         assert_eq!(rerun_summary.pushed, 0);
@@ -849,7 +977,10 @@ mod tests {
     /// completely empty, unlike the "already on disk" test above, which is
     /// what actually simulates a VM replacement), a file already pushed to
     /// `--destination-path` in a prior run must be skipped entirely --
-    /// neither re-transcoded nor re-pushed.
+    /// neither re-transcoded nor re-pushed. Also the direct regression test
+    /// for ADR-0124's pre-pull filter: this file must not even be
+    /// downloaded, superseding ADR-0120's "Accepted limitation" that it
+    /// would always be redundantly re-pulled.
     #[tokio::test]
     async fn run_transform_job_skips_transcode_and_push_for_a_file_already_present_at_the_destination()
      {
@@ -894,6 +1025,10 @@ mod tests {
             std::fs::read(destination.join(&destination_filename)).unwrap(),
             b"already pushed"
         );
+        // ADR-0124: the file must never even be downloaded -- the
+        // pre-pull filter excludes it before Phase A's `rclone copy` runs
+        // at all, not merely discovered-and-skipped afterward.
+        assert!(!source_dir(&local_output).join("a.jpeg").exists());
     }
 
     /// The direct regression test for ADR-0121's circuit breaker: a batch
@@ -982,6 +1117,18 @@ mod tests {
 
         assert!(summary.failed);
         assert_eq!(summary.pushed, 24);
+
+        // ADR-0124: every successfully-pushed file's local source copy is
+        // gone, but the one failed file is deliberately left in place for
+        // diagnosis.
+        assert!(source_dir(&local_output).join("bad.png").exists());
+        for i in 0..24 {
+            assert!(
+                !source_dir(&local_output)
+                    .join(format!("good-{i}.png"))
+                    .exists()
+            );
+        }
     }
 
     /// Mirrors `media.rs::tests::generate_test_png` -- a third real consumer
@@ -1160,6 +1307,29 @@ mod tests {
         );
 
         assert!(queue.is_empty());
+    }
+
+    /// ADR-0124: the same "already done" check `enqueue` performs after
+    /// download should exclude an already-done path from the pull-side
+    /// candidate list entirely, before any bytes are downloaded.
+    #[test]
+    fn files_needing_pull_excludes_a_path_already_present_at_the_destination() {
+        let source_path = "source:png/";
+        let mut existing_destination_filenames = HashSet::new();
+        existing_destination_filenames.insert(placement::compute_destination_name(
+            source_path,
+            "a.png",
+            "jpg",
+        ));
+
+        let result = files_needing_pull(
+            vec!["a.png".to_string(), "b.png".to_string()],
+            source_path,
+            "jpg",
+            &existing_destination_filenames,
+        );
+
+        assert_eq!(result, vec!["b.png".to_string()]);
     }
 
     #[test]
