@@ -103,7 +103,7 @@ pub fn dispatch(
     concurrency: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -119,7 +119,7 @@ pub fn dispatch(
         concurrency,
         report_bucket,
         job_name,
-        yes,
+        non_interactive,
     ))
 }
 
@@ -131,18 +131,18 @@ async fn dispatch_async(
     concurrency: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return fail(...)`
     // below drops it, aborting the sampling task automatically (ADR-0073).
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    let input_dir = match (InputDirInput { flag: input_dir }).resolve() {
+    let input_dir = match (InputDirInput { flag: input_dir }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
-    let output_dir = match (OutputDirInput { flag: output_dir }).resolve() {
+    let output_dir = match (OutputDirInput { flag: output_dir }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -164,7 +164,7 @@ async fn dispatch_async(
         flag: encryption_key,
         store: &keyring_store,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(alias) => alias,
         Err(err) => return fail(err),
@@ -193,17 +193,17 @@ async fn dispatch_async(
     }
     println!("{} encrypted file(s) found.", plan.len());
 
-    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve() {
+    let concurrency = match (CpuConcurrencyInput { flag: concurrency }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, &keyring_store) {
+        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");

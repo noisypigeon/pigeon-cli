@@ -218,7 +218,7 @@ pub fn dispatch_copy(
     checkers: Option<usize>,
     tpslimit: Option<usize>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -236,7 +236,7 @@ pub fn dispatch_copy(
         checkers,
         tpslimit,
         job_name,
-        yes,
+        non_interactive,
     ))
 }
 
@@ -250,7 +250,7 @@ async fn dispatch_copy_async(
     checkers: Option<usize>,
     tpslimit: Option<usize>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return
     // fail(...)` below drops it, aborting the sampling task automatically
@@ -274,36 +274,36 @@ async fn dispatch_copy_async(
         Err(err) => return fail(err),
     };
 
-    let source = match (SourcePathInput { flag: source_path }).resolve() {
+    let source = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let destination = match (DestinationPathInput {
         flag: destination_path,
     })
-    .resolve()
+    .resolve(non_interactive)
     {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let transfers = match (TransfersInput { flag: transfers }).resolve() {
+    let transfers = match (TransfersInput { flag: transfers }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let checkers = match (CheckersInput { flag: checkers }).resolve() {
+    let checkers = match (CheckersInput { flag: checkers }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let tpslimit = match (TpslimitInput { flag: tpslimit }).resolve() {
+    let tpslimit = match (TpslimitInput { flag: tpslimit }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, &keyring_store) {
+        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -311,7 +311,7 @@ async fn dispatch_copy_async(
     println!("Source:      {source}");
     println!("Destination: {destination}");
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");
@@ -391,7 +391,7 @@ pub fn dispatch_delete(
     report_bucket: Option<String>,
     checkers: Option<usize>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -406,7 +406,7 @@ pub fn dispatch_delete(
         report_bucket,
         checkers,
         job_name,
-        yes,
+        non_interactive,
     ))
 }
 
@@ -416,7 +416,7 @@ async fn dispatch_delete_async(
     report_bucket: Option<String>,
     checkers: Option<usize>,
     job_name: &'static str,
-    yes: bool,
+    non_interactive: bool,
 ) -> i32 {
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
@@ -434,20 +434,20 @@ async fn dispatch_delete_async(
         Err(err) => return fail(err),
     };
 
-    let source = match (SourcePathInput { flag: source_path }).resolve() {
+    let source = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let local_output = match (LocalOutputInput { flag: local_output }).resolve() {
+    let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let checkers = match (CheckersInput { flag: checkers }).resolve() {
+    let checkers = match (CheckersInput { flag: checkers }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
     let (report_bucket_config, report_secret) =
-        match report_upload::resolve(report_bucket, &keyring_store) {
+        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -455,7 +455,7 @@ async fn dispatch_delete_async(
     println!("Source: {source}");
     println!("WARNING: this will recursively and permanently delete everything under this path.");
 
-    match (ConfirmInput { yes }).resolve() {
+    match (ConfirmInput { non_interactive }).resolve(non_interactive) {
         Ok(true) => {}
         Ok(false) => {
             println!("Cancelled.");

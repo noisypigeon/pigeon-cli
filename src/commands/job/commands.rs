@@ -20,7 +20,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     max_connections_per_identity,
                     upload_only,
                     report_bucket,
-                    yes,
+                    non_interactive,
                 } => email_sync::wizard::dispatch(
                     identities,
                     local_output,
@@ -32,7 +32,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     report_bucket,
                     job_name,
-                    yes,
+                    non_interactive,
                 ),
                 JobType::EmailPull {
                     identities,
@@ -43,7 +43,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     max_connections_per_identity,
                     upload_only,
                     report_bucket,
-                    yes,
+                    non_interactive,
                 } => email_pull::wizard::dispatch(
                     identities,
                     local_output,
@@ -54,7 +54,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     report_bucket,
                     job_name,
-                    yes,
+                    non_interactive,
                 ),
                 JobType::Deduplicate {
                     source_bucket,
@@ -64,7 +64,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     upload_only,
                     report_bucket,
-                    yes,
+                    non_interactive,
                 } => deduplicate::wizard::dispatch(
                     source_bucket,
                     local_output,
@@ -74,7 +74,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     report_bucket,
                     job_name,
-                    yes,
+                    non_interactive,
                 ),
                 JobType::Rclone(RcloneArgs { action }) => match action {
                     RcloneAction::Copy {
@@ -85,7 +85,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                         transfers,
                         checkers,
                         tpslimit,
-                        yes,
+                        non_interactive,
                     } => rclone::wizard::dispatch_copy(
                         source_path,
                         destination_path,
@@ -95,21 +95,21 @@ pub fn dispatch(command: JobCommands) -> i32 {
                         checkers,
                         tpslimit,
                         job_name,
-                        yes,
+                        non_interactive,
                     ),
                     RcloneAction::Delete {
                         source_path,
                         local_output,
                         report_bucket,
                         checkers,
-                        yes,
+                        non_interactive,
                     } => rclone::wizard::dispatch_delete(
                         source_path,
                         local_output,
                         report_bucket,
                         checkers,
                         job_name,
-                        yes,
+                        non_interactive,
                     ),
                 },
                 JobType::Transform {
@@ -122,7 +122,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     checkers,
                     tpslimit,
                     report_bucket,
-                    yes,
+                    non_interactive,
                 } => transform::wizard::dispatch(
                     input_file_type,
                     source_path,
@@ -134,7 +134,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     tpslimit,
                     report_bucket,
                     job_name,
-                    yes,
+                    non_interactive,
                 ),
                 JobType::DecryptFiles {
                     input_dir,
@@ -142,7 +142,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     encryption_key,
                     concurrency,
                     report_bucket,
-                    yes,
+                    non_interactive,
                 } => decrypt_files::wizard::dispatch(
                     input_dir,
                     output_dir,
@@ -150,7 +150,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     concurrency,
                     report_bucket,
                     job_name,
-                    yes,
+                    non_interactive,
                 ),
                 JobType::PullTransform {
                     source_bucket,
@@ -166,7 +166,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_concurrency,
                     upload_only,
                     report_bucket,
-                    yes,
+                    non_interactive,
                 } => pull_transform::wizard::dispatch(
                     source_bucket,
                     local_output,
@@ -182,7 +182,7 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_only,
                     report_bucket,
                     job_name,
-                    yes,
+                    non_interactive,
                 ),
             })
         }

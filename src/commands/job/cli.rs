@@ -105,12 +105,12 @@ pub enum JobType {
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Skip the final "proceed?" confirmation. Every other omitted
-        /// input (identities, concurrency) still follows its own
-        /// independent flag-or-prompt rule -- this only answers the last
-        /// prompt.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 
     /// Decrypts every `*.enc` file under `--input-dir` into `--output-dir`
@@ -149,9 +149,12 @@ pub enum JobType {
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 
     /// Fetches raw `.eml` files and unpacked attachments (no Markdown/
@@ -223,9 +226,12 @@ pub enum JobType {
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 
     /// Recursively pulls every object from a bucket-config, expands zips,
@@ -324,9 +330,12 @@ pub enum JobType {
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 
     /// Recursively scans a bucket, always inflates every zip found (the
@@ -396,9 +405,12 @@ pub enum JobType {
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 
     /// Shells out to the external `rclone` binary for copy/delete
@@ -480,9 +492,12 @@ pub enum JobType {
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 }
 
@@ -547,17 +562,20 @@ pub enum RcloneAction {
         #[arg(long)]
         tpslimit: Option<usize>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 
     /// Recursively and permanently deletes everything under a configurable
     /// source path by shelling out to `rclone purge` (ADR-0110).
     /// Irreversible -- there is no `--dry-run` and no undo beyond the
-    /// existing `--yes`/interactive confirmation. Unlike `copy`, there is
-    /// no destination and no per-file transfer-rate tuning, since purge
-    /// transfers no file content.
+    /// existing `--non-interactive`/interactive confirmation. Unlike
+    /// `copy`, there is no destination and no per-file transfer-rate
+    /// tuning, since purge transfers no file content.
     Delete {
         /// rclone source to recursively and permanently delete, e.g.
         /// `source:media/`. Interactively prompted when omitted and stdin
@@ -585,9 +603,12 @@ pub enum RcloneAction {
         #[arg(long)]
         checkers: Option<usize>,
 
-        /// Skip the final "proceed?" confirmation.
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
         #[arg(long)]
-        yes: bool,
+        non_interactive: bool,
     },
 }
 

@@ -27,11 +27,16 @@ pub(crate) trait WizardInput {
 
     /// The shared resolution algorithm every wizard input follows, given
     /// once here so implementors only define the three methods above.
-    fn resolve(&self) -> Result<Self::Value, String> {
+    ///
+    /// `non_interactive` is the job-wide `--non-interactive` flag (ADR-0114):
+    /// when set, every input goes straight to `non_interactive_fallback()`
+    /// regardless of whether stdin is actually a TTY, so a run from an
+    /// interactive shell can still be made to never prompt.
+    fn resolve(&self, non_interactive: bool) -> Result<Self::Value, String> {
         if let Some(result) = self.flag_value() {
             return result;
         }
-        if std::io::stdin().is_terminal() {
+        if !non_interactive && std::io::stdin().is_terminal() {
             self.prompt()
         } else {
             self.non_interactive_fallback()
