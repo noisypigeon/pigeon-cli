@@ -35,6 +35,7 @@
 //! independent hard-error-on-collision backstop.
 
 use std::collections::{HashSet, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -46,7 +47,6 @@ use super::format::InputFileType;
 use super::manifest::{self, PendingFile};
 use super::{destination, media, placement, push};
 use crate::commands::job::rclone_transfer;
-use crate::core::retry::retry_with_backoff;
 
 /// Wraps `media::transcode_to_jpg` at the call site (not inside `media.rs`
 /// itself, mirroring `upload.rs`'s separation of retry policy from the thing
@@ -58,6 +58,65 @@ use crate::core::retry::retry_with_backoff;
 /// scratch output, so no cleanup is needed between attempts.
 const TRANSCODE_RETRIES: usize = 2;
 const TRANSCODE_RETRY_BACKOFF: Duration = Duration::from_secs(1);
+
+/// Sampled over the first `CIRCUIT_BREAKER_SAMPLE_SIZE` per-file pipeline
+/// completions (in completion order, not dispatch order); see
+/// `run_transform_job`'s circuit-breaker state and doc comment (ADR-0121).
+const CIRCUIT_BREAKER_SAMPLE_SIZE: usize = 20;
+
+/// Mirrors `core::retry::retry_with_backoff`'s shape (linear backoff,
+/// `tracing::warn!` per attempt, `tracing::error!` on exhaustion) but adds
+/// one branch: a transcode error classified non-retryable by
+/// `media::is_non_retryable_transcode_error` returns immediately, with no
+/// sleep and no further attempt (ADR-0121) -- re-running `transcode_to_jpg`
+/// against the exact same bytes reproduces the identical failure every time,
+/// so retrying only doubles ffmpeg invocations and adds a guaranteed sleep
+/// for zero benefit. Kept local rather than added as a parameter to the
+/// shared `retry_with_backoff` -- that helper has 6+ unrelated consumers
+/// (`push.rs`, `deduplicate`, `pull_transform`, ...); this classification is
+/// specific to `transcode_to_jpg`'s error strings alone.
+async fn retry_transcode_unless_fatal<T, F, Fut>(
+    attempts: usize,
+    backoff: Duration,
+    mut f: F,
+) -> Result<T, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<T, String>>,
+{
+    let mut last_err = None;
+    for attempt in 0..attempts.max(1) {
+        if attempt > 0 {
+            tokio::time::sleep(backoff * attempt as u32).await;
+        }
+        match f().await {
+            Ok(value) => return Ok(value),
+            Err(err) => {
+                if media::is_non_retryable_transcode_error(&err) {
+                    tracing::warn!(
+                        attempt = attempt + 1,
+                        attempts,
+                        error = %err,
+                        "transcode failed with a non-retryable error; skipping remaining retries"
+                    );
+                    return Err(err);
+                }
+                tracing::warn!(
+                    attempt = attempt + 1,
+                    attempts,
+                    error = %err,
+                    "retrying after error"
+                );
+                last_err = Some(err);
+            }
+        }
+    }
+    if let Some(err) = &last_err {
+        tracing::error!(attempts, error = %err, "retries exhausted");
+    }
+    Err(last_err
+        .unwrap_or_else(|| "retry_transcode_unless_fatal called with zero attempts".to_string()))
+}
 
 pub(crate) struct TransformPlan {
     pub source_path: String,
@@ -157,7 +216,7 @@ async fn process_one(
     let transcode_result = match input_file_type {
         InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
         InputFileType::Png | InputFileType::Heic => {
-            retry_with_backoff(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
+            retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
                 media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path)
             })
             .await
@@ -322,8 +381,22 @@ pub(crate) async fn run_transform_job(
     let mut pull_result = None;
     let mut macro_phase_is_uploading = false;
 
+    // Circuit breaker (ADR-0121): if the first `CIRCUIT_BREAKER_SAMPLE_SIZE`
+    // per-file completions (in completion order, not dispatch order -- see
+    // this module's doc comment on concurrency) are *all* transcode failures
+    // sharing the same deterministic, non-retryable error class, this is a
+    // systemic environment-capability gap, not an isolated bad file --
+    // categorically different from, and must not regress, ADR-0116's
+    // removal of whole-run-abort-on-a-single-failure. Once tripped, no new
+    // work is dispatched or enqueued; whatever's already in-flight (and the
+    // pull subprocess, left to finish naturally) still completes.
+    let mut circuit_breaker_samples: usize = 0;
+    let mut circuit_breaker_matches: usize = 0;
+    let mut circuit_breaker_tripped = false;
+    let mut circuit_breaker_example: Option<String> = None;
+
     loop {
-        while in_flight.len() < concurrency.max(1) {
+        while !circuit_breaker_tripped && in_flight.len() < concurrency.max(1) {
             let Some(pending_file) = queue.pop_front() else {
                 break;
             };
@@ -351,7 +424,7 @@ pub(crate) async fn run_transform_job(
             });
         }
 
-        if in_flight.is_empty() && pull_finished && queue.is_empty() {
+        if in_flight.is_empty() && pull_finished && (queue.is_empty() || circuit_breaker_tripped) {
             break;
         }
 
@@ -359,6 +432,27 @@ pub(crate) async fn run_transform_job(
             joined = in_flight.join_next(), if !in_flight.is_empty() => {
                 let Some(joined) = joined else { continue; };
                 let (relative_path, result) = joined.expect("transform pipeline task panicked");
+
+                if !circuit_breaker_tripped && circuit_breaker_samples < CIRCUIT_BREAKER_SAMPLE_SIZE {
+                    circuit_breaker_samples += 1;
+                    if let Err(err) = &result
+                        && media::is_non_retryable_transcode_error(err)
+                    {
+                        circuit_breaker_matches += 1;
+                        circuit_breaker_example.get_or_insert_with(|| err.clone());
+                    }
+                    if circuit_breaker_samples == CIRCUIT_BREAKER_SAMPLE_SIZE
+                        && circuit_breaker_matches == CIRCUIT_BREAKER_SAMPLE_SIZE
+                    {
+                        circuit_breaker_tripped = true;
+                        tracing::error!(
+                            sample_size = CIRCUIT_BREAKER_SAMPLE_SIZE,
+                            matches = circuit_breaker_matches,
+                            "transform circuit breaker tripped: stopping dispatch of further files"
+                        );
+                    }
+                }
+
                 match result {
                     Ok(final_path) => {
                         pushed += 1;
@@ -388,14 +482,18 @@ pub(crate) async fn run_transform_job(
             }
             received = copied_rx.recv(), if !pull_finished && !copied_rx_closed => {
                 match received {
-                    Some(relative_path) => enqueue(
-                        relative_path,
-                        &source_dir,
-                        &plan.source_path,
-                        &existing_destination_filenames,
-                        &mut dispatched,
-                        &mut queue,
-                    ),
+                    Some(relative_path) => {
+                        if !circuit_breaker_tripped {
+                            enqueue(
+                                relative_path,
+                                &source_dir,
+                                &plan.source_path,
+                                &existing_destination_filenames,
+                                &mut dispatched,
+                                &mut queue,
+                            );
+                        }
+                    }
                     None => copied_rx_closed = true,
                 }
             }
@@ -406,14 +504,16 @@ pub(crate) async fn run_transform_job(
                 // the subprocess's exit -- `try_recv` is non-blocking, so
                 // this can't stall the loop.
                 while let Ok(relative_path) = copied_rx.try_recv() {
-                    enqueue(
-                        relative_path,
-                        &source_dir,
-                        &plan.source_path,
-                        &existing_destination_filenames,
-                        &mut dispatched,
-                        &mut queue,
-                    );
+                    if !circuit_breaker_tripped {
+                        enqueue(
+                            relative_path,
+                            &source_dir,
+                            &plan.source_path,
+                            &existing_destination_filenames,
+                            &mut dispatched,
+                            &mut queue,
+                        );
+                    }
                 }
                 pull_result = Some(result);
             }
@@ -421,6 +521,23 @@ pub(crate) async fn run_transform_job(
     }
 
     let pull_summary = pull_result.expect("loop only exits after pull_finished is set")?;
+
+    if circuit_breaker_tripped {
+        let example = circuit_breaker_example
+            .as_deref()
+            .unwrap_or("<no example captured>");
+        return Err(format!(
+            "transform circuit breaker tripped: all {CIRCUIT_BREAKER_SAMPLE_SIZE} of the first \
+             {CIRCUIT_BREAKER_SAMPLE_SIZE} completed files failed transcoding with the same \
+             deterministic error signature. This looks like a systemic environment/capability \
+             gap (e.g. the ffmpeg build on this job's host lacking support for this input's \
+             format or a feature it uses), not isolated bad source files -- the run is being \
+             aborted instead of grinding through every remaining file with a \
+             guaranteed-identical failure. Check the deployed ffmpeg version and its \
+             decoder/demuxer support for this input type before rerunning. Example error: {example}"
+        ));
+    }
+
     let failed = outcomes.iter().any(|o| o.outcome == Outcome::Failed);
 
     Ok(TransformSummary {
@@ -475,7 +592,64 @@ pub(crate) fn write_report(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
     use super::*;
+
+    const TEST_RETRIES: usize = 3;
+
+    #[tokio::test]
+    async fn retry_transcode_unless_fatal_does_not_retry_a_non_retryable_error() {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), String> =
+            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_secs(60), || {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                async { Err("ffmpeg failed to transcode x.heic: moov atom not found".to_string()) }
+            })
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn retry_transcode_unless_fatal_still_retries_a_transient_looking_error_and_eventually_succeeds()
+     {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<&str, String> =
+            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_millis(1), || {
+                let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                async move {
+                    if count < 3 {
+                        Err("Resource temporarily unavailable (os error 11)".to_string())
+                    } else {
+                        Ok("transcoded")
+                    }
+                }
+            })
+            .await;
+
+        assert_eq!(result, Ok("transcoded"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn retry_transcode_unless_fatal_returns_the_last_error_after_exhausting_retryable_attempts()
+     {
+        let attempts = AtomicUsize::new(0);
+        let result: Result<(), String> =
+            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_millis(1), || {
+                let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
+                async move { Err(format!("Cannot allocate memory (attempt {count})")) }
+            })
+            .await;
+
+        assert_eq!(
+            result,
+            Err(format!("Cannot allocate memory (attempt {TEST_RETRIES})"))
+        );
+        assert_eq!(attempts.load(Ordering::SeqCst), TEST_RETRIES);
+    }
 
     #[tokio::test]
     async fn run_transform_job_transcodes_and_pushes_every_pending_file() {
@@ -686,6 +860,119 @@ mod tests {
             std::fs::read(destination.join(&destination_filename)).unwrap(),
             b"already pushed"
         );
+    }
+
+    /// The direct regression test for ADR-0121's circuit breaker: a batch
+    /// where every file is the same kind of permanently-corrupt input (not
+    /// one bad apple among many good ones -- that's ADR-0116's scenario,
+    /// covered by `a_mixed_batch_with_one_permanently_failing_file_...`
+    /// above) must abort fast with `Err` instead of attempting every file.
+    #[tokio::test]
+    async fn run_transform_job_trips_the_circuit_breaker_when_the_first_20_completions_all_fail_the_same_way()
+     {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        for i in 0..25 {
+            std::fs::write(
+                source_for_pull.join(format!("bad-{i}.heic")),
+                b"not a real heic file",
+            )
+            .unwrap();
+        }
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Heic,
+            transfers: 5,
+            checkers: 4,
+            tpslimit: None,
+            run_id: "test-run".to_string(),
+        };
+
+        let result = run_transform_job(&plan, 5).await;
+
+        let err = result.expect_err("a uniformly-corrupt batch must trip the circuit breaker");
+        assert!(err.contains("circuit breaker"));
+        assert!(err.contains(&CIRCUIT_BREAKER_SAMPLE_SIZE.to_string()));
+    }
+
+    /// Proves the circuit breaker does *not* trip on a batch that's mostly
+    /// healthy, at a scale that actually exercises its 20-sample threshold
+    /// (unlike the 3-file mixed-batch test above, which never reaches it) --
+    /// the real proof this doesn't regress ADR-0116 at the scale that
+    /// matters for this new logic.
+    #[tokio::test]
+    async fn run_transform_job_does_not_trip_the_circuit_breaker_on_a_mostly_healthy_batch() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        for i in 0..24 {
+            let path = source_for_pull.join(format!("good-{i}.png"));
+            generate_test_png(&path).await.unwrap();
+        }
+        std::fs::write(source_for_pull.join("bad.png"), b"not a real png file").unwrap();
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Png,
+            transfers: 5,
+            checkers: 4,
+            tpslimit: None,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 5).await.unwrap();
+
+        assert!(summary.failed);
+        assert_eq!(summary.pushed, 24);
+    }
+
+    /// Mirrors `media.rs::tests::generate_test_png` -- a third real consumer
+    /// of this exact helper shape within the `transform` module, kept local
+    /// per this codebase's duplicate-until-a-third-consumer convention
+    /// rather than hoisted, since each copy is tiny and test-only.
+    async fn generate_test_png(path: &Path) -> Result<(), String> {
+        let result = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=64x48:rate=1",
+                "-frames:v",
+                "1",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
     }
 
     #[test]
