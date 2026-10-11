@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.3] - 2026-10-11
+
 - ADR-0120: transform's missing transcode metric, child-process-blind resource sampling, and its ephemeral-VM-incompatible resume checkpoint. ([#51](https://github.com/noisypigeon/pigeon-cli/pull/51)).
 
 ## [0.4.2] - 2026-10-11
