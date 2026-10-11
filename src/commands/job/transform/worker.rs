@@ -43,7 +43,7 @@ use std::time::Duration;
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
 
-use super::format::InputFileType;
+use super::format::{InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
 use super::{destination, media, placement, push};
 use crate::commands::job::rclone_transfer;
@@ -123,6 +123,9 @@ pub(crate) struct TransformPlan {
     pub destination_path: String,
     pub local_output: PathBuf,
     pub input_file_type: InputFileType,
+    /// Only consulted when `input_file_type.is_video()` (ADR-0122); an
+    /// unused, harmless `VideoQuality::Medium` default on an image run.
+    pub video_quality: VideoQuality,
     pub transfers: usize,
     pub checkers: usize,
     pub tpslimit: Option<usize>,
@@ -199,6 +202,7 @@ fn push_log_dir(local_output: &Path) -> PathBuf {
 async fn process_one(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
+    video_quality: VideoQuality,
     source_path: &str,
     destination_path: &str,
     result_dir: &Path,
@@ -206,9 +210,14 @@ async fn process_one(
     push_log_dir: &Path,
     push_semaphore: Arc<Semaphore>,
 ) -> Result<PathBuf, String> {
+    let output_extension = input_file_type.output_extension();
     let scratch_path = scratch_dir.join(format!(
         "{}.scratch",
-        placement::compute_destination_name(source_path, &pending_file.relative_path)
+        placement::compute_destination_name(
+            source_path,
+            &pending_file.relative_path,
+            output_extension,
+        )
     ));
     std::fs::create_dir_all(scratch_dir)
         .map_err(|err| format!("failed to create {}: {err}", scratch_dir.display()))?;
@@ -218,6 +227,12 @@ async fn process_one(
         InputFileType::Png | InputFileType::Heic => {
             retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
                 media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path)
+            })
+            .await
+        }
+        InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
+            retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
+                media::transcode_video(&pending_file.absolute_path, &scratch_path, video_quality)
             })
             .await
         }
@@ -240,6 +255,7 @@ async fn process_one(
         &scratch_path,
         source_path,
         &pending_file.relative_path,
+        output_extension,
     )?;
 
     let destination_filename = final_path
@@ -271,7 +287,11 @@ async fn process_one(
 fn outcome_for(input_file_type: InputFileType) -> Outcome {
     match input_file_type {
         InputFileType::Jpeg => Outcome::CopiedThrough,
-        InputFileType::Png | InputFileType::Heic => Outcome::Transcoded,
+        InputFileType::Png
+        | InputFileType::Heic
+        | InputFileType::Mov
+        | InputFileType::M4v
+        | InputFileType::Mp4 => Outcome::Transcoded,
     }
 }
 
@@ -285,11 +305,13 @@ fn enqueue(
     relative_path: String,
     source_dir: &Path,
     source_path: &str,
+    output_extension: &str,
     existing_destination_filenames: &HashSet<String>,
     dispatched: &mut HashSet<String>,
     queue: &mut VecDeque<PendingFile>,
 ) {
-    let destination_name = placement::compute_destination_name(source_path, &relative_path);
+    let destination_name =
+        placement::compute_destination_name(source_path, &relative_path, output_extension);
     if existing_destination_filenames.contains(&destination_name) {
         return;
     }
@@ -319,6 +341,8 @@ pub(crate) async fn run_transform_job(
 
     crate::observability::metrics::set_macro_phase("transform", false);
 
+    let output_extension = plan.input_file_type.output_extension();
+
     // The authoritative "already done" source (ADR-0120) -- fetched once,
     // before the pull subprocess exists, since `--destination-path` is the
     // one thing that actually persists across this job's ephemeral VMs.
@@ -337,6 +361,7 @@ pub(crate) async fn run_transform_job(
             pending_file.relative_path,
             &source_dir,
             &plan.source_path,
+            output_extension,
             &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
@@ -408,10 +433,12 @@ pub(crate) async fn run_transform_job(
             let push_log_dir = push_log_dir.clone();
             let push_semaphore = push_semaphore.clone();
             let input_file_type = plan.input_file_type;
+            let video_quality = plan.video_quality;
             in_flight.spawn(async move {
                 let outcome = process_one(
                     &pending_file,
                     input_file_type,
+                    video_quality,
                     &source_path,
                     &destination_path,
                     &result_dir,
@@ -488,6 +515,7 @@ pub(crate) async fn run_transform_job(
                                 relative_path,
                                 &source_dir,
                                 &plan.source_path,
+                                output_extension,
                                 &existing_destination_filenames,
                                 &mut dispatched,
                                 &mut queue,
@@ -509,6 +537,7 @@ pub(crate) async fn run_transform_job(
                             relative_path,
                             &source_dir,
                             &plan.source_path,
+                            output_extension,
                             &existing_destination_filenames,
                             &mut dispatched,
                             &mut queue,
@@ -674,6 +703,7 @@ mod tests {
             input_file_type: InputFileType::Jpeg,
             transfers: 2,
             checkers: 4,
+            video_quality: VideoQuality::Medium,
             tpslimit: None,
             run_id: "test-run".to_string(),
         };
@@ -738,6 +768,7 @@ mod tests {
             input_file_type: InputFileType::Heic,
             transfers: 3,
             checkers: 4,
+            video_quality: VideoQuality::Medium,
             tpslimit: None,
             run_id: "test-run".to_string(),
         };
@@ -797,6 +828,7 @@ mod tests {
             input_file_type: InputFileType::Jpeg,
             transfers: 2,
             checkers: 4,
+            video_quality: VideoQuality::Medium,
             tpslimit: None,
             run_id: "test-run".to_string(),
         };
@@ -835,7 +867,8 @@ mod tests {
         std::fs::write(source_for_pull.join("a.jpeg"), b"jpeg bytes").unwrap();
 
         let source_path = source_for_pull.display().to_string();
-        let destination_filename = placement::compute_destination_name(&source_path, "a.jpeg");
+        let destination_filename =
+            placement::compute_destination_name(&source_path, "a.jpeg", "jpg");
         std::fs::write(destination.join(&destination_filename), b"already pushed").unwrap();
 
         let plan = TransformPlan {
@@ -845,6 +878,7 @@ mod tests {
             input_file_type: InputFileType::Jpeg,
             transfers: 2,
             checkers: 4,
+            video_quality: VideoQuality::Medium,
             tpslimit: None,
             run_id: "test-run".to_string(),
         };
@@ -896,6 +930,7 @@ mod tests {
             input_file_type: InputFileType::Heic,
             transfers: 5,
             checkers: 4,
+            video_quality: VideoQuality::Medium,
             tpslimit: None,
             run_id: "test-run".to_string(),
         };
@@ -938,6 +973,7 @@ mod tests {
             input_file_type: InputFileType::Png,
             transfers: 5,
             checkers: 4,
+            video_quality: VideoQuality::Medium,
             tpslimit: None,
             run_id: "test-run".to_string(),
         };
@@ -975,6 +1011,94 @@ mod tests {
         Ok(())
     }
 
+    /// Mirrors `media.rs::tests::generate_test_video`, kept local per this
+    /// module's existing `generate_test_png` precedent.
+    async fn generate_test_video(path: &Path) -> Result<(), String> {
+        let result = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=64x48:rate=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=duration=1",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
+    }
+
+    /// The direct regression test for ADR-0122: a video input pushes as
+    /// `.mp4`, mirroring the existing jpeg/png/heic pipeline tests above.
+    #[tokio::test]
+    async fn run_transform_job_transcodes_and_pushes_a_video_file() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        if generate_test_video(&source_for_pull.join("a.mp4"))
+            .await
+            .is_err()
+        {
+            eprintln!("skipping: this ffmpeg build can't generate a test fixture");
+            return;
+        }
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Mp4,
+            transfers: 2,
+            checkers: 4,
+            video_quality: VideoQuality::Low,
+            tpslimit: None,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 2).await.unwrap();
+
+        if summary.failed {
+            let detail = summary
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.outcome == Outcome::Failed)
+                .map(|outcome| outcome.detail.as_str())
+                .unwrap_or_default();
+            eprintln!("skipping: this ffmpeg build can't encode libx265: {detail}");
+            return;
+        }
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(summary.outcomes[0].outcome, Outcome::Transcoded);
+        let pushed_names: Vec<_> = std::fs::read_dir(&destination)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(pushed_names.len(), 1);
+        assert!(pushed_names[0].ends_with(".mp4"));
+    }
+
     #[test]
     fn enqueue_does_not_double_dispatch_a_path_already_dispatched_this_run() {
         let dir = tempfile::tempdir().unwrap();
@@ -987,6 +1111,7 @@ mod tests {
             "a.png".to_string(),
             &source_dir,
             "source:png/",
+            "jpg",
             &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
@@ -998,6 +1123,7 @@ mod tests {
             "a.png".to_string(),
             &source_dir,
             "source:png/",
+            "jpg",
             &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
@@ -1015,8 +1141,11 @@ mod tests {
         let source_dir = dir.path().to_path_buf();
         let source_path = "source:png/";
         let mut existing_destination_filenames = HashSet::new();
-        existing_destination_filenames
-            .insert(placement::compute_destination_name(source_path, "a.png"));
+        existing_destination_filenames.insert(placement::compute_destination_name(
+            source_path,
+            "a.png",
+            "jpg",
+        ));
         let mut dispatched = HashSet::new();
         let mut queue = VecDeque::new();
 
@@ -1024,6 +1153,7 @@ mod tests {
             "a.png".to_string(),
             &source_dir,
             source_path,
+            "jpg",
             &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
@@ -1037,6 +1167,9 @@ mod tests {
         assert_eq!(outcome_for(InputFileType::Jpeg), Outcome::CopiedThrough);
         assert_eq!(outcome_for(InputFileType::Png), Outcome::Transcoded);
         assert_eq!(outcome_for(InputFileType::Heic), Outcome::Transcoded);
+        assert_eq!(outcome_for(InputFileType::Mov), Outcome::Transcoded);
+        assert_eq!(outcome_for(InputFileType::M4v), Outcome::Transcoded);
+        assert_eq!(outcome_for(InputFileType::Mp4), Outcome::Transcoded);
     }
 
     #[test]

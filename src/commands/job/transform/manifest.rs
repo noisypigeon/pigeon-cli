@@ -109,6 +109,19 @@ mod tests {
     }
 
     #[test]
+    fn gather_pending_filters_by_extension_for_a_video_input_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("a.mp4"), b"a").unwrap();
+        fs::write(source_dir.join("stray.mov"), b"not an mp4").unwrap();
+
+        let pending = gather_pending(&source_dir, InputFileType::Mp4).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].relative_path, "a.mp4");
+    }
+
+    #[test]
     fn gather_pending_includes_every_matching_file_regardless_of_prior_state() {
         let dir = tempfile::tempdir().unwrap();
         let source_dir = dir.path().join("source");

@@ -422,28 +422,38 @@ pub enum JobType {
     Rclone(RcloneArgs),
 
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
-    /// maximum-quality `.jpg` (ADR-0112, pipeline reworked by ADR-0116):
-    /// shells out to `rclone` to pull `--source-path` into a local staging
-    /// tree, transcoding/copying each file locally and pushing it
-    /// individually via `rclone copyto` the moment it's ready, rather than
-    /// waiting for the whole batch. `--source-path`/`--destination-path`
-    /// are raw rclone `remote:path` strings, same semantics as the
-    /// `rclone` job's own flags of the same name -- never pigeon
-    /// `BucketConfig`/keyring aliases. Deduplication is never involved --
-    /// every output file's name is derived deterministically and is
-    /// unique by construction; duplicate source content is deliberately
-    /// retained at separate destination names. A single file's transcode
-    /// or push failure (e.g. a HEIC file the local `ffmpeg` build can't
-    /// decode, retried before giving up) is recorded and reported but
-    /// never stops any other file from being processed and pushed; every
-    /// file that does succeed stays checkpointed for a resumed rerun.
-    /// Requires both `rclone` and `ffmpeg`/`ffprobe` on `PATH`.
+    /// maximum-quality `.jpg`, or video files (`mov`/`m4v`/`mp4`, ADR-0122)
+    /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`
+    /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
+    /// pull `--source-path` into a local staging tree, transcoding/copying
+    /// each file locally and pushing it individually via `rclone copyto`
+    /// the moment it's ready, rather than waiting for the whole batch.
+    /// `--source-path`/`--destination-path` are raw rclone `remote:path`
+    /// strings, same semantics as the `rclone` job's own flags of the same
+    /// name -- never pigeon `BucketConfig`/keyring aliases. Deduplication
+    /// is never involved -- every output file's name is derived
+    /// deterministically and is unique by construction; duplicate source
+    /// content is deliberately retained at separate destination names. A
+    /// single file's transcode or push failure (e.g. a HEIC file the local
+    /// `ffmpeg` build can't decode, retried before giving up) is recorded
+    /// and reported but never stops any other file from being processed
+    /// and pushed; every file that does succeed stays checkpointed for a
+    /// resumed rerun. Requires both `rclone` and `ffmpeg`/`ffprobe` on
+    /// `PATH`.
     Transform {
-        /// Which input format this run transcodes: `png`, `jpeg`, or
-        /// `heic`. Interactively selected when omitted and stdin is a
-        /// terminal; required otherwise.
+        /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
+        /// `mov`, `m4v`, or `mp4`. Interactively selected when omitted and
+        /// stdin is a terminal; required otherwise.
         #[arg(long)]
         input_file_type: Option<String>,
+
+        /// Compression level for a video input kind (`mov`/`m4v`/`mp4`):
+        /// `low`, `medium` (default), `high`, or `lossless` -- a small
+        /// vetted `libx265` CRF menu (ADR-0122). Ignored for an image input
+        /// kind. Interactively selected when omitted, stdin is a terminal,
+        /// and the input kind is video; defaults to `medium` otherwise.
+        #[arg(long)]
+        video_quality: Option<String>,
 
         /// rclone source, e.g. `source:png/`. Interactively prompted when
         /// omitted and stdin is a terminal; required otherwise.

@@ -1,14 +1,16 @@
-//! `pigeon job run transform` (ADR-0112, pipeline reworked by ADR-0116):
-//! shells out to `rclone` to pull source files matching
-//! `--input-file-type` (`png`/`jpeg`/`heic`) into a local staging tree,
-//! transcodes or copies them locally into full-size, maximum-quality `.jpg`
-//! at a destination filename unique by construction (never collision-
-//! detected-and-fixed, and never deduplicated -- duplicate source content
-//! is deliberately retained at separate destination names), then pushes
-//! each file individually via `rclone copyto` the moment it's ready rather
-//! than waiting for the whole batch. See `worker`'s module doc comment for
-//! the per-file pipeline's full shape, `push`'s for the per-file push leg,
-//! and `placement`'s for the naming scheme.
+//! `pigeon job run transform` (ADR-0112, pipeline reworked by ADR-0116, video
+//! input kinds added by ADR-0122): shells out to `rclone` to pull source
+//! files matching `--input-file-type` (`png`/`jpeg`/`heic`/`mov`/`m4v`/`mp4`)
+//! into a local staging tree, transcodes or copies them locally into a
+//! destination filename unique by construction (never collision-detected-
+//! and-fixed, and never deduplicated -- duplicate source content is
+//! deliberately retained at separate destination names) -- full-size,
+//! maximum-quality `.jpg` for image kinds, `.mp4` (H.265/HEVC at the chosen
+//! `--video-quality`) for video kinds -- then pushes each file individually
+//! via `rclone copyto` the moment it's ready rather than waiting for the
+//! whole batch. See `worker`'s module doc comment for the per-file
+//! pipeline's full shape, `push`'s for the per-file push leg, and
+//! `placement`'s for the naming scheme.
 
 mod destination;
 mod format;
@@ -23,7 +25,7 @@ use std::path::PathBuf;
 
 use crate::core::job::Job;
 
-pub(crate) use format::InputFileType;
+pub(crate) use format::{InputFileType, VideoQuality};
 pub(crate) use worker::{TransformPlan, TransformSummary};
 
 pub(crate) struct TransformJob {
@@ -31,6 +33,7 @@ pub(crate) struct TransformJob {
     pub destination_path: String,
     pub local_output: PathBuf,
     pub input_file_type: InputFileType,
+    pub video_quality: VideoQuality,
     pub transfers: usize,
     pub checkers: usize,
     pub tpslimit: Option<usize>,
@@ -53,6 +56,7 @@ impl Job for TransformJob {
             destination_path: self.destination_path.clone(),
             local_output: self.local_output.clone(),
             input_file_type: self.input_file_type,
+            video_quality: self.video_quality,
             transfers: self.transfers,
             checkers: self.checkers,
             tpslimit: self.tpslimit,

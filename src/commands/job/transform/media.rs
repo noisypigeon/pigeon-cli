@@ -16,6 +16,8 @@ use std::path::Path;
 
 use serde::Deserialize;
 
+use super::format::VideoQuality;
+
 /// Confirms `ffmpeg`/`ffprobe` are on `PATH`, checked once up front before
 /// any prompts (mirrors `pull_transform::media::check_ffmpeg_available`), so
 /// a missing binary fails the whole job immediately instead of partway
@@ -179,6 +181,124 @@ pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Tolerance for `transcode_video`'s duration guard, in seconds -- absorbs
+/// ordinary container/muxing overhead between the source and the re-encoded
+/// `.mp4`, while still catching a truncated or partial encode that
+/// nonetheless exits 0.
+const DURATION_TOLERANCE_SECONDS: f64 = 0.5;
+
+/// `path`'s container-level duration in seconds (`ffprobe`'s
+/// `format=duration`), or `None` if `ffprobe` can't determine it -- treated
+/// as "skip the check," same posture as `probe_dimensions`.
+async fn probe_duration_seconds(path: &Path) -> Option<f64> {
+    let output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+        ])
+        .arg(path)
+        .output()
+        .await
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<f64>()
+        .ok()
+}
+
+/// Transcodes `input` (mov/m4v/mp4) to `output` (always `.mp4`, H.265/HEVC,
+/// ADR-0122):
+/// ```text
+/// ffmpeg -y -loglevel error -i <input> -c:v libx265 -tag:v hvc1 -preset medium \
+///   [-crf <N> | -x265-params lossless=1] -c:a aac -b:a 256k -f mp4 <output>
+/// ```
+/// `-tag:v hvc1` is required for QuickTime/Apple-device playback of
+/// HEVC-in-MP4 -- ffmpeg's default `hev1` tag is not recognized by Apple's
+/// own players. `-f mp4` forces the muxer explicitly, exactly
+/// `transcode_to_jpg`'s own ADR-0115 lesson: `worker.rs` writes to a scratch
+/// path ending in `.scratch`, not `.mp4`, so ffmpeg can never be allowed to
+/// infer the output format from the on-disk extension alone. No
+/// `-vf scale=...` or other resize filter is ever applied, preserving the
+/// original resolution exactly -- verified by the same pixel-area dimension
+/// guard `transcode_to_jpg` uses, plus a duration guard: video has a
+/// truncated/partial-encode failure mode images don't (a process that exits
+/// 0 having only written part of the stream), which only a duration
+/// comparison can catch. A non-zero `ffmpeg` exit -- including a
+/// `libx265`-less ffmpeg build, which fails immediately with an "Unknown
+/// encoder" message -- returns `Err` with that stderr folded in verbatim;
+/// `worker.rs`'s call site retries this a bounded number of times before
+/// giving up and recording the failure for just this one file, exactly like
+/// `transcode_to_jpg`.
+pub(crate) async fn transcode_video(
+    input: &Path,
+    output: &Path,
+    quality: VideoQuality,
+) -> Result<(), String> {
+    let mut command = tokio::process::Command::new("ffmpeg");
+    command.args(["-y", "-loglevel", "error"]);
+    command.arg("-i").arg(input);
+    command.args(["-c:v", "libx265", "-tag:v", "hvc1", "-preset", "medium"]);
+    match quality.crf() {
+        Some(crf) => {
+            command.args(["-crf", &crf.to_string()]);
+        }
+        None => {
+            command.args(["-x265-params", "lossless=1"]);
+        }
+    }
+    command.args(["-c:a", "aac", "-b:a", "256k", "-f", "mp4"]);
+    command.arg(output);
+
+    let result = command
+        .output()
+        .await
+        .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+
+    if !result.status.success() {
+        return Err(format!(
+            "ffmpeg failed to transcode {}: {}",
+            input.display(),
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+
+    if let (Some(before), Some(after)) = (
+        probe_dimensions(input).await,
+        probe_dimensions(output).await,
+    ) {
+        let before_area = before.0 as u64 * before.1 as u64;
+        let after_area = after.0 as u64 * after.1 as u64;
+        if before_area != after_area {
+            return Err(format!(
+                "transcoding {} changed pixel area from {before:?} ({before_area} px) to \
+                 {after:?} ({after_area} px); refusing an output that isn't full-size",
+                input.display()
+            ));
+        }
+    }
+
+    if let (Some(before), Some(after)) = (
+        probe_duration_seconds(input).await,
+        probe_duration_seconds(output).await,
+    ) && (before - after).abs() > DURATION_TOLERANCE_SECONDS
+    {
+        return Err(format!(
+            "transcoding {} changed duration from {before:.3}s to {after:.3}s (tolerance \
+             {DURATION_TOLERANCE_SECONDS}s); refusing a truncated or partial encode",
+            input.display()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Matches `ffmpeg`/`ffprobe` failure signatures that are deterministic --
 /// re-running `transcode_to_jpg` against the exact same input reproduces the
 /// identical failure every time, so retrying buys nothing but doubles ffmpeg
@@ -194,6 +314,7 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         "Decoder (codec",
         "could not find codec parameters",
         "refusing an output that isn't full-size",
+        "Unknown encoder",
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -322,6 +443,110 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Generates a tiny synthetic video (with a silent audio track) via
+    /// ffmpeg's `lavfi` test sources -- avoids needing a checked-in binary
+    /// fixture, mirroring `generate_test_png` above.
+    async fn generate_test_video(path: &Path) -> Result<(), String> {
+        let result = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=64x48:rate=10",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=duration=1",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn transcode_video_preserves_dimensions_and_duration_for_a_real_video() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("test.mp4");
+        if generate_test_video(&input).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate a test fixture");
+            return;
+        }
+
+        let output = dir.path().join("test-output.mp4");
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
+            eprintln!("skipping: this ffmpeg build can't encode libx265: {err}");
+            return;
+        }
+
+        assert!(output.exists());
+        assert_eq!(
+            probe_dimensions(&input).await,
+            probe_dimensions(&output).await
+        );
+        let before_duration = probe_duration_seconds(&input).await.unwrap();
+        let after_duration = probe_duration_seconds(&output).await.unwrap();
+        assert!((before_duration - after_duration).abs() <= DURATION_TOLERANCE_SECONDS);
+    }
+
+    /// Mirrors `transcode_to_jpg_succeeds_when_the_output_path_ends_in_scratch`
+    /// -- without `-f mp4` this fails because the on-disk extension is
+    /// `.scratch`, not `.mp4`.
+    #[tokio::test]
+    async fn transcode_video_succeeds_when_the_output_path_ends_in_scratch() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("test.mp4");
+        if generate_test_video(&input).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate a test fixture");
+            return;
+        }
+
+        let output = dir.path().join("test-abcdef0123456789.mp4.scratch");
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Low).await {
+            eprintln!("skipping: this ffmpeg build can't encode libx265: {err}");
+            return;
+        }
+
+        assert!(output.exists());
+    }
+
+    #[tokio::test]
+    async fn transcode_video_fails_fast_on_an_unreadable_input() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("not-a-video.mp4");
+        std::fs::write(&input, b"this is not a real mp4 file").unwrap();
+        let output = dir.path().join("out.mp4");
+
+        let result = transcode_video(&input, &output, VideoQuality::Medium).await;
+        assert!(result.is_err());
+    }
+
     #[test]
     fn is_non_retryable_transcode_error_matches_every_known_deterministic_signature() {
         assert!(is_non_retryable_transcode_error(
@@ -340,6 +565,9 @@ mod tests {
         assert!(is_non_retryable_transcode_error(
             "transcoding /x.png changed pixel area from (100, 100) (10000 px) to (0, 0) (0 px); \
              refusing an output that isn't full-size"
+        ));
+        assert!(is_non_retryable_transcode_error(
+            "ffmpeg failed to transcode /x.mp4: Unknown encoder 'libx265'"
         ));
     }
 

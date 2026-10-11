@@ -6,6 +6,11 @@
 //! `--destination-path` already contains from an earlier run, so it can
 //! only guarantee run-local uniqueness, never global uniqueness. This
 //! module never calls it.
+//!
+//! `compute_destination_name`'s output extension was hardcoded to `.jpg`
+//! until ADR-0122 added video input kinds, which output `.mp4` instead --
+//! it now takes that extension as an explicit parameter
+//! (`InputFileType::output_extension`).
 
 use std::path::{Path, PathBuf};
 
@@ -30,7 +35,11 @@ const NAME_HASH_HEX_LEN: usize = 16;
 /// name on every run, which is also what makes a `transform` rerun line up
 /// cleanly with each per-file `rclone copyto` push's own incremental
 /// skip-if-unchanged behavior (ADR-0116).
-pub(crate) fn compute_destination_name(source_path: &str, original_relative_path: &str) -> String {
+pub(crate) fn compute_destination_name(
+    source_path: &str,
+    original_relative_path: &str,
+    output_extension: &str,
+) -> String {
     let stem = sanitize_filename(
         Path::new(original_relative_path)
             .file_stem()
@@ -39,7 +48,7 @@ pub(crate) fn compute_destination_name(source_path: &str, original_relative_path
     );
     let digest =
         download::sha256_hex(format!("{source_path}\u{1}{original_relative_path}").as_bytes());
-    format!("{stem}-{}.jpg", &digest[..NAME_HASH_HEX_LEN])
+    format!("{stem}-{}.{output_extension}", &digest[..NAME_HASH_HEX_LEN])
 }
 
 /// Moves `scratch_path` (the already-transcoded or copied-through file)
@@ -55,12 +64,14 @@ pub(crate) fn place_one(
     scratch_path: &Path,
     source_path: &str,
     original_relative_path: &str,
+    output_extension: &str,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(result_dir)
         .map_err(|err| format!("failed to create {}: {err}", result_dir.display()))?;
     let final_path = result_dir.join(compute_destination_name(
         source_path,
         original_relative_path,
+        output_extension,
     ));
     if final_path.exists() {
         return Err(format!(
@@ -86,15 +97,15 @@ mod tests {
 
     #[test]
     fn compute_destination_name_is_deterministic() {
-        let first = compute_destination_name("source:png/", "screenshots/IMG_0001.png");
-        let second = compute_destination_name("source:png/", "screenshots/IMG_0001.png");
+        let first = compute_destination_name("source:png/", "screenshots/IMG_0001.png", "jpg");
+        let second = compute_destination_name("source:png/", "screenshots/IMG_0001.png", "jpg");
         assert_eq!(first, second);
     }
 
     #[test]
     fn compute_destination_name_differs_for_relative_paths_sharing_a_basename() {
-        let a = compute_destination_name("source:png/", "screenshots/IMG_0001.png");
-        let b = compute_destination_name("source:png/", "photos/IMG_0001.png");
+        let a = compute_destination_name("source:png/", "screenshots/IMG_0001.png", "jpg");
+        let b = compute_destination_name("source:png/", "photos/IMG_0001.png", "jpg");
         assert_ne!(a, b);
         // Both still carry the shared basename as a readable prefix.
         assert!(a.starts_with("IMG_0001-"));
@@ -103,15 +114,18 @@ mod tests {
 
     #[test]
     fn compute_destination_name_differs_across_source_paths_with_an_identical_relative_path() {
-        let a = compute_destination_name("source-a:png/", "IMG_0001.png");
-        let b = compute_destination_name("source-b:png/", "IMG_0001.png");
+        let a = compute_destination_name("source-a:png/", "IMG_0001.png", "jpg");
+        let b = compute_destination_name("source-b:png/", "IMG_0001.png", "jpg");
         assert_ne!(a, b);
     }
 
     #[test]
-    fn compute_destination_name_always_ends_in_jpg() {
-        let name = compute_destination_name("source:heic/", "a/b/c.heic");
-        assert!(name.ends_with(".jpg"));
+    fn compute_destination_name_uses_the_given_output_extension() {
+        let jpg = compute_destination_name("source:heic/", "a/b/c.heic", "jpg");
+        assert!(jpg.ends_with(".jpg"));
+
+        let mp4 = compute_destination_name("source:mov/", "a/b/c.mov", "mp4");
+        assert!(mp4.ends_with(".mp4"));
     }
 
     #[test]
@@ -121,7 +135,8 @@ mod tests {
         let scratch_path = dir.path().join("scratch.jpg");
         std::fs::write(&scratch_path, b"jpeg bytes").unwrap();
 
-        let final_path = place_one(&result_dir, &scratch_path, "source:png/", "a.png").unwrap();
+        let final_path =
+            place_one(&result_dir, &scratch_path, "source:png/", "a.png", "jpg").unwrap();
 
         assert!(final_path.exists());
         assert!(!scratch_path.exists());
@@ -133,13 +148,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result_dir = dir.path().join("result");
         std::fs::create_dir_all(&result_dir).unwrap();
-        let colliding_name = compute_destination_name("source:png/", "a.png");
+        let colliding_name = compute_destination_name("source:png/", "a.png", "jpg");
         std::fs::write(result_dir.join(&colliding_name), b"already here").unwrap();
 
         let scratch_path = dir.path().join("scratch.jpg");
         std::fs::write(&scratch_path, b"new content").unwrap();
 
-        let result = place_one(&result_dir, &scratch_path, "source:png/", "a.png");
+        let result = place_one(&result_dir, &scratch_path, "source:png/", "a.png", "jpg");
         assert!(result.is_err());
         // The pre-existing file must be untouched -- this is a hard error,
         // not a silent overwrite or a `-2` suffix fallback.
