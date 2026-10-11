@@ -6,8 +6,15 @@
 //! therefore preserved by construction, and `transcode_to_jpg` additionally
 //! confirms that with a cheap post-encode `ffprobe` check as a defensive
 //! guard against an unexpected ffmpeg default silently resizing the image.
+//! That guard compares pixel *area*, not exact `(width, height)` ordering,
+//! and `probe_dimensions` understands HEIF "Tile Grid" stream groups
+//! (ADR-0121) -- both needed for a grid-tiled, HEIF-rotated real-world HEIC
+//! photo to probe and compare correctly; see `probe_dimensions`'s and
+//! `transcode_to_jpg`'s own doc comments for why.
 
 use std::path::Path;
+
+use serde::Deserialize;
 
 /// Confirms `ffmpeg`/`ffprobe` are on `PATH`, checked once up front before
 /// any prompts (mirrors `pull_transform::media::check_ffmpeg_available`), so
@@ -29,22 +36,61 @@ pub(crate) async fn check_ffmpeg_available() -> Result<(), String> {
     Ok(())
 }
 
-/// Pixel dimensions of `path`'s first video/image stream, or `None` if
-/// `ffprobe` can't determine them (e.g. a format it can't open at all) --
-/// treated as "skip the check," not an error, since this is a defensive
-/// guard, not the primary correctness mechanism (no resize filter is ever
-/// applied, so dimensions are already preserved by construction).
+#[derive(Deserialize, Default)]
+struct FfprobeStream {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(Deserialize, Default)]
+struct FfprobeStreamGroupComponent {
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(Deserialize, Default)]
+struct FfprobeStreamGroup {
+    #[serde(default)]
+    components: Vec<FfprobeStreamGroupComponent>,
+}
+
+#[derive(Deserialize, Default)]
+struct FfprobeDimensionsOutput {
+    #[serde(default)]
+    streams: Vec<FfprobeStream>,
+    #[serde(default)]
+    stream_groups: Vec<FfprobeStreamGroup>,
+}
+
+/// Pixel dimensions of `path`'s true image content, or `None` if `ffprobe`
+/// can't determine them (e.g. a format it can't open at all) -- treated as
+/// "skip the check," not an error, since this is a defensive guard, not the
+/// primary correctness mechanism (no resize filter is ever applied, so
+/// dimensions are already preserved by construction).
+///
+/// Prefers a HEIF "Tile Grid" stream group's reconstructed canvas size
+/// (ADR-0121) over the first stream's raw dimensions: a grid-tiled HEIC
+/// (the common shape for a modern phone camera's high-resolution photo)
+/// exposes its dozens of tiles as individual small streams (e.g. 512x512)
+/// with none marked `default`/primary, so `-select_streams v:0` alone only
+/// ever sees one arbitrary tile, never the full reconstructed photo (e.g.
+/// 3024x4032) -- ffmpeg instead surfaces the reconstructed size through a
+/// separate `stream_groups` entry. Falls back to the plain stream's
+/// dimensions when no stream group exists: every non-grid input (a plain
+/// PNG, a simple single-image HEIC) and the single-frame `.jpg` output,
+/// which never has one.
 async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
     let output = tokio::process::Command::new("ffprobe")
         .args([
             "-v",
             "error",
+            "-print_format",
+            "json",
             "-select_streams",
             "v:0",
             "-show_entries",
             "stream=width,height",
-            "-of",
-            "csv=p=0",
+            "-show_stream_groups",
         ])
         .arg(path)
         .output()
@@ -53,11 +99,17 @@ async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
     if !output.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let mut parts = text.trim().split(',');
-    let width = parts.next()?.parse::<u32>().ok()?;
-    let height = parts.next()?.parse::<u32>().ok()?;
-    Some((width, height))
+    let parsed: FfprobeDimensionsOutput = serde_json::from_slice(&output.stdout).ok()?;
+    if let Some(component) = parsed
+        .stream_groups
+        .first()
+        .and_then(|group| group.components.first())
+        && let (Some(width), Some(height)) = (component.width, component.height)
+    {
+        return Some((width, height));
+    }
+    let stream = parsed.streams.first()?;
+    Some((stream.width?, stream.height?))
 }
 
 /// Transcodes `input` (png/heic) to `output` (always `.jpg`):
@@ -112,16 +164,40 @@ pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), 
     if let (Some(before), Some(after)) = (
         probe_dimensions(input).await,
         probe_dimensions(output).await,
-    ) && before != after
-    {
-        return Err(format!(
-            "transcoding {} changed dimensions from {before:?} to {after:?}; \
-             refusing an output that isn't full-size",
-            input.display()
-        ));
+    ) {
+        let before_area = before.0 as u64 * before.1 as u64;
+        let after_area = after.0 as u64 * after.1 as u64;
+        if before_area != after_area {
+            return Err(format!(
+                "transcoding {} changed pixel area from {before:?} ({before_area} px) to \
+                 {after:?} ({after_area} px); refusing an output that isn't full-size",
+                input.display()
+            ));
+        }
     }
 
     Ok(())
+}
+
+/// Matches `ffmpeg`/`ffprobe` failure signatures that are deterministic --
+/// re-running `transcode_to_jpg` against the exact same input reproduces the
+/// identical failure every time, so retrying buys nothing but doubles ffmpeg
+/// invocations and adds a guaranteed sleep per file (ADR-0121). Matches
+/// substrings, not full messages or exit codes -- same caution as
+/// `destination.rs`'s rclone-stderr precedent (ADR-0120): pattern-matching
+/// subprocess output is inherently version-fragile; reconfirm these
+/// substrings against whatever `ffmpeg` version is actually deployed.
+pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
+    const NON_RETRYABLE_SIGNATURES: &[&str] = &[
+        "moov atom not found",
+        "Invalid data found when processing input",
+        "Decoder (codec",
+        "could not find codec parameters",
+        "refusing an output that isn't full-size",
+    ];
+    NON_RETRYABLE_SIGNATURES
+        .iter()
+        .any(|signature| err.contains(signature))
 }
 
 /// `jpeg` input is never routed through ffmpeg -- a plain byte-for-byte
@@ -244,5 +320,77 @@ mod tests {
 
         let result = transcode_to_jpg(&input, &output).await;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn is_non_retryable_transcode_error_matches_every_known_deterministic_signature() {
+        assert!(is_non_retryable_transcode_error(
+            "ffmpeg failed to transcode /x.heic: [mov,mp4,m4a,3gp,3g2,mj2 @ 0x1] moov atom not found\n\
+             /x.heic: Invalid data found when processing input"
+        ));
+        assert!(is_non_retryable_transcode_error(
+            "ffmpeg failed to transcode /x.heic: Invalid data found when processing input"
+        ));
+        assert!(is_non_retryable_transcode_error(
+            "ffmpeg: Decoder (codec heic) not found for input stream"
+        ));
+        assert!(is_non_retryable_transcode_error(
+            "ffmpeg failed to transcode /x.mov: could not find codec parameters"
+        ));
+        assert!(is_non_retryable_transcode_error(
+            "transcoding /x.png changed pixel area from (100, 100) (10000 px) to (0, 0) (0 px); \
+             refusing an output that isn't full-size"
+        ));
+    }
+
+    #[test]
+    fn is_non_retryable_transcode_error_does_not_match_a_plausible_transient_error() {
+        assert!(!is_non_retryable_transcode_error(
+            "failed to run ffmpeg: Resource temporarily unavailable (os error 11)"
+        ));
+        assert!(!is_non_retryable_transcode_error(
+            "ffmpeg failed to transcode /x.png: Cannot allocate memory"
+        ));
+    }
+
+    #[test]
+    fn is_non_retryable_transcode_error_is_false_for_an_empty_string() {
+        assert!(!is_non_retryable_transcode_error(""));
+    }
+
+    /// Confirms the plain (no stream group) probe path is unaffected by the
+    /// `-show_stream_groups` addition -- every ordinary PNG/JPEG input and
+    /// the single-frame `.jpg` output both lack a stream group entirely, so
+    /// `probe_dimensions` must still fall back to the first stream's
+    /// dimensions exactly as before.
+    #[tokio::test]
+    async fn probe_dimensions_falls_back_to_the_plain_stream_when_there_is_no_stream_group() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("test.png");
+        generate_test_png(&input).await.unwrap();
+
+        assert_eq!(probe_dimensions(&input).await, Some((64, 48)));
+    }
+
+    /// The area-based comparison in `transcode_to_jpg` must accept a
+    /// transposed-but-equal-area pair (a HEIF `irot` rotation between the
+    /// raw input canvas reading and the rotation-corrected transcoded
+    /// output, ADR-0121) and still reject a genuinely different-area pair.
+    #[test]
+    fn dimension_guard_area_comparison_accepts_a_transpose_and_rejects_a_real_mismatch() {
+        let transposed_a: (u32, u32) = (4032, 3024);
+        let transposed_b: (u32, u32) = (3024, 4032);
+        let area_a = transposed_a.0 as u64 * transposed_a.1 as u64;
+        let area_b = transposed_b.0 as u64 * transposed_b.1 as u64;
+        assert_eq!(area_a, area_b);
+
+        let truncated: (u32, u32) = (512, 512);
+        let area_truncated = truncated.0 as u64 * truncated.1 as u64;
+        assert_ne!(area_a, area_truncated);
     }
 }
