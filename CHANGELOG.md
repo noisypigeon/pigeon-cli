@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-11
+
 - ADR-0115: fixes `job run transform` failing every png/heic transcode with "Unable to find a suitable output format" -- `transcode_to_jpg` ran `ffmpeg` with no `-f` flag, so it inferred the output format from `worker.rs`'s scratch path, which ends in `.scratch` rather than a recognized extension; now forces `-f mjpeg` explicitly ([#44](https://github.com/noisypigeon/pigeon-cli/pull/44)).
 - ADR-0114: renames `--yes` to `--non-interactive` on all 8 job CLI variants and widens its effect so it suppresses every wizard prompt (not only the final "proceed?" confirmation), fixing a real hang where an interactive-shell run with `--yes` and one omitted optional flag (e.g. `transform`'s `--tpslimit`) still blocked on an interactive prompt; breaking change, no migration shim ([#43](https://github.com/noisypigeon/pigeon-cli/pull/43)).
 - ADR-0113: documents a planned refactor of `job run deduplicate`'s bucket actions to use `rclone` (raw `--source-path`/`--destination-path` instead of keyring-resolved `--source-bucket`/`--destination-bucket`), reusing the pull/local-work/push template `transform` (ADR-0112) already established; `--upload-only` and the pre-run preview table are explicitly kept rather than dropped. Design only -- implementation is a follow-up PR ([#42](https://github.com/noisypigeon/pigeon-cli/pull/42)).
