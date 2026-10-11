@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.5] - 2026-10-11
+
 - ADR-0122: adds `mov`/`m4v`/`mp4` input kinds and a `--video-quality` flag to `job run transform`, transcoding video to space-optimized H.265/HEVC `.mp4` via a small vetted `libx265` CRF menu ([#53](https://github.com/noisypigeon/pigeon-cli/pull/53)).
 
 ## [0.4.4] - 2026-10-11
