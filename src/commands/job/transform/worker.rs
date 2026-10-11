@@ -5,12 +5,12 @@
 //! exit: as each file's bytes land, rclone's own JSON log reports it
 //! ("Copied (new)"/"Copied (replaced existing)", surfaced via
 //! `rclone_transfer::run_rclone_copy`'s `on_copied` channel), and that file
-//! enters the transcode/copy-through -&gt; place -&gt; push -&gt; checkpoint pipeline
-//! immediately -- it never waits for the rest of the batch to finish
-//! downloading. Transcode is bounded by `--concurrency` (CPU-bound); the new
-//! per-file push (`rclone copyto`, replacing the old bulk Phase C) is
-//! bounded by its own semaphore sized from `--transfers` (IO-bound,
-//! deliberately decoupled, ADR-0090's CPU-vs-IO split precedent).
+//! enters the transcode/copy-through -&gt; place -&gt; push pipeline immediately --
+//! it never waits for the rest of the batch to finish downloading. Transcode
+//! is bounded by `--concurrency` (CPU-bound); the new per-file push (`rclone
+//! copyto`, replacing the old bulk Phase C) is bounded by its own semaphore
+//! sized from `--transfers` (IO-bound, deliberately decoupled, ADR-0090's
+//! CPU-vs-IO split precedent).
 //!
 //! A single file's failure (transcode or push, after retries exhaust) is
 //! recorded and reported but never stops any other file's processing or
@@ -19,14 +19,20 @@
 //!
 //! Two dispatch sources feed the same pipeline: an initial directory scan
 //! (`manifest::gather_pending`, run once before the pull subprocess spawns,
-//! catching anything already on disk from an interrupted prior run that
-//! rclone's own skip-unchanged-file logic would otherwise never re-report),
-//! and the live tail above. They are disjoint in the common case but not
-//! watertight by construction -- rclone can in principle still emit a
-//! "Copied" line for a file the initial scan already queued, if it can't
-//! confirm a size/modtime match -- so a `dispatched` set guards against
-//! double-enqueueing, on top of `placement::place_one`'s own independent
-//! hard-error-on-collision backstop.
+//! catching anything already on disk this run before the live tail would
+//! otherwise report it), and the live tail above. Both route through
+//! `enqueue`, which decides "already done" by checking each file's
+//! deterministic `placement::compute_destination_name` against a listing of
+//! `--destination-path` fetched once up front (`destination::
+//! list_existing_filenames`, ADR-0120) -- not a local checkpoint, since
+//! `transform` runs on a freshly-provisioned, ephemeral VM per invocation
+//! and local disk never survives a VM replacement; `--destination-path` is
+//! the thing that actually persists. The two dispatch sources are disjoint
+//! in the common case but not watertight by construction -- rclone can in
+//! principle still emit a "Copied" line for a file the initial scan already
+//! queued, if it can't confirm a size/modtime match -- so a `dispatched` set
+//! guards against double-enqueueing, on top of `placement::place_one`'s own
+//! independent hard-error-on-collision backstop.
 
 use std::collections::{HashSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -38,7 +44,7 @@ use tokio::task::JoinSet;
 
 use super::format::InputFileType;
 use super::manifest::{self, PendingFile};
-use super::{media, placement, push};
+use super::{destination, media, placement, push};
 use crate::commands::job::rclone_transfer;
 use crate::core::retry::retry_with_backoff;
 
@@ -148,15 +154,27 @@ async fn process_one(
     std::fs::create_dir_all(scratch_dir)
         .map_err(|err| format!("failed to create {}: {err}", scratch_dir.display()))?;
 
-    match input_file_type {
-        InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path)?,
+    let transcode_result = match input_file_type {
+        InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
         InputFileType::Png | InputFileType::Heic => {
             retry_with_backoff(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
                 media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path)
             })
-            .await?
+            .await
         }
-    }
+    };
+    crate::observability::metrics::record_phase_count(
+        "transform",
+        "transcode",
+        if transcode_result.is_ok() {
+            outcome_for(input_file_type).as_str()
+        } else {
+            Outcome::Failed.as_str()
+        },
+        1,
+        None,
+    );
+    transcode_result?;
 
     let final_path = placement::place_one(
         result_dir,
@@ -198,18 +216,22 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
     }
 }
 
-/// Enqueues `relative_path` into `queue` unless it is already fully done
-/// (`done_checkpoint`, from a prior completed run) or already dispatched
-/// this run (`dispatched`, guarding against the live tail re-reporting a
-/// file the initial scan already queued -- see this module's doc comment).
+/// Enqueues `relative_path` into `queue` unless it is already fully done --
+/// its deterministic `placement::compute_destination_name` already exists in
+/// `existing_destination_filenames` (fetched once from `--destination-path`
+/// before dispatch begins, ADR-0120) -- or already dispatched this run
+/// (`dispatched`, guarding against the live tail re-reporting a file the
+/// initial scan already queued -- see this module's doc comment).
 fn enqueue(
     relative_path: String,
     source_dir: &Path,
-    done_checkpoint: &HashSet<String>,
+    source_path: &str,
+    existing_destination_filenames: &HashSet<String>,
     dispatched: &mut HashSet<String>,
     queue: &mut VecDeque<PendingFile>,
 ) {
-    if done_checkpoint.contains(&relative_path) {
+    let destination_name = placement::compute_destination_name(source_path, &relative_path);
+    if existing_destination_filenames.contains(&destination_name) {
         return;
     }
     if !dispatched.insert(relative_path.clone()) {
@@ -232,24 +254,34 @@ pub(crate) async fn run_transform_job(
     concurrency: usize,
 ) -> Result<TransformSummary, String> {
     let source_dir = source_dir(&plan.local_output);
-    let staging_dir = staging_dir(&plan.local_output);
     let result_dir = result_dir(&plan.local_output);
     let scratch_dir = scratch_dir(&plan.local_output);
     let push_log_dir = push_log_dir(&plan.local_output);
 
     crate::observability::metrics::set_macro_phase("transform", false);
 
+    // The authoritative "already done" source (ADR-0120) -- fetched once,
+    // before the pull subprocess exists, since `--destination-path` is the
+    // one thing that actually persists across this job's ephemeral VMs.
+    let existing_destination_filenames =
+        destination::list_existing_filenames(&plan.destination_path).await?;
+
     // Initial directory scan, taken once, before the pull subprocess exists
-    // -- picks up anything already on disk from an interrupted prior run.
-    let done_checkpoint = manifest::load_checkpoint(&staging_dir)?;
-    let already_on_disk =
-        manifest::gather_pending(&source_dir, &staging_dir, plan.input_file_type)?;
+    // -- picks up anything already on disk this run before the live tail
+    // would otherwise report it.
+    let already_on_disk = manifest::gather_pending(&source_dir, plan.input_file_type)?;
 
     let mut dispatched: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<PendingFile> = VecDeque::new();
     for pending_file in already_on_disk {
-        dispatched.insert(pending_file.relative_path.clone());
-        queue.push_back(pending_file);
+        enqueue(
+            pending_file.relative_path,
+            &source_dir,
+            &plan.source_path,
+            &existing_destination_filenames,
+            &mut dispatched,
+            &mut queue,
+        );
     }
 
     let (copied_tx, mut copied_rx) = mpsc::unbounded_channel();
@@ -329,15 +361,6 @@ pub(crate) async fn run_transform_job(
                 let (relative_path, result) = joined.expect("transform pipeline task panicked");
                 match result {
                     Ok(final_path) => {
-                        if let Err(err) = manifest::append_checkpoint(&staging_dir, &relative_path) {
-                            outcomes.push(FileOutcome {
-                                relative_path,
-                                destination_filename: None,
-                                outcome: Outcome::Failed,
-                                detail: format!("placed and pushed but failed to checkpoint: {err}"),
-                            });
-                            continue;
-                        }
                         pushed += 1;
                         if !macro_phase_is_uploading {
                             crate::observability::metrics::set_macro_phase("transform", true);
@@ -368,7 +391,8 @@ pub(crate) async fn run_transform_job(
                     Some(relative_path) => enqueue(
                         relative_path,
                         &source_dir,
-                        &done_checkpoint,
+                        &plan.source_path,
+                        &existing_destination_filenames,
                         &mut dispatched,
                         &mut queue,
                     ),
@@ -385,7 +409,8 @@ pub(crate) async fn run_transform_job(
                     enqueue(
                         relative_path,
                         &source_dir,
-                        &done_checkpoint,
+                        &plan.source_path,
+                        &existing_destination_filenames,
                         &mut dispatched,
                         &mut queue,
                     );
@@ -491,10 +516,6 @@ mod tests {
                 .all(|outcome| outcome.outcome == Outcome::CopiedThrough)
         );
 
-        let checkpoint = manifest::load_checkpoint(&staging_dir(&local_output)).unwrap();
-        assert!(checkpoint.contains("a.jpeg"));
-        assert!(checkpoint.contains("b.jpeg"));
-
         let pushed_names: Vec<_> = std::fs::read_dir(&destination)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -509,7 +530,7 @@ mod tests {
 
     /// The direct regression test for ADR-0116's production incident: one
     /// permanently-corrupt file among several good ones must not stop the
-    /// others from being attempted, checkpointed, and pushed.
+    /// others from being attempted and pushed.
     #[tokio::test]
     async fn a_mixed_batch_with_one_permanently_failing_file_still_processes_and_pushes_every_other_file()
      {
@@ -552,11 +573,9 @@ mod tests {
         // Every file is a corrupt HEIC fixture (no real `libheif`-decodable
         // content), so every one of the 3 fails -- this test only exists to
         // prove ALL 3 are attempted (none skipped because an earlier one
-        // failed) and that failure never prevents checkpointing/reporting
-        // for files that *do* succeed, which this synthetic-fixture
-        // constraint can't itself demonstrate directly. See the pushed/
-        // checkpoint assertions below applied to whichever outcome actually
-        // resulted.
+        // failed) and that failure never prevents reporting for files that
+        // *do* succeed, which this synthetic-fixture constraint can't
+        // itself demonstrate directly.
         assert_eq!(summary.outcomes.len(), 3);
         assert!(summary.failed);
         let failed_paths: HashSet<_> = summary
@@ -619,18 +638,69 @@ mod tests {
         );
     }
 
+    /// The direct regression test for ADR-0120's production gap: on a truly
+    /// fresh VM (no local-disk seeding at all -- `local_output` starts
+    /// completely empty, unlike the "already on disk" test above, which is
+    /// what actually simulates a VM replacement), a file already pushed to
+    /// `--destination-path` in a prior run must be skipped entirely --
+    /// neither re-transcoded nor re-pushed.
+    #[tokio::test]
+    async fn run_transform_job_skips_transcode_and_push_for_a_file_already_present_at_the_destination()
+     {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source_for_pull.join("a.jpeg"), b"jpeg bytes").unwrap();
+
+        let source_path = source_for_pull.display().to_string();
+        let destination_filename = placement::compute_destination_name(&source_path, "a.jpeg");
+        std::fs::write(destination.join(&destination_filename), b"already pushed").unwrap();
+
+        let plan = TransformPlan {
+            source_path,
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Jpeg,
+            transfers: 2,
+            checkers: 4,
+            tpslimit: None,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 2).await.unwrap();
+
+        assert!(!summary.failed);
+        assert_eq!(summary.pushed, 0);
+        assert!(summary.outcomes.is_empty());
+        // The pre-existing destination file must be untouched -- proof
+        // nothing re-pushed over it.
+        assert_eq!(
+            std::fs::read(destination.join(&destination_filename)).unwrap(),
+            b"already pushed"
+        );
+    }
+
     #[test]
     fn enqueue_does_not_double_dispatch_a_path_already_dispatched_this_run() {
         let dir = tempfile::tempdir().unwrap();
         let source_dir = dir.path().to_path_buf();
-        let done_checkpoint = HashSet::new();
+        let existing_destination_filenames = HashSet::new();
         let mut dispatched = HashSet::new();
         let mut queue = VecDeque::new();
 
         enqueue(
             "a.png".to_string(),
             &source_dir,
-            &done_checkpoint,
+            "source:png/",
+            &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
         );
@@ -640,7 +710,8 @@ mod tests {
         enqueue(
             "a.png".to_string(),
             &source_dir,
-            &done_checkpoint,
+            "source:png/",
+            &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
         );
@@ -648,19 +719,25 @@ mod tests {
         assert_eq!(queue.len(), 1);
     }
 
+    /// The "already done" check is no longer a local checkpoint (ADR-0120)
+    /// -- it's membership in a pre-fetched listing of `--destination-path`,
+    /// keyed by each file's deterministic `compute_destination_name`.
     #[test]
-    fn enqueue_skips_a_path_already_marked_done_in_the_checkpoint() {
+    fn enqueue_skips_a_path_whose_destination_name_already_exists_at_the_destination() {
         let dir = tempfile::tempdir().unwrap();
         let source_dir = dir.path().to_path_buf();
-        let mut done_checkpoint = HashSet::new();
-        done_checkpoint.insert("a.png".to_string());
+        let source_path = "source:png/";
+        let mut existing_destination_filenames = HashSet::new();
+        existing_destination_filenames
+            .insert(placement::compute_destination_name(source_path, "a.png"));
         let mut dispatched = HashSet::new();
         let mut queue = VecDeque::new();
 
         enqueue(
             "a.png".to_string(),
             &source_dir,
-            &done_checkpoint,
+            source_path,
+            &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
         );
