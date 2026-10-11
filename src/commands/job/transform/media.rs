@@ -213,10 +213,46 @@ async fn probe_duration_seconds(path: &Path) -> Option<f64> {
         .ok()
 }
 
+/// Best-effort diagnostic string appended to `transcode_video`'s pixel-area
+/// mismatch error only (ADR-0125) -- one extra `ffprobe` call made once the
+/// guard is already about to fail, so the common (matching) path pays no
+/// extra cost. Surfaces exactly the fields `probe_dimensions` deliberately
+/// omits (sample/display aspect ratio, any rotation tag or display-matrix
+/// side data, stream count/tags) -- the first things a future investigation
+/// of this class of failure will want and this incident's own log lacked.
+/// `stream_side_data`/`stream_tags` must be requested as their own
+/// top-level `-show_entries` sections, not nested under `stream=...` --
+/// ffprobe silently returns empty placeholders for the nested form.
+async fn probe_video_diagnostics(path: &Path) -> String {
+    let output = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_entries",
+            "stream=index,codec_type,width,height,sample_aspect_ratio,display_aspect_ratio:\
+             stream_side_data=side_data_type,rotation:stream_tags=rotate",
+        ])
+        .arg(path)
+        .output()
+        .await;
+    match output {
+        Ok(o) if o.status.success() => {
+            format!(
+                " (diagnostics: {})",
+                String::from_utf8_lossy(&o.stdout).trim()
+            )
+        }
+        _ => String::new(),
+    }
+}
+
 /// Transcodes `input` (mov/m4v/mp4) to `output` (always `.mp4`, H.265/HEVC,
 /// ADR-0122):
 /// ```text
-/// ffmpeg -y -loglevel error -i <input> -c:v libx265 -tag:v hvc1 -preset medium \
+/// ffmpeg -y -loglevel error -noautorotate -i <input> -map 0:v:0 -map 0:a:0? \
+///   -c:v libx265 -tag:v hvc1 -preset medium \
 ///   [-crf <N> | -x265-params lossless=1] -c:a aac -b:a 256k -f mp4 <output>
 /// ```
 /// `-tag:v hvc1` is required for QuickTime/Apple-device playback of
@@ -225,11 +261,26 @@ async fn probe_duration_seconds(path: &Path) -> Option<f64> {
 /// `transcode_to_jpg`'s own ADR-0115 lesson: `worker.rs` writes to a scratch
 /// path ending in `.scratch`, not `.mp4`, so ffmpeg can never be allowed to
 /// infer the output format from the on-disk extension alone. No
-/// `-vf scale=...` or other resize filter is ever applied, preserving the
-/// original resolution exactly -- verified by the same pixel-area dimension
-/// guard `transcode_to_jpg` uses, plus a duration guard: video has a
-/// truncated/partial-encode failure mode images don't (a process that exits
-/// 0 having only written part of the stream), which only a duration
+/// `-vf scale=...` or other resize filter is ever applied in pigeon's own
+/// command line, but that alone doesn't guarantee the output's raw pixel
+/// grid matches the input's: `-noautorotate` (ADR-0125) is required because
+/// ffmpeg otherwise *implicitly* reshapes the decoded frame to match a
+/// container-embedded display transform (QuickTime/MP4's `tkhd` matrix) --
+/// for most phone video this is a harmless, area-preserving ±90°/180°
+/// rotation, but some real camera-captured files encode a rotation *plus* a
+/// non-unity scale, which silently shrinks/grows the actual output grid
+/// despite pigeon applying no filter of its own. `-noautorotate` suppresses
+/// that implicit reshape unconditionally; empirically confirmed (ADR-0125)
+/// that the original display matrix still survives onto the re-encoded
+/// output as frame-level side data even though this is a full re-encode,
+/// not a stream copy, so playback orientation is unaffected. `-map 0:v:0
+/// -map 0:a:0?` (optional audio map, tolerating a video-only input) pins the
+/// exact stream `probe_dimensions` already reads via `-select_streams v:0`,
+/// removing any ambiguity from ffmpeg's own default stream selection on a
+/// multi-video-track `.mov`. Dimensions are verified by the same pixel-area
+/// dimension guard `transcode_to_jpg` uses, plus a duration guard: video has
+/// a truncated/partial-encode failure mode images don't (a process that
+/// exits 0 having only written part of the stream), which only a duration
 /// comparison can catch. A non-zero `ffmpeg` exit -- including a
 /// `libx265`-less ffmpeg build, which fails immediately with an "Unknown
 /// encoder" message -- returns `Err` with that stderr folded in verbatim;
@@ -242,8 +293,9 @@ pub(crate) async fn transcode_video(
     quality: VideoQuality,
 ) -> Result<(), String> {
     let mut command = tokio::process::Command::new("ffmpeg");
-    command.args(["-y", "-loglevel", "error"]);
+    command.args(["-y", "-loglevel", "error", "-noautorotate"]);
     command.arg("-i").arg(input);
+    command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
     command.args(["-c:v", "libx265", "-tag:v", "hvc1", "-preset", "medium"]);
     match quality.crf() {
         Some(crf) => {
@@ -276,9 +328,10 @@ pub(crate) async fn transcode_video(
         let before_area = before.0 as u64 * before.1 as u64;
         let after_area = after.0 as u64 * after.1 as u64;
         if before_area != after_area {
+            let diagnostics = probe_video_diagnostics(input).await;
             return Err(format!(
                 "transcoding {} changed pixel area from {before:?} ({before_area} px) to \
-                 {after:?} ({after_area} px); refusing an output that isn't full-size",
+                 {after:?} ({after_area} px); refusing an output that isn't full-size{diagnostics}",
                 input.display()
             ));
         }
@@ -503,6 +556,73 @@ mod tests {
         let before_duration = probe_duration_seconds(&input).await.unwrap();
         let after_duration = probe_duration_seconds(&output).await.unwrap();
         assert!((before_duration - after_duration).abs() <= DURATION_TOLERANCE_SECONDS);
+    }
+
+    /// Generates a base test video (as `generate_test_video`) and remuxes a
+    /// copy with a `degrees` display-matrix rotation attached at the
+    /// container level (`-display_rotation`, an ffmpeg *input* option, on a
+    /// `-c copy` remux) -- mirrors a real device-captured `.mov`'s embedded
+    /// `tkhd` rotation matrix (ADR-0125) without needing a checked-in binary
+    /// fixture. The rotation must be attached via a separate remux of a real
+    /// container, not folded into the original `lavfi` generation command --
+    /// doing the latter bakes the rotation into the raw frames instead of
+    /// attaching container-level side data, and wouldn't exercise the bug
+    /// this is meant to pin down.
+    async fn generate_test_video_with_rotation(path: &Path, degrees: i32) -> Result<(), String> {
+        let base_path = path.with_file_name("rotation-base.mp4");
+        generate_test_video(&base_path).await?;
+        let result = tokio::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-display_rotation"])
+            .arg(degrees.to_string())
+            .arg("-i")
+            .arg(&base_path)
+            .args(["-c", "copy", "-f", "mp4"])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
+    }
+
+    /// ADR-0125 regression test: a `.mov`/`.mp4` whose container carries a
+    /// rotation display matrix must transcode without ffmpeg's implicit
+    /// autorotate reshaping the output's raw pixel grid -- `-noautorotate`
+    /// means the comparison must hold on the *exact* `(width, height)` tuple
+    /// here, not merely equal area, pinning the no-reshape mechanism.
+    ///
+    /// Caveat: this fixture is a pure rotation (area-preserving), which
+    /// would *not* have failed even before this fix -- ffmpeg's CLI exposes
+    /// no flag to inject the real incident's rotation-plus-non-unity-scale
+    /// matrix. This test covers the mechanism, not the exact production
+    /// fingerprint (see ADR-0125's Decision §3/§4 for the manual
+    /// verification that covered the latter).
+    #[tokio::test]
+    async fn transcode_video_preserves_raw_dimensions_for_an_input_with_a_rotation_display_matrix()
+    {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("rotated.mp4");
+        if generate_test_video_with_rotation(&input, 90).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't attach a display-rotation matrix");
+            return;
+        }
+
+        let output = dir.path().join("rotated-output.mp4");
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
+            panic!("transcode_video incorrectly rejected a rotated-but-unreshaped input: {err}");
+        }
+
+        assert_eq!(
+            probe_dimensions(&input).await,
+            probe_dimensions(&output).await
+        );
     }
 
     /// Mirrors `transcode_to_jpg_succeeds_when_the_output_path_ends_in_scratch`

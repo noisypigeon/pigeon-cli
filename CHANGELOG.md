@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0125: fixes `job run transform` hard-failing real `.mov` files whose embedded display matrix encodes a rotation plus a non-unity scale, which ffmpeg's implicit autorotate reshapes during decode; `-noautorotate` now suppresses that reshape (playback orientation unaffected, confirmed empirically) ([#56](https://github.com/noisypigeon/pigeon-cli/pull/56)).
+
 ## [0.4.6] - 2026-10-11
 
 - ADR-0124: `job run transform` now deletes a file's local source/result copies immediately once it's durably pushed, and skips already-done files before downloading them at all instead of only after, bounding local disk usage to the in-flight window instead of the whole dataset ([#55](https://github.com/noisypigeon/pigeon-cli/pull/55)).
