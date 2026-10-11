@@ -422,20 +422,22 @@ pub enum JobType {
     Rclone(RcloneArgs),
 
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
-    /// maximum-quality `.jpg` (ADR-0112): shells out to `rclone` to pull
-    /// `--source-path` into a local staging tree, transcodes/copies them
-    /// locally, then shells out to `rclone` again to push the result to
-    /// `--destination-path`. `--source-path`/`--destination-path` are raw
-    /// rclone `remote:path` strings, same semantics as the `rclone` job's
-    /// own flags of the same name -- never pigeon `BucketConfig`/keyring
-    /// aliases. Deduplication is never involved -- every output file's
-    /// name is derived deterministically and is unique by construction;
-    /// duplicate source content is deliberately retained at separate
-    /// destination names. A single transcode failure (e.g. a HEIC file the
-    /// local `ffmpeg` build can't decode) aborts the whole run, though
-    /// every file placed before the failure stays checkpointed for a
-    /// resumed rerun. Requires both `rclone` and `ffmpeg`/`ffprobe` on
-    /// `PATH`.
+    /// maximum-quality `.jpg` (ADR-0112, pipeline reworked by ADR-0116):
+    /// shells out to `rclone` to pull `--source-path` into a local staging
+    /// tree, transcoding/copying each file locally and pushing it
+    /// individually via `rclone copyto` the moment it's ready, rather than
+    /// waiting for the whole batch. `--source-path`/`--destination-path`
+    /// are raw rclone `remote:path` strings, same semantics as the
+    /// `rclone` job's own flags of the same name -- never pigeon
+    /// `BucketConfig`/keyring aliases. Deduplication is never involved --
+    /// every output file's name is derived deterministically and is
+    /// unique by construction; duplicate source content is deliberately
+    /// retained at separate destination names. A single file's transcode
+    /// or push failure (e.g. a HEIC file the local `ffmpeg` build can't
+    /// decode, retried before giving up) is recorded and reported but
+    /// never stops any other file from being processed and pushed; every
+    /// file that does succeed stays checkpointed for a resumed rerun.
+    /// Requires both `rclone` and `ffmpeg`/`ffprobe` on `PATH`.
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, or
         /// `heic`. Interactively selected when omitted and stdin is a
