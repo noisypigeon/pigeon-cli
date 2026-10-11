@@ -58,8 +58,16 @@ jobs:
         include:
           - runner: macos-14
             triple: aarch64-apple-darwin
+            smoke_test: true
           - runner: ubuntu-24.04-arm
             triple: aarch64-unknown-linux-gnu
+            smoke_test: true
+          - runner: macos-14
+            triple: x86_64-apple-darwin
+            smoke_test: false
+          - runner: ubuntu-24.04
+            triple: x86_64-unknown-linux-gnu
+            smoke_test: true
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
@@ -68,13 +76,17 @@ jobs:
 
       - uses: jdx/mise-action@v2
 
-      - run: mise run build-release
+      - run: mise run build-release -- --target ${{ matrix.triple }}
+
+      - name: Smoke test
+        if: matrix.smoke_test
+        run: target/${{ matrix.triple }}/release/pigeon --version
 
       - name: Package binary
         run: |
           version="${{ needs.release.outputs.new_version }}"
           triple="${{ matrix.triple }}"
-          tar czf "pigeon-v${version}-${triple}.tar.gz" -C target/release pigeon -C "$GITHUB_WORKSPACE" LICENSE.md
+          tar czf "pigeon-v${version}-${triple}.tar.gz" -C "target/${triple}/release" pigeon -C "$GITHUB_WORKSPACE" LICENSE.md
 
       - name: Upload release asset
         env:
