@@ -250,7 +250,7 @@ notarization requires a paid Apple Developer ID and is out of scope here.
 
 - A PR-triggered lint/test CI workflow — server-side enforcement of `mise
   run ci` on PRs themselves, rather than only locally pre-merge. A related
-  but distinct gap; not introduced here.
+  but distinct gap; not introduced here. ([#47](https://github.com/noisypigeon/pigeon-cli/issues/47))
 - Minor/major version bumps as anything other than a manual `Cargo.toml`
   edit inside a PR — no commit-message or label-based bump-type inference.
 - macOS binary notarization (requires a paid Apple Developer ID).
