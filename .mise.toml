@@ -19,12 +19,7 @@ exec target/debug/pigeon "$@"
 """
 
 [tasks.build-release]
-run = """
-cargo build --release
-if [ "$(uname)" = "Darwin" ]; then
-  codesign --force -s - --identifier "dev.pigeon.cli" target/release/pigeon
-fi
-"""
+run = ".github/scripts/build-release.sh \"$@\""
 
 [tasks.pigeon-release]
 run = """
