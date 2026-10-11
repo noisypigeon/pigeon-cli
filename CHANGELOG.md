@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0127: fixes `job run transform` OOM-crashing on an oversubscribed `--concurrency` by clamping it against the host's core count and capping each concurrent `ffmpeg` transcode's own thread count; also fixes a crash-resume bug where a file already transcoded and placed into `result/` before a crash got silently re-transcoded and then hard-failed on a false collision, instead of being pushed directly ([#58](https://github.com/noisypigeon/pigeon-cli/pull/58)).
+
 ## [0.4.8] - 2026-10-11
 
 - ADR-0126: fixes `job run transform` still hard-failing real `.mov` files after ADR-0125, this time from ffmpeg's implicit auto-application of QuickTime Clean Aperture container-level crop metadata (FFmpeg 7.1+); `-apply_cropping:v codec` suppresses only that mechanism while preserving the long-standing codec-level crop behavior ([#57](https://github.com/noisypigeon/pigeon-cli/pull/57)).

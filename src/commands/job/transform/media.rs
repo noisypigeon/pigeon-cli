@@ -300,10 +300,20 @@ async fn probe_video_diagnostics(path: &Path) -> String {
 /// `worker.rs`'s call site retries this a bounded number of times before
 /// giving up and recording the failure for just this one file, exactly like
 /// `transcode_to_jpg`.
+///
+/// `threads` caps libx265's own internal thread count (`-threads <n>`,
+/// ADR-0127): with no cap, every concurrent `transcode_video` call
+/// independently defaults to using every core on the host, so `N` files
+/// transcoding at once oversubscribe CPU (and the memory that scales with
+/// it) by a factor of `N` on top of `--concurrency` itself already bounding
+/// the process count. Callers pass `(available_parallelism /
+/// concurrency).max(1)` so the whole fleet of concurrent `ffmpeg`
+/// invocations stays within the host's real core count.
 pub(crate) async fn transcode_video(
     input: &Path,
     output: &Path,
     quality: VideoQuality,
+    threads: usize,
 ) -> Result<(), String> {
     let mut command = tokio::process::Command::new("ffmpeg");
     command.args([
@@ -317,6 +327,7 @@ pub(crate) async fn transcode_video(
     command.arg("-i").arg(input);
     command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
     command.args(["-c:v", "libx265", "-tag:v", "hvc1", "-preset", "medium"]);
+    command.args(["-threads", &threads.max(1).to_string()]);
     match quality.crf() {
         Some(crf) => {
             command.args(["-crf", &crf.to_string()]);
@@ -563,7 +574,7 @@ mod tests {
         }
 
         let output = dir.path().join("test-output.mp4");
-        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium, 1).await {
             eprintln!("skipping: this ffmpeg build can't encode libx265: {err}");
             return;
         }
@@ -635,7 +646,7 @@ mod tests {
         }
 
         let output = dir.path().join("rotated-output.mp4");
-        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium, 1).await {
             panic!("transcode_video incorrectly rejected a rotated-but-unreshaped input: {err}");
         }
 
@@ -723,7 +734,7 @@ mod tests {
         }
 
         let output = dir.path().join("sps-cropped-output.mp4");
-        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium, 1).await {
             panic!("transcode_video incorrectly rejected a codec-level-cropped input: {err}");
         }
 
@@ -751,7 +762,7 @@ mod tests {
         }
 
         let output = dir.path().join("test-abcdef0123456789.mp4.scratch");
-        if let Err(err) = transcode_video(&input, &output, VideoQuality::Low).await {
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Low, 1).await {
             eprintln!("skipping: this ffmpeg build can't encode libx265: {err}");
             return;
         }
@@ -771,7 +782,7 @@ mod tests {
         std::fs::write(&input, b"this is not a real mp4 file").unwrap();
         let output = dir.path().join("out.mp4");
 
-        let result = transcode_video(&input, &output, VideoQuality::Medium).await;
+        let result = transcode_video(&input, &output, VideoQuality::Medium, 1).await;
         assert!(result.is_err());
     }
 
