@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0120: transform's missing transcode metric, child-process-blind resource sampling, and its ephemeral-VM-incompatible resume checkpoint. ([#51](https://github.com/noisypigeon/pigeon-cli/pull/51)).
+
 ## [0.4.2] - 2026-10-11
 
 - ADR-0119: narrows the release workflow's pre-publish check from `mise run ci` to `fmt-check`+`lint`, dropping `mise run test` entirely -- the full suite assumes a fully-provisioned dev machine (`ffmpeg`, `rclone`, a working OS keyring session) that a fresh CI runner isn't, and every commit on `main` already passed it locally before merge ([#49](https://github.com/noisypigeon/pigeon-cli/pull/49)).
