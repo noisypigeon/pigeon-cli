@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.8] - 2026-10-11
+
 - ADR-0126: fixes `job run transform` still hard-failing real `.mov` files after ADR-0125, this time from ffmpeg's implicit auto-application of QuickTime Clean Aperture container-level crop metadata (FFmpeg 7.1+); `-apply_cropping:v codec` suppresses only that mechanism while preserving the long-standing codec-level crop behavior ([#57](https://github.com/noisypigeon/pigeon-cli/pull/57)).
 
 ## [0.4.7] - 2026-10-11
