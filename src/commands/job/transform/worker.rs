@@ -219,6 +219,7 @@ async fn process_one(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
     video_quality: VideoQuality,
+    transcode_threads: usize,
     source_path: &str,
     destination_path: &str,
     result_dir: &Path,
@@ -227,52 +228,70 @@ async fn process_one(
     push_semaphore: Arc<Semaphore>,
 ) -> Result<PathBuf, String> {
     let output_extension = input_file_type.output_extension();
-    let scratch_path = scratch_dir.join(format!(
-        "{}.scratch",
-        placement::compute_destination_name(
-            source_path,
-            &pending_file.relative_path,
-            output_extension,
-        )
-    ));
-    std::fs::create_dir_all(scratch_dir)
-        .map_err(|err| format!("failed to create {}: {err}", scratch_dir.display()))?;
-
-    let transcode_result = match input_file_type {
-        InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
-        InputFileType::Png | InputFileType::Heic => {
-            retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
-                media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path)
-            })
-            .await
-        }
-        InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
-            retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
-                media::transcode_video(&pending_file.absolute_path, &scratch_path, video_quality)
-            })
-            .await
-        }
-    };
-    crate::observability::metrics::record_phase_count(
-        "transform",
-        "transcode",
-        if transcode_result.is_ok() {
-            outcome_for(input_file_type).as_str()
-        } else {
-            Outcome::Failed.as_str()
-        },
-        1,
-        None,
-    );
-    transcode_result?;
-
-    let final_path = placement::place_one(
-        result_dir,
-        &scratch_path,
+    let destination_name = placement::compute_destination_name(
         source_path,
         &pending_file.relative_path,
         output_extension,
-    )?;
+    );
+
+    // ADR-0127: a file already sitting in `result_dir` under its
+    // deterministic name survived a prior crash *after* a successful,
+    // verified transcode (`placement::place_one` only ever renames a
+    // scratch file into `result_dir` once `ffmpeg` has exited 0 and passed
+    // its own dimension/duration guard) -- it is never a partial write.
+    // Skip straight to push instead of re-transcoding and then hitting
+    // `place_one`'s collision guard, which exists for a genuinely different
+    // problem (two distinct source files hashing to the same name), not
+    // this job's own legitimate resume.
+    let existing_result_path = result_dir.join(&destination_name);
+    let final_path = if existing_result_path.exists() {
+        existing_result_path
+    } else {
+        let scratch_path = scratch_dir.join(format!("{destination_name}.scratch"));
+        std::fs::create_dir_all(scratch_dir)
+            .map_err(|err| format!("failed to create {}: {err}", scratch_dir.display()))?;
+
+        let transcode_result = match input_file_type {
+            InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
+            InputFileType::Png | InputFileType::Heic => {
+                retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
+                    media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path)
+                })
+                .await
+            }
+            InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
+                retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
+                    media::transcode_video(
+                        &pending_file.absolute_path,
+                        &scratch_path,
+                        video_quality,
+                        transcode_threads,
+                    )
+                })
+                .await
+            }
+        };
+        crate::observability::metrics::record_phase_count(
+            "transform",
+            "transcode",
+            if transcode_result.is_ok() {
+                outcome_for(input_file_type).as_str()
+            } else {
+                Outcome::Failed.as_str()
+            },
+            1,
+            None,
+        );
+        transcode_result?;
+
+        placement::place_one(
+            result_dir,
+            &scratch_path,
+            source_path,
+            &pending_file.relative_path,
+            output_extension,
+        )?
+    };
 
     let destination_filename = final_path
         .file_name()
@@ -421,6 +440,24 @@ pub(crate) async fn run_transform_job(
     let scratch_dir = scratch_dir(&plan.local_output);
     let push_log_dir = push_log_dir(&plan.local_output);
 
+    // A `.scratch` file surviving from a prior crashed run is never a
+    // resumable artifact (ADR-0127): `transcode_video`/`transcode_to_jpg`
+    // write `ffmpeg`'s output directly to this path, so anything found here
+    // at startup is, by construction, a truncated/corrupt partial, always
+    // silently overwritten (`-y`) the next time its still-present `source/`
+    // file is reprocessed anyway. Clearing it here just reclaims that disk
+    // space proactively instead of leaving it until then. Best-effort: a
+    // missing directory (first run) or a removal failure is not fatal.
+    if let Err(err) = std::fs::remove_dir_all(&scratch_dir)
+        && err.kind() != std::io::ErrorKind::NotFound
+    {
+        tracing::warn!(
+            path = %scratch_dir.display(),
+            error = %err,
+            "transform: failed to clear stale scratch directory from a prior run"
+        );
+    }
+
     crate::observability::metrics::set_macro_phase("transform", false);
 
     let output_extension = plan.input_file_type.output_extension();
@@ -507,6 +544,16 @@ pub(crate) async fn run_transform_job(
         })
     };
 
+    // Caps each concurrent `ffmpeg` transcode's own internal thread count so
+    // the whole in-flight fleet stays within the host's real core count
+    // instead of each process independently defaulting to all of them
+    // (ADR-0127).
+    let transcode_threads = (std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        / concurrency.max(1))
+    .max(1);
+
     let push_semaphore = Arc::new(Semaphore::new(plan.transfers.max(1)));
     let mut in_flight: JoinSet<(String, Result<PathBuf, String>)> = JoinSet::new();
     let mut outcomes = Vec::new();
@@ -549,6 +596,7 @@ pub(crate) async fn run_transform_job(
                     &pending_file,
                     input_file_type,
                     video_quality,
+                    transcode_threads,
                     &source_path,
                     &destination_path,
                     &result_dir,
@@ -969,6 +1017,66 @@ mod tests {
             destination
                 .join(summary.outcomes[0].destination_filename.as_deref().unwrap())
                 .exists()
+        );
+    }
+
+    /// ADR-0127 regression test: a file whose transcode already completed
+    /// and was placed into `result/` in a prior, crashed run (survived past
+    /// `place_one`'s atomic rename but never got pushed) must be pushed
+    /// directly on a rerun, never re-transcoded. Proven with a deliberately
+    /// corrupt HEIC source -- a real transcode attempt against it always
+    /// fails -- alongside a placeholder "already transcoded" file sitting in
+    /// `result/` under this file's deterministic destination name: the job
+    /// can only succeed here by skipping straight to push.
+    #[tokio::test]
+    async fn run_transform_job_pushes_an_already_placed_result_file_without_retranscoding() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source_for_pull.join("a.heic"), b"not a real heic file").unwrap();
+        std::fs::create_dir_all(source_dir(&local_output)).unwrap();
+        std::fs::write(
+            source_dir(&local_output).join("a.heic"),
+            b"not a real heic file",
+        )
+        .unwrap();
+
+        let source_path = source_for_pull.display().to_string();
+        let destination_name = placement::compute_destination_name(&source_path, "a.heic", "jpg");
+        std::fs::create_dir_all(result_dir(&local_output)).unwrap();
+        std::fs::write(
+            result_dir(&local_output).join(&destination_name),
+            b"already transcoded in a prior run",
+        )
+        .unwrap();
+
+        let plan = TransformPlan {
+            source_path,
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Heic,
+            transfers: 2,
+            checkers: 4,
+            video_quality: VideoQuality::Medium,
+            tpslimit: None,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 2).await.unwrap();
+
+        assert!(!summary.failed);
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(
+            std::fs::read(destination.join(&destination_name)).unwrap(),
+            b"already transcoded in a prior run"
         );
     }
 

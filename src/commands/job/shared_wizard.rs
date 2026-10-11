@@ -196,7 +196,18 @@ pub(crate) fn default_concurrency() -> usize {
 /// Resolves a plain concurrency value with no time-estimate table, with a
 /// cores-based interactive default via `default_concurrency()` for
 /// CPU-bound jobs. `--concurrency <N>` and the non-interactive fallback
-/// are unchanged (ADR-0088/ADR-0090).
+/// are unchanged (ADR-0088/ADR-0090), except `--concurrency` is now clamped
+/// against the host's core count (ADR-0127): a real `transform` run with
+/// `--concurrency 50` on a 14-core machine oversubscribed both process count
+/// and (via `ffmpeg`'s own per-process threading) CPU threads at once,
+/// OOM-killing the host. `CONCURRENCY_CLAMP_MULTIPLIER` leaves headroom for
+/// deliberate, modest oversubscription of a partly-I/O-bound pipeline
+/// without allowing a pathological value through -- a warning, not a hard
+/// error, so an existing non-interactive invocation never starts failing
+/// outright (same posture as `UploadConcurrencyInput`'s doc comment,
+/// ADR-0091 §3).
+const CONCURRENCY_CLAMP_MULTIPLIER: usize = 2;
+
 pub(crate) struct CpuConcurrencyInput {
     pub flag: Option<usize>,
 }
@@ -205,7 +216,20 @@ impl WizardInput for CpuConcurrencyInput {
     type Value = usize;
 
     fn flag_value(&self) -> Option<Result<usize, String>> {
-        self.flag.map(|value| Ok(value.max(1)))
+        self.flag.map(|value| {
+            let value = value.max(1);
+            let ceiling = default_concurrency() * CONCURRENCY_CLAMP_MULTIPLIER;
+            if value > ceiling {
+                tracing::warn!(
+                    requested = value,
+                    clamped_to = ceiling,
+                    "--concurrency exceeds this host's core-count-based safe ceiling; clamping"
+                );
+                Ok(ceiling)
+            } else {
+                Ok(value)
+            }
+        })
     }
 
     fn prompt(&self) -> Result<usize, String> {
@@ -311,14 +335,34 @@ mod tests {
 
     #[test]
     fn cpu_concurrency_input_flag_value_overrides_the_default() {
-        let input = CpuConcurrencyInput { flag: Some(7) };
-        assert_eq!(input.flag_value(), Some(Ok(7)));
+        // 1 is always within the core-count-based clamp ceiling, regardless
+        // of how many cores the machine running this test actually has.
+        let input = CpuConcurrencyInput { flag: Some(1) };
+        assert_eq!(input.flag_value(), Some(Ok(1)));
     }
 
     #[test]
     fn cpu_concurrency_input_requires_a_flag_when_not_interactive() {
         let input = CpuConcurrencyInput { flag: None };
         assert!(input.non_interactive_fallback().is_err());
+    }
+
+    #[test]
+    fn cpu_concurrency_input_clamps_a_flag_value_far_above_the_core_count() {
+        let ceiling = default_concurrency() * CONCURRENCY_CLAMP_MULTIPLIER;
+        let input = CpuConcurrencyInput {
+            flag: Some(ceiling + 1000),
+        };
+        assert_eq!(input.flag_value(), Some(Ok(ceiling)));
+    }
+
+    #[test]
+    fn cpu_concurrency_input_does_not_clamp_a_flag_value_at_the_ceiling() {
+        let ceiling = default_concurrency() * CONCURRENCY_CLAMP_MULTIPLIER;
+        let input = CpuConcurrencyInput {
+            flag: Some(ceiling),
+        };
+        assert_eq!(input.flag_value(), Some(Ok(ceiling)));
     }
 
     #[test]
