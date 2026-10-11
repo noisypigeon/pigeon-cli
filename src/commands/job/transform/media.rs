@@ -214,11 +214,12 @@ async fn probe_duration_seconds(path: &Path) -> Option<f64> {
 }
 
 /// Best-effort diagnostic string appended to `transcode_video`'s pixel-area
-/// mismatch error only (ADR-0125) -- one extra `ffprobe` call made once the
-/// guard is already about to fail, so the common (matching) path pays no
-/// extra cost. Surfaces exactly the fields `probe_dimensions` deliberately
-/// omits (sample/display aspect ratio, any rotation tag or display-matrix
-/// side data, stream count/tags) -- the first things a future investigation
+/// mismatch error only (ADR-0125, crop fields added by ADR-0126) -- one extra
+/// `ffprobe` call made once the guard is already about to fail, so the
+/// common (matching) path pays no extra cost. Surfaces exactly the fields
+/// `probe_dimensions` deliberately omits (sample/display aspect ratio, any
+/// rotation tag or display-matrix side data, the four numeric Frame Cropping
+/// extents, stream count/tags) -- the first things a future investigation
 /// of this class of failure will want and this incident's own log lacked.
 /// `stream_side_data`/`stream_tags` must be requested as their own
 /// top-level `-show_entries` sections, not nested under `stream=...` --
@@ -232,7 +233,8 @@ async fn probe_video_diagnostics(path: &Path) -> String {
             "json",
             "-show_entries",
             "stream=index,codec_type,width,height,sample_aspect_ratio,display_aspect_ratio:\
-             stream_side_data=side_data_type,rotation:stream_tags=rotate",
+             stream_side_data=side_data_type,rotation,crop_top,crop_bottom,crop_left,crop_right:\
+             stream_tags=rotate",
         ])
         .arg(path)
         .output()
@@ -251,8 +253,8 @@ async fn probe_video_diagnostics(path: &Path) -> String {
 /// Transcodes `input` (mov/m4v/mp4) to `output` (always `.mp4`, H.265/HEVC,
 /// ADR-0122):
 /// ```text
-/// ffmpeg -y -loglevel error -noautorotate -i <input> -map 0:v:0 -map 0:a:0? \
-///   -c:v libx265 -tag:v hvc1 -preset medium \
+/// ffmpeg -y -loglevel error -noautorotate -apply_cropping:v codec -i <input> \
+///   -map 0:v:0 -map 0:a:0? -c:v libx265 -tag:v hvc1 -preset medium \
 ///   [-crf <N> | -x265-params lossless=1] -c:a aac -b:a 256k -f mp4 <output>
 /// ```
 /// `-tag:v hvc1` is required for QuickTime/Apple-device playback of
@@ -273,7 +275,18 @@ async fn probe_video_diagnostics(path: &Path) -> String {
 /// that implicit reshape unconditionally; empirically confirmed (ADR-0125)
 /// that the original display matrix still survives onto the re-encoded
 /// output as frame-level side data even though this is a full re-encode,
-/// not a stream copy, so playback orientation is unaffected. `-map 0:v:0
+/// not a stream copy, so playback orientation is unaffected. `-apply_cropping:v
+/// codec` (ADR-0126) guards an independent, later-added ffmpeg mechanism: FFmpeg
+/// 7.1 added support for QuickTime's Clean Aperture (`clap` atom) *container*-level
+/// crop metadata, which -- left at ffmpeg's own default of `all` -- gets silently
+/// auto-applied during decode exactly like autorotate's implicit reshape, shrinking
+/// the decoded frame below what `probe_dimensions`'s bare `codecpar.width/height`
+/// reports. `codec` is the deliberate, narrower choice, not `none`: `none` also
+/// suppresses the much older, unrelated decoder-level crop `probe_dimensions` has
+/// *always* already reflected (the H.264/HEVC SPS "conformance window"), so `none`
+/// would trade today's container-crop false-positive for a far more common
+/// codec-crop false-positive on virtually any non-16-pixel-aligned video -- do
+/// not "simplify" this to `none`. `-map 0:v:0
 /// -map 0:a:0?` (optional audio map, tolerating a video-only input) pins the
 /// exact stream `probe_dimensions` already reads via `-select_streams v:0`,
 /// removing any ambiguity from ffmpeg's own default stream selection on a
@@ -293,7 +306,14 @@ pub(crate) async fn transcode_video(
     quality: VideoQuality,
 ) -> Result<(), String> {
     let mut command = tokio::process::Command::new("ffmpeg");
-    command.args(["-y", "-loglevel", "error", "-noautorotate"]);
+    command.args([
+        "-y",
+        "-loglevel",
+        "error",
+        "-noautorotate",
+        "-apply_cropping:v",
+        "codec",
+    ]);
     command.arg("-i").arg(input);
     command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
     command.args(["-c:v", "libx265", "-tag:v", "hvc1", "-preset", "medium"]);
@@ -617,6 +637,94 @@ mod tests {
         let output = dir.path().join("rotated-output.mp4");
         if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
             panic!("transcode_video incorrectly rejected a rotated-but-unreshaped input: {err}");
+        }
+
+        assert_eq!(
+            probe_dimensions(&input).await,
+            probe_dimensions(&output).await
+        );
+    }
+
+    /// Generates a base H.264 test video (not HEVC -- `h264_metadata` is an
+    /// H.264-only bitstream filter) and remuxes a copy with a codec-level
+    /// (SPS "conformance window") crop attached via that filter -- mirrors
+    /// the long-standing crop mechanism `probe_dimensions`'s bare
+    /// `codecpar.width/height` has *always* already reflected, distinct from
+    /// ADR-0126's container-level (`clap`-atom) crop. `crop_left`/
+    /// `crop_right` must each be a multiple of 2 (ffmpeg rejects an odd
+    /// value outright); 2+2 trims the width by exactly 4px, confirmed
+    /// empirically against a real `h264_metadata` run.
+    async fn generate_test_video_with_sps_crop(path: &Path) -> Result<(), String> {
+        let base_path = path.with_file_name("sps-crop-base.mp4");
+        let result = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=1:size=64x48:rate=5",
+                "-c:v",
+                "libx264",
+                "-pix_fmt",
+                "yuv420p",
+            ])
+            .arg(&base_path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+
+        let result = tokio::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-i"])
+            .arg(&base_path)
+            .args([
+                "-c:v",
+                "copy",
+                "-bsf:v",
+                "h264_metadata=crop_left=2:crop_right=2",
+                "-f",
+                "mp4",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
+    }
+
+    /// ADR-0126 regression test: a codec-level (SPS) crop -- the kind
+    /// `probe_dimensions` has always already reflected -- must still
+    /// transcode correctly with `-apply_cropping:v codec` in place. This
+    /// pins the "codec, not none" choice: if a future reader "simplifies"
+    /// `-apply_cropping:v codec` to `-apply_cropping:v none`, the output
+    /// reverts to the pre-crop coded size and this test starts failing
+    /// (empirically confirmed via a direct ffmpeg run: `codec` and the old
+    /// pre-ADR-0126 default both produce the cropped size here; `none`
+    /// regresses to the uncropped one).
+    #[tokio::test]
+    async fn transcode_video_preserves_codec_level_cropped_dimensions() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("sps-cropped.mp4");
+        if generate_test_video_with_sps_crop(&input).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't attach an SPS crop via h264_metadata");
+            return;
+        }
+
+        let output = dir.path().join("sps-cropped-output.mp4");
+        if let Err(err) = transcode_video(&input, &output, VideoQuality::Medium).await {
+            panic!("transcode_video incorrectly rejected a codec-level-cropped input: {err}");
         }
 
         assert_eq!(
