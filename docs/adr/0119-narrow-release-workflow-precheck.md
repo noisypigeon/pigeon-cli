@@ -81,11 +81,12 @@ build-release` (`cargo build --release`), never the test suite.
 - Provisioning `ffmpeg`/`rclone` and a working headless OS keyring
   session for a hypothetical future CI environment that does need to run
   the full test suite (e.g. a PR-triggered CI workflow, itself still out
-  of scope per ADR-0117).
+  of scope per ADR-0117). ([#47](https://github.com/noisypigeon/pigeon-cli/issues/47))
 - Root-causing `log_file_flag_writes_valid_jsonl_with_the_command_name`'s
   CI-only failure — not reproduced locally, not investigated beyond
   confirming it's one of several environmental failures on a fresh
   runner, not a release-blocking regression in already-merged code.
+  ([#50](https://github.com/noisypigeon/pigeon-cli/issues/50))
 
 ## Verification
 
