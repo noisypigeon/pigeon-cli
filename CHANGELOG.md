@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0122: adds `mov`/`m4v`/`mp4` input kinds and a `--video-quality` flag to `job run transform`, transcoding video to space-optimized H.265/HEVC `.mp4` via a small vetted `libx265` CRF menu ([#53](https://github.com/noisypigeon/pigeon-cli/pull/53)).
+
 ## [0.4.4] - 2026-10-11
 
 - ADR-0121: transform's dimension guard now understands HEIF "Tile Grid" stream groups and compares pixel area instead of exact `(width, height)`, deterministic ffmpeg failures are no longer retried, and a sample-based circuit breaker aborts fast on systemic (not single-file) transcode incompatibility ([#52](https://github.com/noisypigeon/pigeon-cli/pull/52)).
