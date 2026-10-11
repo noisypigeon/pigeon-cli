@@ -16,7 +16,7 @@ use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
 use crate::core::wizard::WizardInput;
 
-use super::format::InputFileType;
+use super::format::{InputFileType, VideoQuality};
 use super::{TransformJob, media, worker};
 
 /// Resolves `--input-file-type` -- mandatory, a small vetted menu
@@ -34,7 +34,7 @@ impl WizardInput for InputFileTypeInput {
     }
 
     fn prompt(&self) -> Result<InputFileType, String> {
-        let options = ["png", "jpeg", "heic"];
+        let options = ["png", "jpeg", "heic", "mov", "m4v", "mp4"];
         let selected = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Input file type")
             .items(options)
@@ -46,6 +46,40 @@ impl WizardInput for InputFileTypeInput {
 
     fn non_interactive_fallback(&self) -> Result<InputFileType, String> {
         Err("--input-file-type is required when not running interactively".to_string())
+    }
+}
+
+/// Resolves `--video-quality` (ADR-0122) -- only consulted when
+/// `input_file_type.is_video()`; `dispatch_async` skips calling this
+/// entirely otherwise, so png/jpeg/heic runs are never prompted. Unlike
+/// `InputFileTypeInput`, a missing value defaults to `Medium` rather than
+/// hard-erroring on a non-interactive run -- a safe default exists, and
+/// this flag isn't foundational to the run the way source/destination/type
+/// are.
+struct VideoQualityInput {
+    flag: Option<String>,
+}
+
+impl WizardInput for VideoQualityInput {
+    type Value = VideoQuality;
+
+    fn flag_value(&self) -> Option<Result<VideoQuality, String>> {
+        self.flag.as_deref().map(VideoQuality::parse)
+    }
+
+    fn prompt(&self) -> Result<VideoQuality, String> {
+        let options = ["low", "medium", "high", "lossless"];
+        let selected = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Video quality")
+            .items(options)
+            .default(1)
+            .interact()
+            .map_err(|err| format!("failed to read video quality: {err}"))?;
+        VideoQuality::parse(options[selected])
+    }
+
+    fn non_interactive_fallback(&self) -> Result<VideoQuality, String> {
+        Ok(VideoQuality::Medium)
     }
 }
 
@@ -235,10 +269,12 @@ async fn check_rclone_available() -> Result<(), String> {
     Ok(())
 }
 
-/// Entry point for `pigeon job run transform` (ADR-0112).
+/// Entry point for `pigeon job run transform` (ADR-0112, video input kinds
+/// added by ADR-0122).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     input_file_type: Option<String>,
+    video_quality: Option<String>,
     source_path: Option<String>,
     destination_path: Option<String>,
     local_output: Option<PathBuf>,
@@ -259,6 +295,7 @@ pub fn dispatch(
     };
     runtime.block_on(dispatch_async(
         input_file_type,
+        video_quality,
         source_path,
         destination_path,
         local_output,
@@ -275,6 +312,7 @@ pub fn dispatch(
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_async(
     input_file_type: Option<String>,
+    video_quality: Option<String>,
     source_path: Option<String>,
     destination_path: Option<String>,
     local_output: Option<PathBuf>,
@@ -318,6 +356,20 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
+    // Only consulted for a video input kind (ADR-0122) -- png/jpeg/heic runs
+    // are never prompted for this and the value goes unused.
+    let video_quality = if input_file_type.is_video() {
+        match (VideoQualityInput {
+            flag: video_quality,
+        })
+        .resolve(non_interactive)
+        {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        }
+    } else {
+        VideoQuality::Medium
+    };
     let source_path = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
@@ -357,6 +409,9 @@ async fn dispatch_async(
         };
 
     println!("Input file type: {input_file_type}");
+    if input_file_type.is_video() {
+        println!("Video quality:   {video_quality}");
+    }
     println!("Source:          {source_path}");
     println!("Destination:     {destination_path}");
 
@@ -388,6 +443,7 @@ async fn dispatch_async(
         destination_path,
         local_output: local_output.clone(),
         input_file_type,
+        video_quality,
         transfers,
         checkers,
         tpslimit,
@@ -475,6 +531,42 @@ mod tests {
     fn input_file_type_input_non_interactive_fallback_errors() {
         let input = InputFileTypeInput { flag: None };
         assert!(input.non_interactive_fallback().is_err());
+    }
+
+    #[test]
+    fn input_file_type_input_flag_value_parses_every_video_variant() {
+        for (flag, expected) in [
+            ("mov", InputFileType::Mov),
+            ("m4v", InputFileType::M4v),
+            ("mp4", InputFileType::Mp4),
+        ] {
+            let input = InputFileTypeInput {
+                flag: Some(flag.to_string()),
+            };
+            assert_eq!(input.flag_value(), Some(Ok(expected)));
+        }
+    }
+
+    #[test]
+    fn video_quality_input_flag_value_parses_a_valid_value() {
+        let input = VideoQualityInput {
+            flag: Some("high".to_string()),
+        };
+        assert_eq!(input.flag_value(), Some(Ok(VideoQuality::High)));
+    }
+
+    #[test]
+    fn video_quality_input_flag_value_surfaces_an_invalid_value_immediately() {
+        let input = VideoQualityInput {
+            flag: Some("ultra".to_string()),
+        };
+        assert!(input.flag_value().unwrap().is_err());
+    }
+
+    #[test]
+    fn video_quality_input_non_interactive_fallback_defaults_to_medium() {
+        let input = VideoQualityInput { flag: None };
+        assert_eq!(input.non_interactive_fallback(), Ok(VideoQuality::Medium));
     }
 
     #[test]
