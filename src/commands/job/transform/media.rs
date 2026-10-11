@@ -62,24 +62,38 @@ async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
 
 /// Transcodes `input` (png/heic) to `output` (always `.jpg`):
 /// ```text
-/// ffmpeg -y -loglevel error -i <input> -frames:v 1 -q:v 1 -pix_fmt yuvj444p <output>
+/// ffmpeg -y -loglevel error -i <input> -frames:v 1 -q:v 1 -pix_fmt yuvj444p -f mjpeg <output>
 /// ```
 /// `-q:v 1` is ffmpeg's mjpeg encoder's highest quality setting (1=best ..
 /// 31=worst); `-pix_fmt yuvj444p` forces 4:4:4 chroma instead of ffmpeg's
 /// default 4:2:0 subsampling for JPEG output -- the single largest avoidable
-/// quality loss in a naive encode beyond quantization itself. No `-vf
-/// scale=...` or other filter is ever applied, preserving the original
-/// pixel dimensions exactly. A non-zero `ffmpeg` exit -- including a HEIC
-/// input on a `libheif`-less build, which fails immediately with ffmpeg's
-/// own decoder-missing message -- returns `Err` with that stderr folded in
-/// verbatim; this *is* the fail-fast trigger (ADR-0112 Decision §7), there
-/// is no separate HEIC-capability preflight probe.
+/// quality loss in a naive encode beyond quantization itself. `-f mjpeg`
+/// forces the muxer explicitly: `worker.rs` writes to a scratch path ending
+/// in `.scratch`, not `.jpg` (the real destination name plus a `.scratch`
+/// suffix), and without `-f` ffmpeg tries to infer the output format from
+/// that final extension alone and fails outright ("Unable to find a
+/// suitable output format"). No `-vf scale=...` or other filter is ever
+/// applied, preserving the original pixel dimensions exactly. A non-zero
+/// `ffmpeg` exit -- including a HEIC input on a `libheif`-less build, which
+/// fails immediately with ffmpeg's own decoder-missing message -- returns
+/// `Err` with that stderr folded in verbatim; this *is* the fail-fast
+/// trigger (ADR-0112 Decision §7), there is no separate HEIC-capability
+/// preflight probe.
 pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), String> {
     let result = tokio::process::Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error"])
         .arg("-i")
         .arg(input)
-        .args(["-frames:v", "1", "-q:v", "1", "-pix_fmt", "yuvj444p"])
+        .args([
+            "-frames:v",
+            "1",
+            "-q:v",
+            "1",
+            "-pix_fmt",
+            "yuvj444p",
+            "-f",
+            "mjpeg",
+        ])
         .arg(output)
         .output()
         .await
@@ -191,6 +205,27 @@ mod tests {
             probe_dimensions(&output).await
         );
         assert_eq!(probe_dimensions(&output).await, Some((64, 48)));
+    }
+
+    /// Mirrors `worker.rs`'s real scratch-file naming (`<destination-name>.scratch`,
+    /// where `destination-name` already ends in `.jpg`) -- without `-f mjpeg`
+    /// this fails with ffmpeg's "Unable to find a suitable output format"
+    /// because the final extension on disk is `.scratch`, not `.jpg`.
+    #[tokio::test]
+    async fn transcode_to_jpg_succeeds_when_the_output_path_ends_in_scratch() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("test.png");
+        generate_test_png(&input).await.unwrap();
+
+        let output = dir.path().join("test-abcdef0123456789.jpg.scratch");
+        transcode_to_jpg(&input, &output).await.unwrap();
+
+        assert!(output.exists());
     }
 
     #[tokio::test]
