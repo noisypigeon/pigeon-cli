@@ -126,6 +126,7 @@ pub(crate) async fn run_copy_job(
         "rclone-copy",
         "transfer",
         true,
+        None,
     )
     .await?;
 

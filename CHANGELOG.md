@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0116: fixes `job run transform` discarding every already-succeeded file whenever a single file's transcode failed -- a real run transcoded 1,605 files but pushed 0, because the old fail-fast design skipped the bulk push phase entirely on the first failure; download stays one bulk `rclone copy` but is now consumed live, and transcode (now retried) and push (new per-file `rclone copyto`) run independently per file, so one failure only costs that one file ([#45](https://github.com/noisypigeon/pigeon-cli/pull/45)).
+
 ## [0.4.1] - 2026-10-11
 
 - ADR-0115: fixes `job run transform` failing every png/heic transcode with "Unable to find a suitable output format" -- `transcode_to_jpg` ran `ffmpeg` with no `-f` flag, so it inferred the output format from `worker.rs`'s scratch path, which ends in `.scratch` rather than a recognized extension; now forces `-f mjpeg` explicitly ([#44](https://github.com/noisypigeon/pigeon-cli/pull/44)).

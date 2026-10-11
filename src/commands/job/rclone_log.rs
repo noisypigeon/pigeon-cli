@@ -3,7 +3,11 @@
 //! read is `#[serde(default)]`/`Option`, and an unparseable line is skipped
 //! rather than failing the whole parse -- robust to rclone-version field
 //! drift, at the cost of silently under-counting if rclone's schema changes
-//! in a way this doesn't anticipate.
+//! in a way this doesn't anticipate. Also surfaces each individual
+//! "Copied (new)"/"Copied (replaced existing)" line's object path
+//! (`TailDelta::copied_objects`, ADR-0116) -- the authoritative, race-free
+//! per-object completion signal `transform` uses to pipeline work off a
+//! still-running bulk pull instead of waiting for it to exit.
 
 use std::fs;
 use std::io::{Read, Seek, SeekFrom};
@@ -58,6 +62,16 @@ pub(crate) struct TailDelta {
     /// poll can carry a non-empty `collapsed_repeats` with no new
     /// transfer/error/byte delta, or vice versa.
     pub collapsed_repeats: Vec<CollapsedErrorSummary>,
+    /// Relative object paths rclone's own JSON log reported as newly
+    /// finished ("Copied (new)" / "Copied (replaced existing)") since the
+    /// last poll (ADR-0116) -- the authoritative, race-free signal that an
+    /// object's bytes are now fully and durably present at the
+    /// destination, used by `transform` to pipeline transcode/push work
+    /// off a still-running bulk pull instead of waiting for it to exit.
+    /// Independent of every other field, same as `collapsed_repeats`; empty
+    /// for every caller that doesn't care (costs nothing to always
+    /// populate).
+    pub copied_objects: Vec<String>,
 }
 
 impl TailDelta {
@@ -104,6 +118,11 @@ pub(crate) struct RcloneLogTailer {
     /// delete tailer (ADR-0110). Shared error-handling code, so this can't
     /// stay a bare literal the way it did when only one action existed.
     step: &'static str,
+    /// Relative paths of objects whose "Copied" line has been seen since
+    /// the last `poll()`/`flush_only_delta()` drained this buffer
+    /// (ADR-0116) -- unlike `cumulative`, this is not a running total to
+    /// diff against; each entry is drained into exactly one `TailDelta`.
+    pending_copied: Vec<String>,
 }
 
 impl RcloneLogTailer {
@@ -115,6 +134,7 @@ impl RcloneLogTailer {
             cumulative: RcloneLogSummary::default(),
             current_streak: None,
             step,
+            pending_copied: Vec::new(),
         }
     }
 
@@ -174,6 +194,7 @@ impl RcloneLogTailer {
             bytes: self.cumulative.bytes.saturating_sub(before.bytes),
             deletes: self.cumulative.deletes.saturating_sub(before.deletes),
             collapsed_repeats,
+            copied_objects: std::mem::take(&mut self.pending_copied),
         }
     }
 
@@ -181,9 +202,16 @@ impl RcloneLogTailer {
     /// reporting) any error streak in progress -- used by every early-return
     /// path in `poll()` (missing file, seek/read failure, no new bytes) so a
     /// pending streak is never silently dropped just because this particular
-    /// poll happened to see no new log lines.
+    /// poll happened to see no new log lines. Also drains `pending_copied`
+    /// for the same reason (ADR-0116), even though in practice it is only
+    /// ever populated inside `poll()`'s own line-processing loop, never on
+    /// one of these early-return paths -- draining it here uniformly is
+    /// cheap insurance against ever silently dropping a copied-object event.
     fn flush_only_delta(&mut self) -> TailDelta {
-        let mut delta = TailDelta::default();
+        let mut delta = TailDelta {
+            copied_objects: std::mem::take(&mut self.pending_copied),
+            ..TailDelta::default()
+        };
         if let Some(summary) = self.flush_error_streak() {
             delta.collapsed_repeats.push(summary);
         }
@@ -208,6 +236,13 @@ impl RcloneLogTailer {
             self.cumulative.errors = stats.errors;
             self.cumulative.bytes = stats.bytes;
             self.cumulative.deletes = stats.deletes;
+        }
+
+        if parsed.level.eq_ignore_ascii_case("info")
+            && parsed.msg.starts_with("Copied ")
+            && let Some(object) = &parsed.object
+        {
+            self.pending_copied.push(object.clone());
         }
 
         if parsed.level.eq_ignore_ascii_case("error") {
@@ -498,5 +533,52 @@ mod tests {
         let second = tailer.poll();
         assert_eq!(second.collapsed_repeats.len(), 1);
         assert_eq!(second.collapsed_repeats[0].repeated, 1);
+    }
+
+    #[test]
+    fn a_copied_new_line_surfaces_its_object_in_copied_objects() {
+        let (_dir, path) = write_log(concat!(
+            "{\"level\":\"info\",\"msg\":\"Copied (new)\",\"object\":\"a/b.png\"}\n",
+            "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,\"errors\":0}}\n",
+        ));
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
+        let delta = tailer.poll();
+        assert_eq!(delta.copied_objects, vec!["a/b.png".to_string()]);
+    }
+
+    #[test]
+    fn a_copied_replaced_existing_line_also_surfaces() {
+        let (_dir, path) = write_log(
+            "{\"level\":\"info\",\"msg\":\"Copied (replaced existing)\",\"object\":\"c.jpg\"}\n",
+        );
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
+        let delta = tailer.poll();
+        assert_eq!(delta.copied_objects, vec!["c.jpg".to_string()]);
+    }
+
+    #[test]
+    fn copied_objects_is_empty_when_no_copied_lines_are_present() {
+        let (_dir, path) = write_log(
+            "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,\"errors\":0}}\n",
+        );
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
+        let delta = tailer.poll();
+        assert!(delta.copied_objects.is_empty());
+    }
+
+    #[test]
+    fn a_second_poll_only_reports_newly_copied_objects_not_previously_reported_ones() {
+        let (_dir, path) =
+            write_log("{\"level\":\"info\",\"msg\":\"Copied (new)\",\"object\":\"a.png\"}\n");
+        let mut tailer = RcloneLogTailer::new(&path, "transfer");
+        let first = tailer.poll();
+        assert_eq!(first.copied_objects, vec!["a.png".to_string()]);
+
+        append_log(
+            &path,
+            "{\"level\":\"info\",\"msg\":\"Copied (new)\",\"object\":\"b.png\"}\n",
+        );
+        let second = tailer.poll();
+        assert_eq!(second.copied_objects, vec!["b.png".to_string()]);
     }
 }

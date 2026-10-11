@@ -12,7 +12,7 @@ use std::path::Path;
 /// Confirms `ffmpeg`/`ffprobe` are on `PATH`, checked once up front before
 /// any prompts (mirrors `pull_transform::media::check_ffmpeg_available`), so
 /// a missing binary fails the whole job immediately instead of partway
-/// through a long Phase B.
+/// through a long run.
 pub(crate) async fn check_ffmpeg_available() -> Result<(), String> {
     for binary in ["ffmpeg", "ffprobe"] {
         tokio::process::Command::new(binary)
@@ -76,9 +76,11 @@ async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
 /// applied, preserving the original pixel dimensions exactly. A non-zero
 /// `ffmpeg` exit -- including a HEIC input on a `libheif`-less build, which
 /// fails immediately with ffmpeg's own decoder-missing message -- returns
-/// `Err` with that stderr folded in verbatim; this *is* the fail-fast
-/// trigger (ADR-0112 Decision §7), there is no separate HEIC-capability
-/// preflight probe.
+/// `Err` with that stderr folded in verbatim -- `worker.rs`'s call site
+/// retries this a bounded number of times before giving up and recording
+/// the failure for just this one file (ADR-0116; no longer a whole-run
+/// abort, amending ADR-0112 Decision §7); there is no separate
+/// HEIC-capability preflight probe.
 pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), String> {
     let result = tokio::process::Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error"])

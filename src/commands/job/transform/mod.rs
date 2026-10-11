@@ -1,17 +1,20 @@
-//! `pigeon job run transform` (ADR-0112): shells out to `rclone` to pull
-//! source files matching `--input-file-type` (`png`/`jpeg`/`heic`) into a
-//! local staging tree, transcodes or copies them locally into full-size,
-//! maximum-quality `.jpg` at a destination filename unique by construction
-//! (never collision-detected-and-fixed, and never deduplicated -- duplicate
-//! source content is deliberately retained at separate destination names),
-//! then shells out to `rclone` again to push the result. See `worker`'s
-//! module doc comment for the phase-by-phase breakdown, and `placement`'s
-//! for the naming scheme.
+//! `pigeon job run transform` (ADR-0112, pipeline reworked by ADR-0116):
+//! shells out to `rclone` to pull source files matching
+//! `--input-file-type` (`png`/`jpeg`/`heic`) into a local staging tree,
+//! transcodes or copies them locally into full-size, maximum-quality `.jpg`
+//! at a destination filename unique by construction (never collision-
+//! detected-and-fixed, and never deduplicated -- duplicate source content
+//! is deliberately retained at separate destination names), then pushes
+//! each file individually via `rclone copyto` the moment it's ready rather
+//! than waiting for the whole batch. See `worker`'s module doc comment for
+//! the per-file pipeline's full shape, `push`'s for the per-file push leg,
+//! and `placement`'s for the naming scheme.
 
 mod format;
 mod manifest;
 mod media;
 mod placement;
+mod push;
 pub mod wizard;
 mod worker;
 
@@ -39,9 +42,10 @@ impl Job for TransformJob {
 
     /// Trivially carries the already-validated fields forward, same
     /// reasoning as `RcloneCopyJob::gather` -- there's no file-by-file
-    /// manifest to discover ahead of time: Phase A's `rclone copy` does its
-    /// own listing, and Phase B's own manifest is only knowable once Phase A
-    /// has actually pulled files to `<local_output>/source/`.
+    /// manifest to discover ahead of time: the bulk pull's own `rclone copy`
+    /// does its own listing, and the per-file pipeline's manifest is
+    /// discovered incrementally as that pull reports each file's completion
+    /// (`worker`'s module doc comment), not gathered up front.
     async fn gather(&self) -> Result<TransformPlan, String> {
         Ok(TransformPlan {
             source_path: self.source_path.clone(),
@@ -55,12 +59,13 @@ impl Job for TransformJob {
         })
     }
 
-    /// Ignores `upload_concurrency` -- `transform` has no upload phase of
-    /// the shape that parameter sizes (ADR-0091 §3); both of its `rclone
-    /// copy` phases manage their own parallelism via `--transfers`/
-    /// `--checkers`, matching `RcloneCopyJob::run`'s precedent for a job
-    /// this trait parameter doesn't apply to. `concurrency` sizes Phase B's
-    /// transcode pool.
+    /// Ignores `upload_concurrency` -- ADR-0091 §3's intended hook for this
+    /// job's push leg, but `transform`'s CLI surface has no
+    /// `--upload-concurrency` flag (ADR-0116): push concurrency is bounded
+    /// by a semaphore sized from `--transfers` instead, decoupled from
+    /// `concurrency` (which sizes the CPU-bound transcode pool), matching
+    /// `RcloneCopyJob::run`'s precedent for a job this trait parameter
+    /// doesn't apply to.
     async fn run(
         self,
         plan: TransformPlan,

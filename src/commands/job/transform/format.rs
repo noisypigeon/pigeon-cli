@@ -16,8 +16,9 @@ pub(crate) enum InputFileType {
 }
 
 impl InputFileType {
-    /// The extension Phase A's `rclone --include` filter and Phase B's
-    /// local validation both match against. Lowercase, no leading dot.
+    /// The extension the bulk pull's `rclone --include` filter and the
+    /// per-file pipeline's local validation both match against. Lowercase,
+    /// no leading dot.
     pub(crate) fn extension(self) -> &'static str {
         match self {
             InputFileType::Png => "png",
