@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-11
+
 - ADR-0119: narrows the release workflow's pre-publish check from `mise run ci` to `fmt-check`+`lint`, dropping `mise run test` entirely -- the full suite assumes a fully-provisioned dev machine (`ffmpeg`, `rclone`, a working OS keyring session) that a fresh CI runner isn't, and every commit on `main` already passed it locally before merge ([#49](https://github.com/noisypigeon/pigeon-cli/pull/49)).
 - ADR-0118: fixes the release workflow's `mise run ci` step failing on every run because a fresh runner's rustup toolchain lacks the `clippy`/`rustfmt` components it depends on -- adds an explicit `rustup component add rustfmt clippy` step ([#48](https://github.com/noisypigeon/pigeon-cli/pull/48)).
 - ADR-0117: automates crates.io release and binary publishing on every merge to `main` -- a new GitHub Actions workflow (the first in this repo) bumps `Cargo.toml`'s patch version, cuts `CHANGELOG.md`'s `[Unreleased]`, publishes to crates.io, and builds+attaches macOS/Linux arm64 binaries to a GitHub Release; reverses ADR-0018's and ADR-0029's "releases stay manual" calls ([#46](https://github.com/noisypigeon/pigeon-cli/pull/46)).
