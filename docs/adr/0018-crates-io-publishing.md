@@ -133,3 +133,16 @@ files, confirmed via `cargo package --list` the same way ADR-0050 itself
 originally confirmed the opposite direction. `readme = "README.md"` is
 unchanged as a literal string and now resolves to the repo-root `README.md`
 (the two READMEs ADR-0050 split apart are merged back into one by ADR-0086).
+
+## Amendment (2026-10-10): publishing automated on every merge (ADR-0117)
+
+ADR-0117 reverses both of this ADR's publishing-related "Out of scope"
+calls: "GitHub Actions or any other CI/CD automation for publishing" and
+"Automated version-bumping tooling" are both introduced — `cargo publish`
+(plus a patch-version bump and changelog cut) now runs automatically on
+every merge to `main` via a new GitHub Actions workflow, replacing the
+manual `mise run publish` step described above as the normal path (that
+task still exists for a manual/break-glass run). The `#35` issue link in
+the "Out of scope" section below points at the pre-split `noisypigeon/pigeon`
+repo's tracker and doesn't carry over to the current `noisypigeon/pigeon-cli`
+repo — there is no live issue for ADR-0117 to close.

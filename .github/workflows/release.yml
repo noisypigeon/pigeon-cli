@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: "${{ !startsWith(github.event.head_commit.message, 'chore(release): v') }}"
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: jdx/mise-action@v2
+
+      - name: Configure release commit identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - run: mise run ci
+
+      - name: Cut release and publish
+        id: release
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          output="$(mise run release)"
+          echo "$output"
+          new_version="$(echo "$output" | tail -1 | sed 's/^NEW_VERSION=//')"
+          echo "version=${new_version}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${{ steps.release.outputs.version }}" \
+            --title "v${{ steps.release.outputs.version }}" \
+            --notes "See CHANGELOG.md for details."
+
+  build-binaries:
+    needs: release
+    strategy:
+      matrix:
+        include:
+          - runner: macos-14
+            triple: aarch64-apple-darwin
+          - runner: ubuntu-24.04-arm
+            triple: aarch64-unknown-linux-gnu
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.release.outputs.new_version }}
+
+      - uses: jdx/mise-action@v2
+
+      - run: mise run build-release
+
+      - name: Package binary
+        run: |
+          version="${{ needs.release.outputs.new_version }}"
+          triple="${{ matrix.triple }}"
+          tar czf "pigeon-v${version}-${triple}.tar.gz" -C target/release pigeon -C "$GITHUB_WORKSPACE" LICENSE.md
+
+      - name: Upload release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ needs.release.outputs.new_version }}"
+          triple="${{ matrix.triple }}"
+          gh release upload "v${version}" "pigeon-v${version}-${triple}.tar.gz"

@@ -56,6 +56,9 @@ run = "cargo publish --dry-run"
 [tasks.publish]
 run = "cargo publish"
 
+[tasks.release]
+run = ".github/scripts/release.sh \"$@\""
+
 [tasks.adr-issue]
 run = ".github/scripts/adr-issue.sh \"$@\""
 
