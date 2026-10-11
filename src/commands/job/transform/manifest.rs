@@ -1,10 +1,14 @@
-//! Phase B's (and only Phase B's) checkpoint (ADR-0112 Decision §6): Phase A
-//! (`rclone copy` pull) and Phase C (`rclone copy` push) are already
-//! incrementally idempotent on their own via rclone's own size/modtime-based
-//! skip, so neither needs a pigeon-level checkpoint. Placement is the one
-//! side effect that is not naturally rerun-safe on its own (it mints a new
-//! file under `result/` every time it runs), so this is the only checkpoint
-//! `transform` needs.
+//! The pipeline's one checkpoint (amended by ADR-0116 -- originally Decision
+//! §6's "only Phase B needs a checkpoint, placement is the only
+//! non-idempotent side effect"). Now that push is interleaved with
+//! transcode on a per-file basis rather than a separate bulk Phase C,
+//! `append_checkpoint` fires only once a file's push also succeeds, not
+//! merely once it is placed under `result/` -- placement alone is no longer
+//! the last non-idempotent step. `gather_pending`'s directory scan still
+//! serves the same purpose it always did: finding anything already on disk
+//! (from an interrupted prior run) that isn't marked done yet, now reused as
+//! one of the pipeline's two dispatch sources (`transform::worker`'s module
+//! doc comment).
 
 use std::collections::HashSet;
 use std::fs;
@@ -16,7 +20,7 @@ use crate::core::data::collect_files;
 pub(crate) const PROCESSED_FILE_NAME: &str = ".processed";
 
 /// One pending file discovered under `<local_output>/source/`, not yet
-/// marked done in the Phase B checkpoint. `relative_path` is relative to
+/// marked done in the pipeline's checkpoint. `relative_path` is relative to
 /// `source_dir`, using `/`-separated components regardless of host OS --
 /// this is also the checkpoint key and half of `placement`'s destination-
 /// name hash input (ADR-0112 Decision §5).
@@ -27,9 +31,9 @@ pub(crate) struct PendingFile {
 
 /// One relative-path-per-line checkpoint under `staging_dir` (always
 /// `<local_output>/.staging/`, never `<local_output>/result/`, so it's
-/// never swept into Phase C's push by `collect_files`). A missing file is
-/// an empty, not-yet-started checkpoint, same convention as every other
-/// job's `.processed`.
+/// never swept into any push by `collect_files`). A missing file is an
+/// empty, not-yet-started checkpoint, same convention as every other job's
+/// `.processed`.
 pub(crate) fn load_checkpoint(staging_dir: &Path) -> Result<HashSet<String>, String> {
     let path = staging_dir.join(PROCESSED_FILE_NAME);
     let contents = match fs::read_to_string(&path) {
@@ -73,11 +77,13 @@ fn relative_path_string(base: &Path, path: &Path) -> Option<String> {
     Some(components.join("/"))
 }
 
-/// Walks `source_dir` (everything Phase A pulled), keeps only files whose
-/// extension matches `input_file_type` (defensive -- Phase A's own
-/// `--include` filter should already guarantee this; anything else found
-/// here is unexpected, not fatal, and is skipped with a `tracing::warn!`),
-/// and excludes anything the Phase B checkpoint already marks done.
+/// Walks `source_dir` (everything the bulk pull has landed so far), keeps
+/// only files whose extension matches `input_file_type` (defensive -- the
+/// pull's own `--include` filter should already guarantee this; anything
+/// else found here is unexpected, not fatal, and is skipped with a
+/// `tracing::warn!`), and excludes anything the checkpoint already marks
+/// done. Used as the pipeline's initial dispatch source (`transform::worker`),
+/// run once before the pull subprocess spawns.
 pub(crate) fn gather_pending(
     source_dir: &Path,
     staging_dir: &Path,

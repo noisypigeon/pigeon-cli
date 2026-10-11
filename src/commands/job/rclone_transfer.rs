@@ -92,6 +92,21 @@ fn emit_delta_metrics(
     }
 }
 
+/// Forwards each newly-copied object's relative path to `on_copied`, if a
+/// caller opted in (ADR-0116). A send error means the receiver was dropped
+/// -- the caller stopped listening, which is fine, not a failure of the
+/// rclone subprocess itself.
+fn forward_copied(
+    on_copied: &Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    objects: Vec<String>,
+) {
+    if let Some(sender) = on_copied {
+        for object in objects {
+            let _ = sender.send(object);
+        }
+    }
+}
+
 /// Shared with `rclone::worker`'s own `delete`-side metrics emission --
 /// logging a collapsed-repeats summary (ADR-0106) is identical regardless
 /// of which rclone action produced it.
@@ -116,14 +131,22 @@ pub(crate) fn log_collapsed_repeats(step: &'static str, delta: &TailDelta) {
 /// once at the end. `include_extension` (ADR-0112), when given, appends
 /// `--include '*.<extension>' --ignore-case` to the rclone invocation --
 /// `transform`'s pull phase uses this to avoid transferring anything outside
-/// its single `--input-file-type` scope; `rclone copy`/`transform`'s push
-/// phase pass `None` (a push has nothing left to filter -- the local
-/// `result/` tree it reads from already holds only the one output type).
-/// Does not touch `pigeon_job_macro_phase` -- callers with a notion of
-/// "local work vs. uploading" (`rclone::worker::run_copy_job`,
-/// `transform::worker`) set that gauge themselves around this call, since
-/// whether a given invocation of this function *is* "uploading" depends on
-/// which phase the caller is in, not on this function's own logic.
+/// its single `--input-file-type` scope; `rclone copy` passes `None` (a copy
+/// job has nothing to filter). Does not touch `pigeon_job_macro_phase` --
+/// callers with a notion of "local work vs. uploading"
+/// (`rclone::worker::run_copy_job`, `transform::worker`) set that gauge
+/// themselves around this call, since whether a given invocation of this
+/// function *is* "uploading" depends on which phase the caller is in, not on
+/// this function's own logic.
+///
+/// `on_copied` (ADR-0116), when given, receives each object's relative path
+/// the instant rclone's own JSON log reports it as newly copied -- the
+/// authoritative, race-free "this file's bytes are fully on disk" signal.
+/// `transform`'s pull phase uses this to pipeline transcode/push work off a
+/// still-running bulk pull instead of waiting for the whole batch to finish;
+/// every other caller (`rclone::worker::run_copy_job`) passes `None` and
+/// sees no behavior change at all -- the tailer always populates
+/// `TailDelta::copied_objects` regardless of whether anyone's listening.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_rclone_copy(
     source: &str,
@@ -136,6 +159,7 @@ pub(crate) async fn run_rclone_copy(
     job_name: &'static str,
     phase_label: &'static str,
     emit_upload_metrics: bool,
+    on_copied: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 ) -> Result<RcloneLogSummary, String> {
     tracing::info!(
         source,
@@ -226,7 +250,9 @@ pub(crate) async fn run_rclone_copy(
                 break wait_result;
             }
             _ = poll_interval.tick() => {
-                emit_delta_metrics(job_name, phase_label, emit_upload_metrics, &tailer.poll());
+                let delta = tailer.poll();
+                emit_delta_metrics(job_name, phase_label, emit_upload_metrics, &delta);
+                forward_copied(&on_copied, delta.copied_objects);
             }
         }
     };
@@ -234,7 +260,9 @@ pub(crate) async fn run_rclone_copy(
 
     // One last read to flush anything written between the final tick and
     // process exit.
-    emit_delta_metrics(job_name, phase_label, emit_upload_metrics, &tailer.poll());
+    let final_delta = tailer.poll();
+    emit_delta_metrics(job_name, phase_label, emit_upload_metrics, &final_delta);
+    forward_copied(&on_copied, final_delta.copied_objects);
     let log_summary = tailer.summary();
 
     let exit_code = exit_status.code();
@@ -308,6 +336,7 @@ mod tests {
             "test-job",
             "transfer",
             true,
+            None,
         )
         .await
         .unwrap();
@@ -345,6 +374,7 @@ mod tests {
             "test-job",
             "pull",
             false,
+            None,
         )
         .await
         .unwrap();
@@ -352,5 +382,47 @@ mod tests {
         assert_eq!(summary.transferred, 1);
         assert!(dest_dir.path().join("photo.png").exists());
         assert!(!dest_dir.path().join("notes.txt").exists());
+    }
+
+    /// `on_copied` (ADR-0116) receives each copied file's relative path
+    /// exactly once -- the signal `transform`'s pull phase pipelines
+    /// transcode work off, instead of waiting for the whole batch.
+    #[tokio::test]
+    async fn run_rclone_copy_sends_each_copied_objects_relative_path_on_the_channel() {
+        if check_rclone_available().await.is_err() {
+            eprintln!("skipping: rclone not found on PATH");
+            return;
+        }
+
+        let source_dir = tempfile::tempdir().unwrap();
+        let dest_dir = tempfile::tempdir().unwrap();
+        let log_dir = tempfile::tempdir().unwrap();
+        std::fs::write(source_dir.path().join("a.txt"), b"a").unwrap();
+        std::fs::write(source_dir.path().join("b.txt"), b"b").unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let log_path = log_dir.path().join("rclone.jsonl");
+        run_rclone_copy(
+            source_dir.path().to_str().unwrap(),
+            dest_dir.path().to_str().unwrap(),
+            None,
+            &log_path,
+            2,
+            4,
+            None,
+            "test-job",
+            "transfer",
+            true,
+            Some(tx),
+        )
+        .await
+        .unwrap();
+
+        let mut received = Vec::new();
+        while let Ok(object) = rx.try_recv() {
+            received.push(object);
+        }
+        received.sort();
+        assert_eq!(received, vec!["a.txt".to_string(), "b.txt".to_string()]);
     }
 }

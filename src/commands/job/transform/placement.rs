@@ -28,7 +28,8 @@ const NAME_HASH_HEX_LEN: usize = 16;
 /// trees with coincidentally identical relative paths never collide
 /// either. The same source file always maps to the exact same destination
 /// name on every run, which is also what makes a `transform` rerun line up
-/// cleanly with Phase C's `rclone copy` incremental push-skip.
+/// cleanly with each per-file `rclone copyto` push's own incremental
+/// skip-if-unchanged behavior (ADR-0116).
 pub(crate) fn compute_destination_name(source_path: &str, original_relative_path: &str) -> String {
     let stem = sanitize_filename(
         Path::new(original_relative_path)
