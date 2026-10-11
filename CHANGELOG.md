@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0124: `job run transform` now deletes a file's local source/result copies immediately once it's durably pushed, and skips already-done files before downloading them at all instead of only after, bounding local disk usage to the in-flight window instead of the whole dataset ([#55](https://github.com/noisypigeon/pigeon-cli/pull/55)).
+
 ## [0.4.5] - 2026-10-11
 
 - ADR-0122: adds `mov`/`m4v`/`mp4` input kinds and a `--video-quality` flag to `job run transform`, transcoding video to space-optimized H.265/HEVC `.mp4` via a small vetted `libx265` CRF menu ([#53](https://github.com/noisypigeon/pigeon-cli/pull/53)).
