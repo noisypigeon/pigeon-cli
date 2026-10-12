@@ -116,7 +116,7 @@ fn log_file_flag_writes_valid_jsonl_with_the_command_name() {
     pigeon_in(&config_dir)
         .args(["--log-file"])
         .arg(&log_file)
-        .args(["keyring", "list"])
+        .args(["--no-metrics", "keyring", "list"])
         .assert()
         .success();
 

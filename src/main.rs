@@ -16,5 +16,11 @@ fn main() {
     if !cli.no_metrics {
         observability::metrics::install(observability::metrics::resolve_port(cli.metrics_port));
     }
-    std::process::exit(commands::dispatch(cli.command));
+    let exit_code = commands::dispatch(cli.command);
+    // `std::process::exit` terminates immediately without running destructors,
+    // so the JSONL writer's `WorkerGuard` must be dropped explicitly first --
+    // otherwise its buffered tail can be lost (ADR-0073's `init()` doc comment
+    // already warned "dropping it early silently truncates buffered log lines").
+    drop(_guard);
+    std::process::exit(exit_code);
 }
