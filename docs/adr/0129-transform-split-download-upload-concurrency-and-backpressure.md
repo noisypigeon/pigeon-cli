@@ -191,3 +191,11 @@ run already chose rather than requiring a second number to hand-tune).
 - Manual: confirm `--download-transfers 1 --upload-transfers 8` (or the
   reverse) actually produces independent pull/push concurrency by watching
   `pigeon_job_phase_total`/`pigeon_upload_*` metrics during a run.
+
+## Amendment (2026-10-12): the PID channel becomes an implementor field (ADR-0132)
+
+ADR-0132 preserves this ADR's SIGSTOP/SIGCONT backpressure mechanism exactly;
+`pid_tx` moves from a trailing `run_rclone_copy` parameter into the
+`StreamHooks` field on the `rclone::Copy` implementor, `Default`-empty for
+every command that does not want it. The split download/upload concurrency
+flags and the pause/resume water marks are unaffected.

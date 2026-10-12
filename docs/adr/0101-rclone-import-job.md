@@ -99,3 +99,12 @@ ADR-0110 nests this job under `pigeon job run rclone`, renaming
 "raw passthrough string, not a bucket-config alias" design this ADR
 established survives; the flag names, job identity (`"import"` ->
 `"rclone-copy"`), and CLI shape described above do not.
+
+## Amendment (2026-10-12): subprocess mechanics move into `core::rclone` (ADR-0132)
+
+ADR-0132 consolidates every rclone invocation in the crate behind one
+`RcloneCommand` trait and one shared runner in `src/core/rclone/`. This ADR's
+spawn/stderr-drain mechanics, its fixed reliability flags, and its
+`--use-json-log` approach all survive behaviorally -- they just stop being
+hand-written per call site. The `rclone.conf`-is-external, raw-passthrough
+design this ADR established is unchanged and is extended to the report leg.

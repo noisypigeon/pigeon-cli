@@ -70,3 +70,13 @@ ADR-0110 renames this job `"import"` -> `"rclone-copy"` and adds a sibling
 (`RcloneLogTailer`, the `tokio::select!` poll loop, per-poll delta metrics)
 is preserved unchanged in spirit, generalized to parameterize per-action
 metric names/labels and add a `deletes` counter for the new action.
+
+## Amendment (2026-10-12): the live-polling loop becomes the shared runner (ADR-0132)
+
+ADR-0132 moves this ADR's `RcloneLogTailer`/`tokio::select!` polling loop into
+`core::rclone`'s single runner, reached by every streamed command rather than
+copied per command (`rclone purge` had its own duplicate of the whole loop).
+`rclone_log.rs` moves to `core/rclone/log.rs` with its 19 tests. The
+per-attempt-metrics gap this ADR recorded and filed is explicitly restated,
+not closed: `pigeon_upload_attempts_total`/`pigeon_upload_duration_seconds`
+remain unavailable for every rclone-backed leg.

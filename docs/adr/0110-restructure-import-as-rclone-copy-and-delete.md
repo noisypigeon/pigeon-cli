@@ -213,3 +213,14 @@ pattern ADR-0101 itself already carries from ADR-0106/ADR-0108.
   correctly-labeled `rclone-copy`/`rclone-delete` entries, the report-bucket
   upload succeeds, and the delete run's uploaded report shows a sane
   `deleted` count.
+
+## Amendment (2026-10-12): `purge`'s dedicated poll loop folds into the shared runner (ADR-0132)
+
+ADR-0132 replaces `run_delete_job`'s ~110 lines of hand-written spawn/
+stderr-drain/poll-loop scaffolding -- a near-verbatim duplicate of the copy
+path's, down to its own second copy of `LOG_POLL_INTERVAL` -- with an
+`rclone::Purge` implementor of the shared `RcloneCommand` trait. Decision
+points 3 and 4 survive exactly: still `rclone purge`, still the same flag set,
+still `"rclone-copy"`/`"rclone-delete"` job names and `"transfer"`/`"delete"`
+`step` labels. Decision point 2's `--report-bucket` becomes `--report-path` on
+both actions.

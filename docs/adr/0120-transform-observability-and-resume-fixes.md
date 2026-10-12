@@ -127,3 +127,15 @@ Shells out to `rclone lsjson --files-only --no-modtime --no-mimetype <destinatio
 - Manual: `htop` on the job's VM alongside a real multi-file transcode, cross-checked against the Grafana CPU/Memory panels for the same instance and time window.
 - Manual: two sequential `transform` runs against the same `--destination-path`, deleting `--local-output` between them to simulate VM replacement -- the second run pushes 0 new files for content already at the destination and does not re-invoke `ffmpeg` for those files.
 - Manually confirmed, before merge, the exact stderr text the installed `rclone` version emits for `lsjson` against a nonexistent destination, since pattern-matching subprocess output is inherently version-fragile.
+
+## Amendment (2026-10-12): the destination listing is re-homed and instrumented (ADR-0132)
+
+ADR-0132 moves this ADR's `rclone lsjson` destination listing into a shared
+`rclone::Lsjson` command in `core::rclone`, merged with ADR-0124's recursive
+source listing into one struct (they differed only in `--recursive`, an
+`--include` filter, and which JSON field they read). The listing finally gains
+observability it has never had -- a tracing start/complete pair with path,
+entry count, and elapsed time, plus a `phase="list"` metric -- so a slow or
+hanging listing is no longer indistinguishable from a hung job. The
+`"directory not found"` stderr tolerance this ADR introduced is carried over
+byte-for-byte and remains as version-fragile as issue #63 records.

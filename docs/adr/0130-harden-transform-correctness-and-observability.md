@@ -225,3 +225,15 @@ failed without parsing `detail`.
 - Manual: `pigeon job run transform --help`; a real run against a source tree
   containing a `._*` stub and a genuinely corrupt file, confirming
   `pigeon.jsonl` carries an end-of-run totals line and the run does not abort.
+
+## Amendment (2026-10-12): push-leg metrics move to the shared runner (ADR-0132)
+
+ADR-0132 preserves the `pigeon_upload_*` emission this ADR added to
+`transform`'s push leg, and the decision not to emit `pigeon_job_macro_phase`
+for this job at all -- but the emission site moves out of `push.rs` and into
+`core::rclone`'s shared runner, so every rclone command's metrics come from
+one place rather than from whichever caller remembered to add them. The
+`is_apple_double_basename` filtering, per-file pull reconciliation, and
+disk-space preflight this ADR added are unaffected. Separately, `transform`'s
+`--report-bucket` becomes `--report-path`, leaving this job with no keyring
+dependency at all.
