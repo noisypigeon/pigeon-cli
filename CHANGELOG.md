@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.15] - 2026-10-12
+
 - ADR-0133: migrates `deduplicate`'s three data legs (list, download, upload) off `minio` onto ADR-0132's `core::rclone` trait, making it the fifth `RcloneCommand` consumer. `--source-bucket`/`--destination-bucket` keyring aliases become raw `--source-path`/`--destination-path` rclone remotes; `--upload-concurrency` is removed in favor of `--transfers`/`--checkers`/`--tpslimit`; already-processed objects are never re-transferred on a resumed run (reusing ADR-0124's `--files-from-raw` skip); and the pull keeps today's download/process overlap via ADR-0116's `on_copied` channel rather than regressing to a slower barrier. Supersedes ADR-0113, the same migration decided 2026-10-10 but never implemented and since invalidated (its stated mechanism was deleted by ADR-0132; its dead-code claim about `download_with_retry`/`DownloadAnnounce` was invalidated once ADR-0131 deleted `pull_transform`, so `clippy -D warnings` now forces their deletion and `download.rs` is renamed `local.rs`). ADR-0109's bucket-alias identity re-keys to source paths throughout; `deduplicate` becomes keyring-free; pre-migration `.staging` state is structurally incompatible, with no conversion provided ([#67](https://github.com/noisypigeon/pigeon-cli/pull/67)).
 
 ## [0.4.14] - 2026-10-12
