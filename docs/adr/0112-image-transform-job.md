@@ -338,3 +338,15 @@ ADR-0100 (report/transcript/log upload to a report bucket), and ADR-0090
   confirming the destination receives correctly-named, full-resolution
   `.jpg` files, `transform-report.txt` lists each file, and rerunning the
   exact same command is a no-op.
+
+## Amendment (2026-10-12): `rclone_transfer` is superseded by `core::rclone` (ADR-0132)
+
+ADR-0132 deletes `src/commands/job/rclone_transfer.rs` and with it decision
+point 3's `run_rclone_copy`, whose parameter list had grown to 13 positional
+arguments behind an `#[allow(clippy::too_many_arguments)]`. Its role passes to
+an `rclone::Copy` struct implementing the shared `RcloneCommand` trait, so call
+sites name only the fields they need instead of trailing a run of bare
+`None`s. The hoist's intent -- one shared implementation of the copy
+mechanics -- is what ADR-0132 completes; this ADR's three-phase pipeline,
+flags, and metric labels are unaffected. Decision point 1's `--report-bucket`
+becomes `--report-path`.

@@ -69,3 +69,14 @@ Triggered once, right after `job.run(...)` (or `worker::run_upload_only(...)`) r
 - Unit tests: `generate_run_id`/`run_prefix`/`write_summary_report` (`report_upload.rs`), `Transcript::line`/`create` (`observability/transcript.rs`).
 - CLI tests: every `job run <type> --help` now lists `--report-bucket` (extended the existing per-job help-flag tests).
 - Manual verification of an end-to-end upload against a real bucket-config is left to the first real run, consistent with this codebase's existing pattern for upload-phase changes (e.g. ADR-0089/ADR-0091 were verified the same way).
+
+## Amendment (2026-10-12): the four rclone-addressed jobs move to `--report-path` (ADR-0132)
+
+ADR-0132 replaces decision point 1's `--report-bucket` with `--report-path`
+on `deduplicate`, `transform`, `rclone copy`, and `rclone delete` -- a raw
+rclone `remote:path` string uploaded via `rclone copyto`, not a keyring alias
+uploaded via `minio`. `email-sync`, `email-pull`, and `decrypt-files` keep the
+alias form described above unchanged, so both spellings coexist. Decision
+points 2-8 (the run id, the `{date}-{job-name}-{run-id}` prefix, the three
+fixed artifact names, the always-unencrypted stance, and the best-effort
+failure handling) survive untouched on both paths.

@@ -298,3 +298,14 @@ enum variant would add ceremony with no consumer.
   at the destination, the report lists all 3 with the corrupt one marked
   `failed` and a real ffmpeg-stderr detail, the exit code is nonzero, and
   rerunning the identical command is a no-op for the 2 already-pushed files.
+
+## Amendment (2026-10-12): the per-object channel becomes an implementor field (ADR-0132)
+
+ADR-0132 keeps this ADR's `on_copied` per-object completion signal and its
+`rclone copyto` per-file push exactly as designed, but reaches both through
+the shared `RcloneCommand` trait: `on_copied` moves from a trailing
+`run_rclone_copy` parameter into a `StreamHooks` field on `rclone::Copy`
+(`Default`-empty for every command that does not want it), and the `copyto`
+invocation becomes an `rclone::CopyTo` implementor whose retry and metric
+emission are now declared by the command rather than wrapped around it by
+`push.rs`.

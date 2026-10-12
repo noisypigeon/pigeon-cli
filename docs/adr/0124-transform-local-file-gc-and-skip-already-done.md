@@ -141,3 +141,12 @@ gap rather than merely mitigating its disk-space symptom.
   `--destination-path`; confirm via `pigeon.jsonl`/rclone's own transfer count that the
   already-pushed files are not re-downloaded, and that no new files appear in `source/` for
   them.
+
+## Amendment (2026-10-12): `--files-from-raw` becomes an implementor field (ADR-0132)
+
+ADR-0132 preserves this ADR's pre-pull exclusion mechanism unchanged, but
+`files_from` moves from a trailing `run_rclone_copy` parameter to a field on
+the `rclone::Copy` implementor, and `list_source_relative_paths`' underlying
+`rclone lsjson` call merges with ADR-0120's destination listing into the
+shared `rclone::Lsjson` command. `--files-from-raw` (rather than plain
+`--files-from`) and the reasoning for it are untouched.
