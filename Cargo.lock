@@ -2608,6 +2608,7 @@ dependencies = [
  "indicatif",
  "kamadak-exif",
  "keyring",
+ "libc",
  "lopdf",
  "mail-parser",
  "md5",

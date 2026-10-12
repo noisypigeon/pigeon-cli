@@ -134,13 +134,13 @@ impl WizardInput for DestinationPathInput {
     }
 }
 
-const TRANSFERS_DEFAULT: usize = 8;
+const DOWNLOAD_TRANSFERS_DEFAULT: usize = 8;
 
-struct TransfersInput {
+struct DownloadTransfersInput {
     flag: Option<usize>,
 }
 
-impl WizardInput for TransfersInput {
+impl WizardInput for DownloadTransfersInput {
     type Value = usize;
 
     fn flag_value(&self) -> Option<Result<usize, String>> {
@@ -149,25 +149,25 @@ impl WizardInput for TransfersInput {
 
     fn prompt(&self) -> Result<usize, String> {
         let value = Input::<usize>::new()
-            .with_prompt("rclone --transfers")
-            .default(TRANSFERS_DEFAULT)
+            .with_prompt("rclone --downloads-transfers (pull phase)")
+            .default(DOWNLOAD_TRANSFERS_DEFAULT)
             .interact_text()
-            .map_err(|err| format!("failed to read transfers: {err}"))?;
+            .map_err(|err| format!("failed to read download transfers: {err}"))?;
         Ok(value.max(1))
     }
 
     fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Ok(TRANSFERS_DEFAULT)
+        Ok(DOWNLOAD_TRANSFERS_DEFAULT)
     }
 }
 
-const CHECKERS_DEFAULT: usize = 16;
+const DOWNLOAD_CHECKERS_DEFAULT: usize = 16;
 
-struct CheckersInput {
+struct DownloadCheckersInput {
     flag: Option<usize>,
 }
 
-impl WizardInput for CheckersInput {
+impl WizardInput for DownloadCheckersInput {
     type Value = usize;
 
     fn flag_value(&self) -> Option<Result<usize, String>> {
@@ -176,15 +176,69 @@ impl WizardInput for CheckersInput {
 
     fn prompt(&self) -> Result<usize, String> {
         let value = Input::<usize>::new()
-            .with_prompt("rclone --checkers")
-            .default(CHECKERS_DEFAULT)
+            .with_prompt("rclone --download-checkers (pull phase)")
+            .default(DOWNLOAD_CHECKERS_DEFAULT)
             .interact_text()
-            .map_err(|err| format!("failed to read checkers: {err}"))?;
+            .map_err(|err| format!("failed to read download checkers: {err}"))?;
         Ok(value.max(1))
     }
 
     fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Ok(CHECKERS_DEFAULT)
+        Ok(DOWNLOAD_CHECKERS_DEFAULT)
+    }
+}
+
+const UPLOAD_TRANSFERS_DEFAULT: usize = 8;
+
+struct UploadTransfersInput {
+    flag: Option<usize>,
+}
+
+impl WizardInput for UploadTransfersInput {
+    type Value = usize;
+
+    fn flag_value(&self) -> Option<Result<usize, String>> {
+        self.flag.map(|value| Ok(value.max(1)))
+    }
+
+    fn prompt(&self) -> Result<usize, String> {
+        let value = Input::<usize>::new()
+            .with_prompt("concurrent push operations (upload phase)")
+            .default(UPLOAD_TRANSFERS_DEFAULT)
+            .interact_text()
+            .map_err(|err| format!("failed to read upload transfers: {err}"))?;
+        Ok(value.max(1))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<usize, String> {
+        Ok(UPLOAD_TRANSFERS_DEFAULT)
+    }
+}
+
+struct MaxPendingDownloadsInput {
+    flag: Option<usize>,
+    concurrency: usize,
+}
+
+impl WizardInput for MaxPendingDownloadsInput {
+    type Value = usize;
+
+    fn flag_value(&self) -> Option<Result<usize, String>> {
+        self.flag.map(|value| Ok(value.max(1)))
+    }
+
+    fn prompt(&self) -> Result<usize, String> {
+        let default = self.concurrency * 4;
+        let value = Input::<usize>::new()
+            .with_prompt("max pending downloads before pause (blank = auto)")
+            .default(default)
+            .interact_text()
+            .map_err(|err| format!("failed to read max pending downloads: {err}"))?;
+        Ok(value.max(1))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<usize, String> {
+        Ok(self.concurrency * 4)
     }
 }
 
@@ -270,7 +324,8 @@ async fn check_rclone_available() -> Result<(), String> {
 }
 
 /// Entry point for `pigeon job run transform` (ADR-0112, video input kinds
-/// added by ADR-0122).
+/// added by ADR-0122, download/upload concurrency split and backpressure
+/// added by ADR-0129).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     input_file_type: Option<String>,
@@ -279,8 +334,10 @@ pub fn dispatch(
     destination_path: Option<String>,
     local_output: Option<PathBuf>,
     concurrency: Option<usize>,
-    transfers: Option<usize>,
-    checkers: Option<usize>,
+    download_transfers: Option<usize>,
+    download_checkers: Option<usize>,
+    upload_transfers: Option<usize>,
+    max_pending_downloads: Option<usize>,
     tpslimit: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
@@ -300,8 +357,10 @@ pub fn dispatch(
         destination_path,
         local_output,
         concurrency,
-        transfers,
-        checkers,
+        download_transfers,
+        download_checkers,
+        upload_transfers,
+        max_pending_downloads,
         tpslimit,
         report_bucket,
         job_name,
@@ -317,8 +376,10 @@ async fn dispatch_async(
     destination_path: Option<String>,
     local_output: Option<PathBuf>,
     concurrency: Option<usize>,
-    transfers: Option<usize>,
-    checkers: Option<usize>,
+    download_transfers: Option<usize>,
+    download_checkers: Option<usize>,
+    upload_transfers: Option<usize>,
+    max_pending_downloads: Option<usize>,
     tpslimit: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
@@ -390,11 +451,36 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let transfers = match (TransfersInput { flag: transfers }).resolve(non_interactive) {
+    let download_transfers = match (DownloadTransfersInput {
+        flag: download_transfers,
+    })
+    .resolve(non_interactive)
+    {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let checkers = match (CheckersInput { flag: checkers }).resolve(non_interactive) {
+    let download_checkers = match (DownloadCheckersInput {
+        flag: download_checkers,
+    })
+    .resolve(non_interactive)
+    {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let upload_transfers = match (UploadTransfersInput {
+        flag: upload_transfers,
+    })
+    .resolve(non_interactive)
+    {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let max_pending_downloads = match (MaxPendingDownloadsInput {
+        flag: max_pending_downloads,
+        concurrency,
+    })
+    .resolve(non_interactive)
+    {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -444,9 +530,10 @@ async fn dispatch_async(
         local_output: local_output.clone(),
         input_file_type,
         video_quality,
-        transfers,
-        checkers,
+        download_transfers,
+        download_checkers,
         tpslimit,
+        max_pending_downloads,
         run_id,
     };
     let plan = match job.gather().await {
@@ -454,7 +541,7 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     };
 
-    let (exit_code, report_path) = match job.run(plan, concurrency, 1).await {
+    let (exit_code, report_path) = match job.run(plan, concurrency, upload_transfers).await {
         Ok(summary) => {
             let transcoded = summary
                 .outcomes
@@ -588,27 +675,71 @@ mod tests {
     }
 
     #[test]
-    fn transfers_input_flag_value_overrides_the_default() {
-        let input = TransfersInput { flag: Some(32) };
+    fn download_transfers_input_flag_value_overrides_the_default() {
+        let input = DownloadTransfersInput { flag: Some(32) };
         assert_eq!(input.flag_value(), Some(Ok(32)));
     }
 
     #[test]
-    fn transfers_input_falls_back_to_a_default_when_not_interactive() {
-        let input = TransfersInput { flag: None };
-        assert_eq!(input.non_interactive_fallback(), Ok(TRANSFERS_DEFAULT));
+    fn download_transfers_input_falls_back_to_a_default_when_not_interactive() {
+        let input = DownloadTransfersInput { flag: None };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Ok(DOWNLOAD_TRANSFERS_DEFAULT)
+        );
     }
 
     #[test]
-    fn checkers_input_flag_value_overrides_the_default() {
-        let input = CheckersInput { flag: Some(64) };
+    fn download_checkers_input_flag_value_overrides_the_default() {
+        let input = DownloadCheckersInput { flag: Some(64) };
         assert_eq!(input.flag_value(), Some(Ok(64)));
     }
 
     #[test]
-    fn checkers_input_falls_back_to_a_default_when_not_interactive() {
-        let input = CheckersInput { flag: None };
-        assert_eq!(input.non_interactive_fallback(), Ok(CHECKERS_DEFAULT));
+    fn download_checkers_input_falls_back_to_a_default_when_not_interactive() {
+        let input = DownloadCheckersInput { flag: None };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Ok(DOWNLOAD_CHECKERS_DEFAULT)
+        );
+    }
+
+    #[test]
+    fn upload_transfers_input_flag_value_overrides_the_default() {
+        let input = UploadTransfersInput { flag: Some(16) };
+        assert_eq!(input.flag_value(), Some(Ok(16)));
+    }
+
+    #[test]
+    fn upload_transfers_input_falls_back_to_a_default_when_not_interactive() {
+        let input = UploadTransfersInput { flag: None };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Ok(UPLOAD_TRANSFERS_DEFAULT)
+        );
+    }
+
+    #[test]
+    fn max_pending_downloads_input_scales_fallback_with_concurrency() {
+        let input = MaxPendingDownloadsInput {
+            flag: None,
+            concurrency: 4,
+        };
+        assert_eq!(input.non_interactive_fallback(), Ok(16));
+        let input = MaxPendingDownloadsInput {
+            flag: None,
+            concurrency: 8,
+        };
+        assert_eq!(input.non_interactive_fallback(), Ok(32));
+    }
+
+    #[test]
+    fn max_pending_downloads_input_flag_value_overrides_the_default() {
+        let input = MaxPendingDownloadsInput {
+            flag: Some(20),
+            concurrency: 4,
+        };
+        assert_eq!(input.flag_value(), Some(Ok(20)));
     }
 
     #[test]

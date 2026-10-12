@@ -34,9 +34,10 @@ pub(crate) struct TransformJob {
     pub local_output: PathBuf,
     pub input_file_type: InputFileType,
     pub video_quality: VideoQuality,
-    pub transfers: usize,
-    pub checkers: usize,
+    pub download_transfers: usize,
+    pub download_checkers: usize,
     pub tpslimit: Option<usize>,
+    pub max_pending_downloads: usize,
     pub run_id: String,
 }
 
@@ -57,26 +58,25 @@ impl Job for TransformJob {
             local_output: self.local_output.clone(),
             input_file_type: self.input_file_type,
             video_quality: self.video_quality,
-            transfers: self.transfers,
-            checkers: self.checkers,
+            download_transfers: self.download_transfers,
+            download_checkers: self.download_checkers,
             tpslimit: self.tpslimit,
+            max_pending_downloads: self.max_pending_downloads,
             run_id: self.run_id.clone(),
         })
     }
 
-    /// Ignores `upload_concurrency` -- ADR-0091 §3's intended hook for this
-    /// job's push leg, but `transform`'s CLI surface has no
-    /// `--upload-concurrency` flag (ADR-0116): push concurrency is bounded
-    /// by a semaphore sized from `--transfers` instead, decoupled from
-    /// `concurrency` (which sizes the CPU-bound transcode pool), matching
-    /// `RcloneCopyJob::run`'s precedent for a job this trait parameter
-    /// doesn't apply to.
+    /// Honors `upload_concurrency` (ADR-0091 §3) to size the push phase's
+    /// semaphore, bringing `transform` in line with every other
+    /// upload-capable job (ADR-0129). Previously this parameter was
+    /// ignored with a hardcoded value of 1; now it's the resolved
+    /// `--upload-transfers` value from the wizard.
     async fn run(
         self,
         plan: TransformPlan,
         concurrency: usize,
-        _upload_concurrency: usize,
+        upload_concurrency: usize,
     ) -> Result<TransformSummary, String> {
-        worker::run_transform_job(&plan, concurrency).await
+        worker::run_transform_job(&plan, concurrency, upload_concurrency).await
     }
 }

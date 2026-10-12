@@ -142,9 +142,10 @@ pub(crate) struct TransformPlan {
     /// Only consulted when `input_file_type.is_video()` (ADR-0122); an
     /// unused, harmless `VideoQuality::Medium` default on an image run.
     pub video_quality: VideoQuality,
-    pub transfers: usize,
-    pub checkers: usize,
+    pub download_transfers: usize,
+    pub download_checkers: usize,
     pub tpslimit: Option<usize>,
+    pub max_pending_downloads: usize,
     pub run_id: String,
 }
 
@@ -357,6 +358,38 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
     }
 }
 
+/// Send SIGSTOP to pause a process (Unix only, ADR-0129).
+#[cfg(unix)]
+fn pause_pull_process(pid: u32) {
+    if let Err(err) = unsafe {
+        if libc::kill(pid as i32, libc::SIGSTOP) != 0 {
+            Err("kill SIGSTOP failed")
+        } else {
+            Ok(())
+        }
+    } {
+        tracing::warn!(pid, error = ?err, "transform: failed to pause pull process");
+    } else {
+        tracing::debug!(pid, "transform: paused pull process");
+    }
+}
+
+/// Send SIGCONT to resume a process (Unix only, ADR-0129).
+#[cfg(unix)]
+fn resume_pull_process(pid: u32) {
+    if let Err(err) = unsafe {
+        if libc::kill(pid as i32, libc::SIGCONT) != 0 {
+            Err("kill SIGCONT failed")
+        } else {
+            Ok(())
+        }
+    } {
+        tracing::warn!(pid, error = ?err, "transform: failed to resume pull process");
+    } else {
+        tracing::debug!(pid, "transform: resumed pull process");
+    }
+}
+
 /// Enqueues `relative_path` into `queue` unless it is already fully done --
 /// its deterministic `placement::compute_destination_name` already exists in
 /// `existing_destination_filenames` (fetched once from `--destination-path`
@@ -431,9 +464,13 @@ fn write_files_from(staging_dir: &Path, relative_paths: &[String]) -> Result<Pat
 /// couldn't be created) -- a per-file transcode/push failure is captured in
 /// the returned `TransformSummary` instead, so every already-succeeded
 /// file's outcome survives for the report.
+///
+/// `upload_concurrency` sizes the `push_semaphore` (`Arc<Semaphore>`), the
+/// concurrency cap for per-file `rclone copyto` push subprocesses (ADR-0129).
 pub(crate) async fn run_transform_job(
     plan: &TransformPlan,
     concurrency: usize,
+    upload_concurrency: usize,
 ) -> Result<TransformSummary, String> {
     let source_dir = source_dir(&plan.local_output);
     let result_dir = result_dir(&plan.local_output);
@@ -505,6 +542,7 @@ pub(crate) async fn run_transform_job(
     );
 
     let (copied_tx, mut copied_rx) = mpsc::unbounded_channel();
+    let (pull_pid_tx, mut pull_pid_rx) = tokio::sync::mpsc::channel::<u32>(1);
     let pull_log_path = plan
         .local_output
         .join(format!("rclone-pull-{}.jsonl", plan.run_id));
@@ -518,11 +556,12 @@ pub(crate) async fn run_transform_job(
         })
     } else {
         let files_from_path = write_files_from(&staging_dir(&plan.local_output), &files_to_pull)?;
+        let pull_pid_tx_clone = pull_pid_tx.clone();
         tokio::spawn({
             let source_path = plan.source_path.clone();
             let source_dir_str = source_dir.display().to_string();
-            let transfers = plan.transfers;
-            let checkers = plan.checkers;
+            let download_transfers = plan.download_transfers;
+            let download_checkers = plan.download_checkers;
             let tpslimit = plan.tpslimit;
             async move {
                 rclone_transfer::run_rclone_copy(
@@ -530,19 +569,21 @@ pub(crate) async fn run_transform_job(
                     &source_dir_str,
                     None,
                     &pull_log_path,
-                    transfers,
-                    checkers,
+                    download_transfers,
+                    download_checkers,
                     tpslimit,
                     "transform",
                     "pull",
                     false,
                     Some(copied_tx),
                     Some(&files_from_path),
+                    Some(pull_pid_tx_clone),
                 )
                 .await
             }
         })
     };
+    drop(pull_pid_tx);
 
     // Caps each concurrent `ffmpeg` transcode's own internal thread count so
     // the whole in-flight fleet stays within the host's real core count
@@ -554,7 +595,14 @@ pub(crate) async fn run_transform_job(
         / concurrency.max(1))
     .max(1);
 
-    let push_semaphore = Arc::new(Semaphore::new(plan.transfers.max(1)));
+    let push_semaphore = Arc::new(Semaphore::new(upload_concurrency.max(1)));
+
+    // Backpressure: pause/resume pull based on backlog depth (ADR-0129).
+    let high_water_mark = plan.max_pending_downloads;
+    let low_water_mark = (high_water_mark / 2).max(1);
+    let mut pull_pid: Option<u32> = None;
+    let mut pull_is_paused = false;
+
     let mut in_flight: JoinSet<(String, Result<PathBuf, String>)> = JoinSet::new();
     let mut outcomes = Vec::new();
     let mut pushed: u64 = 0;
@@ -614,6 +662,11 @@ pub(crate) async fn run_transform_job(
         }
 
         tokio::select! {
+            received_pid = pull_pid_rx.recv() => {
+                if let Some(pid) = received_pid {
+                    pull_pid = Some(pid);
+                }
+            }
             joined = in_flight.join_next(), if !in_flight.is_empty() => {
                 let Some(joined) = joined else { continue; };
                 let (relative_path, result) = joined.expect("transform pipeline task panicked");
@@ -630,6 +683,12 @@ pub(crate) async fn run_transform_job(
                         && circuit_breaker_matches == CIRCUIT_BREAKER_SAMPLE_SIZE
                     {
                         circuit_breaker_tripped = true;
+                        // ADR-0129: deadlock guard -- if pull is paused, resume it so
+                        // backlog can drain (the circuit breaker stops dispatch anyway).
+                        if let (Some(pid), true) = (pull_pid, pull_is_paused) {
+                            resume_pull_process(pid);
+                            pull_is_paused = false;
+                        }
                         tracing::error!(
                             sample_size = CIRCUIT_BREAKER_SAMPLE_SIZE,
                             matches = circuit_breaker_matches,
@@ -662,6 +721,18 @@ pub(crate) async fn run_transform_job(
                             outcome: Outcome::Failed,
                             detail: err,
                         });
+                    }
+                }
+
+                // ADR-0129: dynamic backpressure -- check backlog and adjust pull pause state.
+                if let Some(pid) = pull_pid {
+                    let backlog = queue.len() + in_flight.len();
+                    if pull_is_paused && backlog <= low_water_mark {
+                        resume_pull_process(pid);
+                        pull_is_paused = false;
+                    } else if !pull_is_paused && backlog >= high_water_mark {
+                        pause_pull_process(pid);
+                        pull_is_paused = true;
                     }
                 }
             }
@@ -859,14 +930,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Jpeg,
-            transfers: 2,
-            checkers: 4,
+            download_transfers: 2,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 2).await.unwrap();
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
 
         assert!(!summary.failed);
         assert_eq!(summary.pushed, 2);
@@ -903,7 +975,7 @@ mod tests {
         );
 
         // A rerun must be a no-op: nothing left pending, nothing re-pushed.
-        let rerun_summary = run_transform_job(&plan, 2).await.unwrap();
+        let rerun_summary = run_transform_job(&plan, 2, 2).await.unwrap();
         assert_eq!(rerun_summary.pushed, 0);
         assert!(rerun_summary.outcomes.is_empty());
     }
@@ -942,14 +1014,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Heic,
-            transfers: 3,
-            checkers: 4,
+            download_transfers: 3,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 3).await.unwrap();
+        let summary = run_transform_job(&plan, 3, 3).await.unwrap();
 
         // Every file is a corrupt HEIC fixture (no real `libheif`-decodable
         // content), so every one of the 3 fails -- this test only exists to
@@ -1002,14 +1075,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Jpeg,
-            transfers: 2,
-            checkers: 4,
+            download_transfers: 2,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 2).await.unwrap();
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
 
         assert!(!summary.failed);
         assert_eq!(summary.pushed, 1);
@@ -1063,14 +1137,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Heic,
-            transfers: 2,
-            checkers: 4,
+            download_transfers: 2,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 2).await.unwrap();
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
 
         assert!(!summary.failed);
         assert_eq!(summary.pushed, 1);
@@ -1115,14 +1190,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Jpeg,
-            transfers: 2,
-            checkers: 4,
+            download_transfers: 2,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 2).await.unwrap();
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
 
         assert!(!summary.failed);
         assert_eq!(summary.pushed, 0);
@@ -1171,14 +1247,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Heic,
-            transfers: 5,
-            checkers: 4,
+            download_transfers: 5,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let result = run_transform_job(&plan, 5).await;
+        let result = run_transform_job(&plan, 5, 5).await;
 
         let err = result.expect_err("a uniformly-corrupt batch must trip the circuit breaker");
         assert!(err.contains("circuit breaker"));
@@ -1214,14 +1291,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Png,
-            transfers: 5,
-            checkers: 4,
+            download_transfers: 5,
+            download_checkers: 4,
             video_quality: VideoQuality::Medium,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 5).await.unwrap();
+        let summary = run_transform_job(&plan, 5, 5).await.unwrap();
 
         assert!(summary.failed);
         assert_eq!(summary.pushed, 24);
@@ -1325,14 +1403,15 @@ mod tests {
             destination_path: destination.display().to_string(),
             local_output: local_output.clone(),
             input_file_type: InputFileType::Mp4,
-            transfers: 2,
-            checkers: 4,
+            download_transfers: 2,
+            download_checkers: 4,
             video_quality: VideoQuality::Low,
             tpslimit: None,
+            max_pending_downloads: 100,
             run_id: "test-run".to_string(),
         };
 
-        let summary = run_transform_job(&plan, 2).await.unwrap();
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
 
         if summary.failed {
             let detail = summary
