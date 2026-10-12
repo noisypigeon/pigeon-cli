@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.12] - 2026-10-12
+
 - ADR-0130: hardens `job run transform` against four real defects found auditing it against `pull-transform` -- a source file `rclone` failed to pull vanished silently (its aggregate error count was never read, and the pull phase is now reconciled per-file against its own intended set), macOS AppleDouble `._*` stubs matched rclone's include filter and could trip the circuit breaker into aborting a whole run, `set_macro_phase` reported a one-way local-work-to-upload transition this job's per-file pipeline never makes, and there was no disk-space preflight; also closes the job's observability gap, which left `pigeon.jsonl` with no `transform` run data at all ([#61](https://github.com/noisypigeon/pigeon-cli/pull/61)).
 
 ## [0.4.11] - 2026-10-12
