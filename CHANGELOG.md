@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-10-12
+
 - ADR-0132: consolidates every `rclone` invocation behind one `RcloneCommand` trait plus one shared runner in a new `src/core/rclone/` (`Copy`/`Purge`/`Lsjson`/`CopyTo` implementors; `rclone_log.rs` moves in, `rclone_transfer.rs` is deleted). Six invocations were hand-written across four modules with no abstraction over "run an rclone command", so each new one copied the nearest and drifted: `run_rclone_copy` had grown to 13 positional params behind an `#[allow(clippy::too_many_arguments)]`, `run_delete_job` duplicated ~110 lines of its spawn/stderr-drain/poll loop, the two `lsjson` functions were near-identical, the "fixed" flag bundle had drifted three ways, `check_rclone_available` existed four times, and `lsjson` emitted no observability at all despite being a blocking full-tree listing on `transform`'s critical path. Also switches `--report-bucket` to `--report-path` on the four rclone-addressed jobs, leaving `transform` and `rclone copy`/`delete` keyring-free, at the cost of a new hard `rclone` dependency for `deduplicate` ([#65](https://github.com/noisypigeon/pigeon-cli/pull/65)).
 
 ## [0.4.13] - 2026-10-12
