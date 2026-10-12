@@ -1,8 +1,12 @@
 //! Disk-space-aware, streaming download primitives shared by every job that
-//! pulls bucket objects to local disk (originally `pull_transform::worker`'s
-//! own private helpers, ADR-0076; hoisted here once `deduplicate` needed the
-//! exact same behavior, ADR-0082 §0 -- same "extract on a second real
-//! consumer" reasoning as `commands::job::upload`'s own ADR-0074 hoist).
+//! pulls bucket objects to local disk (originally the private helpers of
+//! the since-removed `pull_transform::worker`, ADR-0076; hoisted here once
+//! `deduplicate` needed the exact same behavior, ADR-0082 §0 -- same
+//! "extract on a second real consumer" reasoning as
+//! `commands::job::upload`'s own ADR-0074 hoist). Still genuinely shared
+//! after ADR-0131: `deduplicate` uses the announce/disk-check/download/hash
+//! helpers, and `transform` uses `sha256_hex` (ADR-0112) plus
+//! `check_disk_space` (ADR-0130).
 
 use std::fs::File;
 use std::io::Read;

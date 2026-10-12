@@ -1,7 +1,8 @@
 //! `ffmpeg`/`ffprobe`-backed png/heic -> jpg transcoding (ADR-0112 Decision
-//! §4), and the jpeg copy-through path that skips both entirely. Unlike
-//! `pull_transform::media`'s `-q:v 3` default (tuned for screenshots, not
-//! "no quality loss"), this always uses ffmpeg's highest JPEG quality
+//! §4), and the jpeg copy-through path that skips both entirely. Where the
+//! since-removed `pull_transform::media` defaulted to `-q:v 3` (tuned for
+//! screenshots, not "no quality loss"), this always uses ffmpeg's highest
+//! JPEG quality
 //! setting and forces 4:4:4 chroma, with no resize filter -- dimensions are
 //! therefore preserved by construction, and `transcode_to_jpg` additionally
 //! confirms that with a cheap post-encode `ffprobe` check as a defensive
@@ -19,8 +20,8 @@ use serde::Deserialize;
 use super::format::VideoQuality;
 
 /// Confirms `ffmpeg`/`ffprobe` are on `PATH`, checked once up front before
-/// any prompts (mirrors `pull_transform::media::check_ffmpeg_available`), so
-/// a missing binary fails the whole job immediately instead of partway
+/// any prompts (the same shape as `rclone::worker::check_rclone_available`),
+/// so a missing binary fails the whole job immediately instead of partway
 /// through a long run.
 pub(crate) async fn check_ffmpeg_available() -> Result<(), String> {
     for binary in ["ffmpeg", "ffprobe"] {

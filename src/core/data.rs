@@ -187,8 +187,8 @@ impl ContentIndex {
     /// 4th tab-separated field -- so a later duplicate's report row can
     /// name not just which key was kept, but which of this run's (possibly
     /// several) source buckets it came from. Only `deduplicate::dedup`
-    /// calls this; every other `ContentIndex` consumer (`pull_transform`,
-    /// `email_sync`, `email_pull`) has no multi-bucket concept and keeps
+    /// calls this; every other `ContentIndex` consumer (`email_sync`,
+    /// `email_pull`) has no multi-bucket concept and keeps
     /// writing plain 3-field lines via `commit_with_key`.
     pub(crate) fn commit_with_key_and_bucket(
         &mut self,
@@ -511,20 +511,6 @@ fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-/// The portion of `key` after its last `!` zip-member separator -- zip
-/// expansion (`deduplicate`/`pull_transform` worker.rs) builds a synthetic,
-/// human-readable key for an extracted member by joining the zip's own key
-/// onto the member's in-archive path with `!` (e.g.
-/// `"outer.zip!photos/img.jpg"`). `extension_of` and any filename-deriving
-/// `Path` split must look at this, not the raw key, or a zip member's
-/// synthetic prefix leaks into the derived extension/name (ADR-0099) --
-/// e.g. an extensionless member `outer.zip!README` would otherwise be seen
-/// as having extension `"zip!README"`, the only dot in the whole key.
-/// Returns `key` unchanged when there's no `!`.
-pub(crate) fn after_zip_separator(key: &str) -> &str {
-    key.rsplit('!').next().unwrap_or(key)
-}
-
 /// `true` when `key`'s final `/`-separated segment is a macOS AppleDouble
 /// resource-fork sidecar name (`._<name>`). Usable on a zip-internal entry
 /// name (via `archive::is_apple_metadata_entry`, which additionally treats a
@@ -533,23 +519,11 @@ pub(crate) fn after_zip_separator(key: &str) -> &str {
 /// (ADR-0107), or on a source-tree relative path (`transform`, ADR-0130 --
 /// these 82-byte stubs match an `--include '*.<ext>'` filter but are not
 /// decodable media, and feeding one to `ffmpeg` produces a non-retryable
-/// error that can trip the circuit breaker). Hoisted here from
-/// `pull_transform::archive` on its second consumer (ADR-0130), alongside
-/// this module's other filename predicates.
+/// error that can trip the circuit breaker). Hoisted here on its second
+/// consumer (ADR-0130), alongside this module's other filename predicates;
+/// `commands::job::archive` is the other caller.
 pub(crate) fn is_apple_double_basename(key: &str) -> bool {
     key.rsplit('/').next().unwrap_or(key).starts_with("._")
-}
-
-/// The lowercased extension of `key`'s final path segment, or `"(none)"`
-/// when there isn't one. Hoisted here (ADR-0096 §0) once `pull_transform`,
-/// `deduplicate`, and `reduce` all needed the identical logic -- this
-/// codebase's usual "duplicate until the third consumer" precedent.
-pub(crate) fn extension_of(key: &str) -> String {
-    Path::new(after_zip_separator(key))
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .unwrap_or_else(|| "(none)".to_string())
 }
 
 #[cfg(test)]
@@ -566,37 +540,6 @@ mod tests {
         assert!(!is_apple_double_basename(".hidden.heic"));
         // The `._` must be in the final segment, not an ancestor directory.
         assert!(!is_apple_double_basename("._dir/IMG_0001.heic"));
-    }
-
-    #[test]
-    fn extension_of_lowercases_and_strips_the_dot() {
-        assert_eq!(extension_of("Photos/IMG_0001.JPG"), "jpg");
-    }
-
-    #[test]
-    fn extension_of_handles_no_extension() {
-        assert_eq!(extension_of("Photos/README"), "(none)");
-    }
-
-    #[test]
-    fn extension_of_handles_dotfiles_without_extension() {
-        assert_eq!(extension_of(".DS_Store"), "(none)");
-    }
-
-    #[test]
-    fn extension_of_strips_a_zip_member_prefix_before_deriving_the_extension() {
-        assert_eq!(extension_of("outer.zip!README"), "(none)");
-        assert_eq!(extension_of("outer.zip!photos/img.JPG"), "jpg");
-    }
-
-    #[test]
-    fn after_zip_separator_returns_the_segment_after_the_last_bang() {
-        assert_eq!(after_zip_separator("outer.zip!README"), "README");
-        assert_eq!(
-            after_zip_separator("a.zip!nested.zip!photos/img.jpg"),
-            "photos/img.jpg"
-        );
-        assert_eq!(after_zip_separator("plain/key.jpg"), "plain/key.jpg");
     }
 
     #[test]

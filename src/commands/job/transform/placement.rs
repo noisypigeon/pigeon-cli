@@ -1,7 +1,7 @@
 //! Destination filenames unique by construction, not collision-detected-
 //! and-fixed (ADR-0112 Decision §5). `core::data::unique_path` (the
-//! `-2`/`-3` suffix-on-existing-name scheme `deduplicate`/`pull_transform`
-//! use) only checks what's already present in the *local* `result/`
+//! `-2`/`-3` suffix-on-existing-name scheme `deduplicate` uses) only
+//! checks what's already present in the *local* `result/`
 //! directory -- it has no visibility into whatever the remote
 //! `--destination-path` already contains from an earlier run, so it can
 //! only guarantee run-local uniqueness, never global uniqueness. This

@@ -1,8 +1,8 @@
 //! Encrypt-then-upload-to-a-bucket-config primitives shared by every job
 //! that can optionally push its local output tree to a remote bucket
 //! (originally `email_sync::worker`'s upload phase, ADR-0011/0019/0024/0025;
-//! hoisted here once `pull_transform` needed the exact same behavior
-//! against a plain local directory instead of a per-identity one, ADR-0074).
+//! hoisted here once a second job needed the exact same behavior against a
+//! plain local directory instead of a per-identity one, ADR-0074).
 
 use std::collections::HashMap;
 use std::fs;
@@ -76,7 +76,7 @@ pub(crate) struct UploadTask {
     staging_dir: PathBuf,
     path: PathBuf,
     key: String,
-    /// Which job this task belongs to (e.g. "pull-transform", "deduplicate")
+    /// Which job this task belongs to (e.g. "email-sync", "deduplicate")
     /// -- a static job-type name, not a per-caller label like `label`
     /// above. Used only to tag metrics (ADR-0093) with `pigeon_job`.
     job: &'static str,
@@ -160,7 +160,7 @@ pub(crate) struct UploadSummary {
 /// is the directory whose files become upload candidates; `key_root` is what
 /// each candidate's S3 key is computed relative to -- for `email_sync`
 /// these differ (an identity's own result subdirectory nested one level
-/// under its output root); for a single flat tree like `pull_transform`'s
+/// under its output root); for a single flat tree like `deduplicate`'s
 /// they're the same directory.
 pub(crate) fn pending_upload_tasks(
     job: &'static str,

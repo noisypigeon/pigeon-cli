@@ -1,16 +1,18 @@
 //! Content-hash dedup, placement, and merge-report generation (ADR-0082
-//! §5/§6). Built directly on `core::data`'s primitives rather than reusing
-//! `pull_transform::dedup::place_files` -- that function doesn't expose
-//! per-duplicate merge records, which this job's report requires.
+//! §5/§6). Built directly on `core::data`'s primitives: the closest
+//! existing placement pass (the since-removed `pull_transform::dedup`)
+//! didn't expose per-duplicate merge records, which this job's report
+//! requires.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use indicatif::MultiProgress;
 
+use super::manifest::after_zip_separator;
+use crate::commands::job::archive;
 use crate::commands::job::email_sync::sink;
-use crate::commands::job::pull_transform::archive;
-use crate::core::data::{ContentIndex, Dedup, after_zip_separator, sanitize_filename, unique_path};
+use crate::core::data::{ContentIndex, Dedup, sanitize_filename, unique_path};
 
 pub(crate) const CONTENT_HASHES_FILE: &str = ".content-hashes";
 

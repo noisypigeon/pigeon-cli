@@ -10,8 +10,9 @@ during a run -- when a run is killed (SIGKILL, OOM) nothing else gets a
 chance to log gracefully on the way out, so for diagnostic (error/failure)
 events, the log is often the *only* evidence available. This skill
 formalizes the ad hoc diagnostic process that first found the ADR-0076
-SIGKILL root cause (a real `pull-transform` crash against 50-100GB zip
-archives), so it's repeatable instead of re-derived from source every time.
+SIGKILL root cause (a real crash against 50-100GB zip archives in the
+since-removed `pull-transform` job), so it's repeatable instead of
+re-derived from source every time.
 Follow it in full; don't skip straight to guessing a cause.
 
 **ADR-0093 changed what's *in* the log.** Resource telemetry
@@ -35,7 +36,7 @@ gap. See step 4 and the Known limitations section.
    `~/.local/share/pigeon/logs/pigeon.jsonl` (Linux -- `directories`'
    `data_local_dir()`, i.e. `$XDG_DATA_HOME` or `~/.local/share` by
    default; this is the path a headless Linux box running a long `job run
-   deduplicate`/`pull-transform` will actually have, ADR-0089). Overridable two
+   deduplicate`/`transform` will actually have, ADR-0089). Overridable two
    ways -- check both before assuming the default: the `PIGEON_LOG_DIR`
    environment variable, or a `--log-file <path>` flag passed to the
    command itself. If the user pasted a terminal transcript, look for
@@ -60,14 +61,14 @@ gap. See step 4 and the Known limitations section.
    - The outer span's `command` field identifies *which command*, not
      *which invocation* -- filter to it first:
      ```
-     jq 'select(.spans[]?.command == "job.pull-transform")' pigeon.jsonl
+     jq 'select(.spans[]?.command == "job.transform")' pigeon.jsonl
      ```
      (swap in `job.email-sync`, `job.decrypt-files`, `keyring.add`,
      `keyring.modify`, `keyring.delete`, or `keyring.list` as needed --
      these are the exact `command_name()` strings, see the cheat sheet
      below.)
 
-     Before ADR-0098, `deduplicate`/`pull-transform`'s archive/download/hash
+     Before ADR-0098, `deduplicate`'s archive/download/hash
      warnings -- logged from inside `tokio::spawn`ed worker tasks and
      `tokio::task::spawn_blocking` closures -- were missing this `command`
      span entirely (neither primitive propagates the caller's ambient span
@@ -176,7 +177,7 @@ let it go stale silently.
 - `fields` -- object; always has `message`, plus every named field passed
   to the `tracing::info!`/`warn!`/`error!` call or `#[instrument(fields(...))]`.
 - `target` -- the Rust module path of the call site (e.g.
-  `pigeon::commands::job::pull_transform::worker`).
+  `pigeon::commands::job::transform::worker`).
 - `span` -- the *innermost* currently-active span (name + its own fields).
 - `spans` -- the full ancestor span stack, outermost to innermost, same
   shape as `span` per entry. Note: on a normal event, `spans` includes the
@@ -185,7 +186,7 @@ let it go stale silently.
 
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
-`job.email-sync`, `job.pull-transform`, `job.decrypt-files`,
+`job.email-sync`, `job.decrypt-files`,
 `job.deduplicate`, `job.email-pull`, `job.transform`,
 `job.rclone-copy`, `job.rclone-delete`, `keyring.add`,
 `keyring.modify`, `keyring.delete`, `keyring.list`.
@@ -198,8 +199,6 @@ stderr via `eprintln!`. Don't spend time searching the JSONL for it; ask
 the user for the terminal output instead.
 
 **Per-job `step` vocabulary** (WARN/ERROR events' `fields.step`):
-- `pull-transform`: `download`, `archive`, `classify`, `placement`
-  (also `upload`, shared with every job's upload phase).
 - `email-sync`: `connect`, `examine`, `batch`, `fetch`, `transform`,
   `verify` (also `upload`).
 - `transform`: `pull`, `transcode`, `push` -- note this job does **not**
@@ -261,14 +260,6 @@ hasn't already pasted it):
   to download never arrived -- before ADR-0130 those were silently dropped
   and the run could report success, so a pre-ADR-0130 `transform` run's
   "success" does not rule out missing files.
-- `pull-transform`: `"Processed {processed} file(s), {failed} failed
-  ({download} download, {archive} archive, {classify} classify,
-  {placement} placement), {skipped_type} skipped (type not selected),
-  {duplicates_skipped} duplicate(s) skipped, {dropped_members} zip
-  member(s) dropped (extraction cap), {recoded} recoded,
-  {recode_fallback_to_original} kept as original (recode did not verify),
-  {uploaded} uploaded, {unchanged} unchanged, {upload_failed} upload
-  failed."`
 - `decrypt-files`: `"Decrypted {decrypted} file(s), {failed} failed."`
 - `deduplicate`: `"Processed {processed} file(s), {failed} failed ({download}
   download, {archive} archive, {hash} hash), {duplicates_skipped}

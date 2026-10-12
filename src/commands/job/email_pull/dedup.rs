@@ -2,9 +2,9 @@
 //! §6). Unlike `email_sync::dedup::run_dedup_pass`, there's only ever one
 //! pass here, over attachments alone -- no message-level dedup exists for
 //! this job (raw `.eml` files are never deduped against each other, and
-//! there's no frontmatter to amend even if they were), so this mirrors
-//! `pull_transform::dedup::place_files`'s simpler shape instead: a
-//! content-hash hit discards the scratch copy, a miss places it.
+//! there's no frontmatter to amend even if they were), so this takes the
+//! simpler shape instead: a content-hash hit discards the scratch copy, a
+//! miss places it.
 
 use std::fs;
 use std::path::Path;
@@ -45,8 +45,7 @@ pub(crate) struct DedupSummary {
 ///
 /// A scratch path that no longer exists is silently skipped (idempotency
 /// guard: already placed or deduped by a prior run of this same pass) --
-/// same pattern `email_sync::dedup::run_dedup_pass` and
-/// `pull_transform::dedup::place_files` both already rely on.
+/// same pattern `email_sync::dedup::run_dedup_pass` already relies on.
 pub(crate) fn place_attachments(
     identity_dir: &Path,
     staging_dir: &Path,

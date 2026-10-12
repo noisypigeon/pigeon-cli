@@ -390,9 +390,9 @@ async fn dispatch_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    // Checked before any prompts, mirroring `rclone::worker`'s/
-    // `pull_transform::media`'s own preflight checks -- fail immediately on
-    // a missing binary, not partway through a long-running pipeline.
+    // Checked before any prompts, mirroring `rclone::worker`'s own
+    // preflight check -- fail immediately on a missing binary, not partway
+    // through a long-running pipeline.
     if let Err(err) = check_rclone_available().await {
         return fail(err);
     }

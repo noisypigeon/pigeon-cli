@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0131: removes `job run pull-transform` entirely -- every capability it still offered is reachable by composing `rclone copy` -> `deduplicate` -> `transform` as separate, manually-verified steps, the same redundancy argument that retired `sort` (ADR-0094) and `reduce` (ADR-0103). Unlike those, not a clean deletion: `deduplicate` genuinely imports `pull_transform::archive`, so that module is first hoisted to `commands/job/archive.rs`. Un-hoists `SourceBucketInput` (deleted, 0 consumers), `EncryptionKeyInput`, `extension_of`/`after_zip_separator`, while keeping `download.rs` shared for `transform`'s sake; prunes three now-unused dependencies. 7 job types -> 6, and client-side encryption for file data is lost with no replacement ([#64](https://github.com/noisypigeon/pigeon-cli/pull/64)).
+
 ## [0.4.12] - 2026-10-12
 
 - ADR-0130: hardens `job run transform` against four real defects found auditing it against `pull-transform` -- a source file `rclone` failed to pull vanished silently (its aggregate error count was never read, and the pull phase is now reconciled per-file against its own intended set), macOS AppleDouble `._*` stubs matched rclone's include filter and could trip the circuit breaker into aborting a whole run, `set_macro_phase` reported a one-way local-work-to-upload transition this job's per-file pipeline never makes, and there was no disk-space preflight; also closes the job's observability gap, which left `pigeon.jsonl` with no `transform` run data at all ([#61](https://github.com/noisypigeon/pigeon-cli/pull/61)).

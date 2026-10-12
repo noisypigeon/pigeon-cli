@@ -7,8 +7,9 @@ use std::time::Duration;
 /// connecting within the same instant at job start) instead of failing on
 /// the first timeout. Generic over `f` so it's testable without any real
 /// I/O. Originally `email_sync::worker`'s own helper (ADR-0021 §6 addendum);
-/// hoisted here once a second (`upload`) and third (`pull_transform`,
-/// ADR-0074) consumer needed the exact same retry shape.
+/// hoisted here once a second (`upload`, ADR-0074) and third consumer
+/// needed the exact same retry shape. Now also used by `transform`'s
+/// `push`/`destination` and by `download`.
 pub(crate) async fn retry_with_backoff<T, F, Fut>(
     attempts: usize,
     backoff: Duration,

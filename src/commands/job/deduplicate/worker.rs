@@ -2,9 +2,9 @@
 //! either a zip (expanded, never itself hashed/placed -- members requeued)
 //! or a plain file (hashed via `download::sha256_file` and staged for the
 //! sequential dedup+placement pass, `dedup.rs`). No classification beyond
-//! "is this a zip" -- no media recoding, no date extraction, unlike
-//! `pull-transform`; every file is always processed and every zip is always
-//! expanded (ADR-0082 §1).
+//! "is this a zip" -- no media recoding and no date extraction at all;
+//! every file is always processed and every zip is always expanded
+//! (ADR-0082 §1).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -16,20 +16,19 @@ use std::time::Duration;
 use indicatif::MultiProgress;
 use tracing::Instrument;
 
+use crate::commands::job::archive;
 use crate::commands::job::download;
 use crate::commands::job::email_sync::sink;
-use crate::commands::job::pull_transform::archive;
 use crate::commands::job::upload::{self, UploadedIndex};
 use crate::commands::keyring::bucket::store::BucketConfig;
-use crate::core::data::ContentIndex;
+use crate::core::data::{ContentIndex, is_apple_double_basename};
 
 use super::dedup::{self, DeduplicateDedup, HashedFile};
 use super::manifest::{self, DeduplicateTask, extension_of};
 
 /// A fresh, not-yet-existing path under `dir` named by `counter`
 /// (monotonically increasing, shared across concurrent workers) plus
-/// `extension` -- own small copy of `pull_transform::worker`'s helper
-/// (that module is private, unreachable).
+/// `extension`.
 fn next_scratch_path(dir: &Path, counter: &AtomicU64, extension: &str) -> Result<PathBuf, String> {
     fs::create_dir_all(dir).map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
     let name = counter.fetch_add(1, Ordering::SeqCst);
@@ -147,7 +146,7 @@ async fn process_item(
     let root_key = item.root_key.clone();
     let depth = item.depth;
 
-    if archive::is_apple_double_basename(&item.display_key) {
+    if is_apple_double_basename(&item.display_key) {
         tracing::debug!(
             key = %item.display_key,
             step = "archive",
@@ -700,10 +699,7 @@ pub(crate) async fn run_deduplicate_job(
     summary.failure_breakdown.merge(&failure_breakdown);
     // `place_and_report`'s placement failures were previously logged but
     // never counted anywhere at all (ADR-0093 fixes this as a side effect
-    // of adding the live per-phase metric at that same call site) --
-    // `pull_transform`'s equivalent placement pass already folds its own
-    // `PlacementSummary.failed` into `failure_breakdown.placement` the same
-    // way.
+    // of adding the live per-phase metric at that same call site).
     summary.failure_breakdown.placement = placement_summary.failed;
 
     if let Some((remote_bucket, remote_secret)) = remote {
