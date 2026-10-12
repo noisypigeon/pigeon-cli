@@ -62,3 +62,12 @@ run = "docker build --platform linux/arm64 -t pigeon-cli ."
 
 [tasks.docker-run]
 run = "docker run --platform linux/arm64 --rm -it -v pigeon-data:/data pigeon-cli \"$@\""
+
+[tasks.observability-up]
+run = "docker compose -f observability/docker-compose.yml up -d"
+
+[tasks.observability-down]
+run = "docker compose -f observability/docker-compose.yml down"
+
+[tasks.observability-logs]
+run = "docker compose -f observability/docker-compose.yml logs -f \"$@\""

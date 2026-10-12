@@ -73,6 +73,33 @@ phases:
 How that env var gets populated (a secrets manager, CI variable, etc.)
 is left to your own infrastructure.
 
+## Local observability stack (Grafana/Prometheus/Loki)
+
+Previously, `pigeon` job runs on Scaleway compute were observed via
+Scaleway's managed Cockpit (see ADR-0092/0093), fed by an on-host Grafana
+Alloy agent. Running `pigeon` bare-metal on your own machine instead (see
+ADR-0128) drops that path entirely — nothing ships `/metrics` or
+`pigeon.jsonl` anywhere by default. `observability/` provides an
+equivalent local stack via Docker Compose.
+
+```sh
+mise run observability-up      # starts Prometheus, Loki, Promtail, Grafana
+```
+
+Then run `pigeon` commands normally, bare-metal, alongside the stack —
+e.g. `pigeon job run pull-transform ...`. Open
+[http://localhost:3000](http://localhost:3000) for Grafana (default
+credentials `admin`/`admin` on first login — change them) and open the
+pre-provisioned "pigeon-cli overview" dashboard.
+
+`mise run observability-down` stops the stack; Prometheus/Grafana data
+persists in named Docker volumes across restarts. `mise run
+observability-logs` tails the stack's own container logs (not pigeon's),
+for debugging the stack itself.
+
+Known v1 limitation: no host-wide metrics (CPU/mem/disk for the whole
+machine, not just pigeon's own process tree) — see ADR-0128.
+
 ## Commands
 
 - `pigeon keyring add [email|bucket|encryption-key]` — authenticate an email identity, configure an S3-compatible bucket, or register a symmetric encryption key.
