@@ -186,7 +186,8 @@ let it go stale silently.
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
 `job.email-sync`, `job.pull-transform`, `job.decrypt-files`,
-`job.deduplicate`, `job.email-pull`, `keyring.add`,
+`job.deduplicate`, `job.email-pull`, `job.transform`,
+`job.rclone-copy`, `job.rclone-delete`, `keyring.add`,
 `keyring.modify`, `keyring.delete`, `keyring.list`.
 
 **Keyring commands emit no per-operation tracing at all** -- only the two
@@ -201,6 +202,20 @@ the user for the terminal output instead.
   (also `upload`, shared with every job's upload phase).
 - `email-sync`: `connect`, `examine`, `batch`, `fetch`, `transform`,
   `verify` (also `upload`).
+- `transform`: `pull`, `transcode`, `push` -- note this job does **not**
+  share the generic `upload` step, since its push leg is its own per-file
+  `rclone copyto` (ADR-0116), not `upload.rs`. Before ADR-0130 this job
+  emitted no `tracing::info!` at all, so a run from an older build has no
+  phase-boundary or totals lines in the JSONL whatsoever -- only WARN/ERROR.
+  From ADR-0130 on, look for `"transform: pull phase starting"`,
+  `"transform: pull phase complete"`, and `"transform: run complete"`
+  (which carries the full per-stage breakdown: `failed_pull`,
+  `failed_transcode`, `failed_place`, `failed_push`, plus
+  `skipped_already_done` and `skipped_apple_double`).
+  A `"rclone's pull error count disagrees with the number of undelivered
+  files"` WARN means rclone's own aggregate error tally and the job's
+  per-file reconciliation diverged -- worth reporting, not necessarily a
+  fault in either.
 - `deduplicate`: `download`, `archive` (zip expansion), `hash` (SHA-256
   content hashing), `place` (also `upload`). The fetch+hash phase is
   CPU-bound (ADR-0088) -- a slow `deduplicate` run with normal-looking
@@ -221,6 +236,13 @@ crash time is no longer directly nameable the way the log used to make it
 the closest available signal is `pigeon_job_macro_phase` reading `1`
 (step 4) telling you *that* the process was mid-upload, not *which* file.
 
+**`pigeon_job_macro_phase` has no `pigeon_job="transform"` series** (ADR-0130).
+`transform`'s pipeline pushes each file as soon as it is ready, so it has no
+one-way local-work-then-upload transition for the gauge to describe, and it
+deliberately stopped emitting it rather than report a transition that never
+happens. Don't read its absence as a crash before upload -- use that job's
+`pigeon_job_phase_total{phase="push"}` instead.
+
 **Each job's printed completion summary** (not in the JSONL -- this is
 what step 5 cross-checks the log's tally against; ask for it if the user
 hasn't already pasted it):
@@ -230,6 +252,15 @@ hasn't already pasted it):
   missing-file), {merged_messages} message(s) merged, {deduped_attachments}
   attachment(s) deduped, {uploaded} uploaded, {unchanged} unchanged,
   {upload_failed} upload failed."` followed by an attachments-estimate line.
+- `transform`: `"Pulled {pulled} file(s); {transcoded} transcoded,
+  {copied_through} copied through, {failed} failed; pushed {pushed}
+  file(s)."` -- followed, from ADR-0130 on, by an optional
+  `"Skipped {n} already done, {m} AppleDouble sidecar(s)."` and, when the
+  run failed, `"Failures by stage: {p} pull, {t} transcode, {pl} place,
+  {pu} push."`. A non-zero `pull` stage count means files this run intended
+  to download never arrived -- before ADR-0130 those were silently dropped
+  and the run could report success, so a pre-ADR-0130 `transform` run's
+  "success" does not rule out missing files.
 - `pull-transform`: `"Processed {processed} file(s), {failed} failed
   ({download} download, {archive} archive, {classify} classify,
   {placement} placement), {skipped_type} skipped (type not selected),

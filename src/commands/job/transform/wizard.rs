@@ -558,11 +558,27 @@ async fn dispatch_async(
                 .iter()
                 .filter(|outcome| outcome.outcome == worker::Outcome::Failed)
                 .count();
-            let message = format!(
+            let mut message = format!(
                 "Pulled {} file(s); {transcoded} transcoded, {copied_through} copied through, \
                  {failed} failed; pushed {} file(s).",
                 summary.pulled, summary.pushed
             );
+            // ADR-0130: a run that correctly skipped a large already-done
+            // tree used to read identically to one that found nothing, and a
+            // failure gave no indication of which stage it came from.
+            if summary.skipped_already_done > 0 || summary.skipped_apple_double > 0 {
+                message.push_str(&format!(
+                    " Skipped {} already done, {} AppleDouble sidecar(s).",
+                    summary.skipped_already_done, summary.skipped_apple_double
+                ));
+            }
+            if summary.failed {
+                let f = summary.failures;
+                message.push_str(&format!(
+                    " Failures by stage: {} pull, {} transcode, {} place, {} push.",
+                    f.pull, f.transcode, f.place, f.push
+                ));
+            }
             report_upload::say(&transcript, message);
             let exit_code = if summary.failed { FAILURE_EXIT_CODE } else { 0 };
             let report_path = worker::write_report(&local_output, &summary).unwrap_or_else(|err| {

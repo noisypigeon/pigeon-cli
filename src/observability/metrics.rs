@@ -104,6 +104,14 @@ pub(crate) fn record_phase_count(
 /// into its upload phase. ADR-0019 guarantees this is a real, one-way
 /// transition -- upload never starts until all local work is done -- so
 /// unlike a per-item phase, a single gauge is an accurate fit here.
+///
+/// That guarantee is a precondition, not a given: a job whose pipeline
+/// pushes each file as soon as it is ready (`transform`, ADR-0116) has no
+/// such transition -- it is still downloading the last file while the first
+/// is already pushed -- so it deliberately does not emit this gauge at all
+/// (ADR-0130) rather than report a transition that never happened as
+/// described. `pigeon_job_phase_total` is the right instrument for those
+/// jobs; only call this one where ADR-0019's ordering actually holds.
 pub(crate) fn set_macro_phase(job: &'static str, uploading: bool) {
     ::metrics::gauge!(
         "pigeon_job_macro_phase",

@@ -38,6 +38,12 @@ pub(crate) async fn push_one(
     );
     let log_path = push_log_dir.join(format!("{destination_filename}.jsonl"));
 
+    // Read before the push: ADR-0124's GC deletes this file immediately
+    // after a successful push, so its size is unavailable afterwards.
+    let bytes = std::fs::metadata(local_path)
+        .map(|meta| meta.len())
+        .unwrap_or(0);
+
     let result = retry_with_backoff(PUSH_RETRIES, PUSH_RETRY_BACKOFF, || {
         run_copyto(local_path, &destination, &log_path)
     })
@@ -54,8 +60,45 @@ pub(crate) async fn push_one(
         1,
         None,
     );
+    record_upload_metrics(bytes, result.is_ok());
 
     result
+}
+
+/// Emits the shared `pigeon_upload_*` counters for this job's push leg
+/// (ADR-0130). Before this, `transform` was the only upload-capable job
+/// absent from those dashboards entirely -- `rclone_transfer`'s own
+/// emission is switched off for the pull phase (it is a *download*), and
+/// the per-file push had no emission of its own.
+///
+/// `destination_bucket` is `NO_BUCKET` rather than `--destination-path`:
+/// this job's destination is a raw rclone `remote:path` string, not a
+/// `BucketConfig` alias, and using it directly would make the label's
+/// cardinality unbounded -- exactly the reasoning ADR-0102 recorded for
+/// `import`. `pigeon_upload_attempts_total`/`_duration_seconds` stay
+/// unimplemented here for that same ADR's reason: they are genuinely
+/// per-attempt measurements that `rclone copyto` does not expose without
+/// `-v`-level logging this job does not enable.
+fn record_upload_metrics(bytes: u64, succeeded: bool) {
+    use crate::observability::metrics::NO_BUCKET;
+
+    if succeeded {
+        ::metrics::counter!(
+            "pigeon_upload_bytes_total",
+            "pigeon_job" => "transform",
+            "instance" => crate::observability::instance(),
+            "destination_bucket" => NO_BUCKET,
+        )
+        .increment(bytes);
+    }
+    ::metrics::counter!(
+        "pigeon_upload_outcomes_total",
+        "pigeon_job" => "transform",
+        "outcome" => if succeeded { "uploaded" } else { "failed" },
+        "instance" => crate::observability::instance(),
+        "destination_bucket" => NO_BUCKET,
+    )
+    .increment(1);
 }
 
 async fn run_copyto(local_path: &Path, destination: &str, log_path: &Path) -> Result<(), String> {

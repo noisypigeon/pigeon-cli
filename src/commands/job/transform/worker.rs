@@ -166,11 +166,70 @@ impl Outcome {
     }
 }
 
+/// Which stage of a file's pipeline failed (ADR-0130). Previously the
+/// failing stage survived only as prose inside `FileOutcome.detail`, so a
+/// run's failures could not be tallied per stage the way every other job's
+/// `FailureBreakdown` already does -- and the circuit breaker had to match
+/// an error *string* without knowing whether it even came from transcoding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FailureStage {
+    /// The file was in this run's intended pull set but `rclone` never
+    /// delivered it (ADR-0130's reconciliation), so no local pipeline ever
+    /// ran for it.
+    Pull,
+    Transcode,
+    Place,
+    Push,
+}
+
+impl FailureStage {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            FailureStage::Pull => "pull",
+            FailureStage::Transcode => "transcode",
+            FailureStage::Place => "place",
+            FailureStage::Push => "push",
+        }
+    }
+}
+
+/// One file's pipeline result: its placed local path, or the stage that
+/// failed plus that stage's error (ADR-0130).
+type ProcessResult = Result<PathBuf, (FailureStage, String)>;
+
+/// Per-stage failure tally (ADR-0130), reusing the field names
+/// `metrics::record_phase`'s doc comment already expects a job's breakdown
+/// to share with its `phase` label.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FailureBreakdown {
+    pub pull: u64,
+    pub transcode: u64,
+    pub place: u64,
+    pub push: u64,
+}
+
+impl FailureBreakdown {
+    fn record(&mut self, stage: FailureStage) {
+        match stage {
+            FailureStage::Pull => self.pull += 1,
+            FailureStage::Transcode => self.transcode += 1,
+            FailureStage::Place => self.place += 1,
+            FailureStage::Push => self.push += 1,
+        }
+    }
+
+    pub(crate) fn total(self) -> u64 {
+        self.pull + self.transcode + self.place + self.push
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct FileOutcome {
     pub relative_path: String,
     pub destination_filename: Option<String>,
     pub outcome: Outcome,
+    /// `Some` iff `outcome` is `Outcome::Failed` (ADR-0130).
+    pub stage: Option<FailureStage>,
     pub detail: String,
 }
 
@@ -186,6 +245,22 @@ pub(crate) struct TransformSummary {
     pub pulled: u64,
     pub pushed: u64,
     pub failed: bool,
+    /// Per-stage tally of everything in `outcomes` that failed (ADR-0130).
+    pub failures: FailureBreakdown,
+    /// Source files excluded before download because their deterministic
+    /// destination name was already present at `--destination-path`
+    /// (ADR-0130) -- previously discarded silently by `files_needing_pull`,
+    /// which made a run that correctly skipped 500k already-done files
+    /// indistinguishable in the report from one that found nothing to do.
+    pub skipped_already_done: u64,
+    /// macOS AppleDouble sidecars (`._*`) excluded from the pull set and
+    /// from dispatch (ADR-0130). Deliberately not a failure: these carry no
+    /// user data, and their absence from the destination is correct.
+    pub skipped_apple_double: u64,
+    /// `rclone`'s own aggregate transfer-error count for the pull phase,
+    /// retained as a cross-check against the reconciled per-file `Pull`
+    /// failures rather than being dropped on the floor (ADR-0130).
+    pub pull_errors: u64,
 }
 
 fn source_dir(local_output: &Path) -> PathBuf {
@@ -216,6 +291,11 @@ fn push_log_dir(local_output: &Path) -> PathBuf {
 /// loop below, not here, so concurrent tasks never need to coordinate a
 /// shared file write.
 #[allow(clippy::too_many_arguments)]
+#[tracing::instrument(
+    skip_all,
+    fields(relative_path = %pending_file.relative_path),
+    level = "debug"
+)]
 async fn process_one(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
@@ -227,7 +307,7 @@ async fn process_one(
     scratch_dir: &Path,
     push_log_dir: &Path,
     push_semaphore: Arc<Semaphore>,
-) -> Result<PathBuf, String> {
+) -> ProcessResult {
     let output_extension = input_file_type.output_extension();
     let destination_name = placement::compute_destination_name(
         source_path,
@@ -249,8 +329,21 @@ async fn process_one(
         existing_result_path
     } else {
         let scratch_path = scratch_dir.join(format!("{destination_name}.scratch"));
-        std::fs::create_dir_all(scratch_dir)
-            .map_err(|err| format!("failed to create {}: {err}", scratch_dir.display()))?;
+        std::fs::create_dir_all(scratch_dir).map_err(|err| {
+            (
+                FailureStage::Transcode,
+                format!("failed to create {}: {err}", scratch_dir.display()),
+            )
+        })?;
+
+        // ADR-0130: this is the run's real disk high-water mark -- a 4K
+        // video's scratch output is multi-GB, and ADR-0124's post-push GC
+        // only bounds steady-state usage, not this transient peak (and is
+        // best-effort, so repeated removal failures accumulate sources with
+        // nothing watching free space). Fails just this one file, matching
+        // `check_disk_space`'s own documented contract.
+        crate::commands::job::download::check_disk_space(scratch_dir, 0)
+            .map_err(|err| (FailureStage::Transcode, err))?;
 
         let transcode_result = match input_file_type {
             InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
@@ -283,7 +376,7 @@ async fn process_one(
             1,
             None,
         );
-        transcode_result?;
+        transcode_result.map_err(|err| (FailureStage::Transcode, err))?;
 
         placement::place_one(
             result_dir,
@@ -291,31 +384,38 @@ async fn process_one(
             source_path,
             &pending_file.relative_path,
             output_extension,
-        )?
+        )
+        .map_err(|err| (FailureStage::Place, err))?
     };
 
     let destination_filename = final_path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| {
-            format!(
-                "placed file at {} has no valid UTF-8 filename",
-                final_path.display()
+            (
+                FailureStage::Place,
+                format!(
+                    "placed file at {} has no valid UTF-8 filename",
+                    final_path.display()
+                ),
             )
         })?
         .to_string();
 
-    let _permit = push_semaphore
-        .acquire_owned()
-        .await
-        .map_err(|err| format!("push semaphore closed unexpectedly: {err}"))?;
+    let _permit = push_semaphore.acquire_owned().await.map_err(|err| {
+        (
+            FailureStage::Push,
+            format!("push semaphore closed unexpectedly: {err}"),
+        )
+    })?;
     push::push_one(
         &final_path,
         destination_path,
         &destination_filename,
         push_log_dir,
     )
-    .await?;
+    .await
+    .map_err(|err| (FailureStage::Push, err))?;
 
     // This file's bytes are now durably present at `destination_path` --
     // the local source and result copies no longer serve any purpose
@@ -404,20 +504,40 @@ fn enqueue(
     existing_destination_filenames: &HashSet<String>,
     dispatched: &mut HashSet<String>,
     queue: &mut VecDeque<PendingFile>,
-) {
+) -> EnqueueOutcome {
+    // ADR-0130: the second of two AppleDouble choke points. `files_needing_pull`
+    // keeps these out of the download set in the first place; this one covers
+    // the other two dispatch sources -- the initial on-disk scan (a stub left
+    // by an earlier run, or an operator-staged tree) and rclone's live tail --
+    // so nothing reaches `ffmpeg` by any route.
+    if crate::core::data::is_apple_double_basename(&relative_path) {
+        return EnqueueOutcome::SkippedAppleDouble;
+    }
     let destination_name =
         placement::compute_destination_name(source_path, &relative_path, output_extension);
     if existing_destination_filenames.contains(&destination_name) {
-        return;
+        return EnqueueOutcome::AlreadyDone;
     }
     if !dispatched.insert(relative_path.clone()) {
-        return;
+        return EnqueueOutcome::AlreadyDispatched;
     }
     let absolute_path = source_dir.join(&relative_path);
     queue.push_back(PendingFile {
         relative_path,
         absolute_path,
     });
+    EnqueueOutcome::Queued
+}
+
+/// Why `enqueue` did or didn't queue a path. Only `SkippedAppleDouble` is
+/// counted by the caller (ADR-0130); the rest are ordinary, expected
+/// outcomes of the two overlapping dispatch sources.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnqueueOutcome {
+    Queued,
+    AlreadyDone,
+    AlreadyDispatched,
+    SkippedAppleDouble,
 }
 
 /// Filters `source_relative_paths` down to the ones that still need
@@ -437,15 +557,37 @@ fn files_needing_pull(
     source_path: &str,
     output_extension: &str,
     existing_destination_filenames: &HashSet<String>,
-) -> Vec<String> {
-    source_relative_paths
-        .into_iter()
-        .filter(|relative_path| {
-            let destination_name =
-                placement::compute_destination_name(source_path, relative_path, output_extension);
-            !existing_destination_filenames.contains(&destination_name)
-        })
-        .collect()
+) -> PullSelection {
+    let mut selection = PullSelection::default();
+    for relative_path in source_relative_paths {
+        // ADR-0130: an AppleDouble stub matches rclone's `--include
+        // '*.<ext>'` filter but is an 82-byte resource fork, not decodable
+        // media. Excluding it here means it is never downloaded at all,
+        // rather than pulled and then failed by `ffmpeg` with an error that
+        // can trip the circuit breaker and abort the whole run.
+        if crate::core::data::is_apple_double_basename(&relative_path) {
+            selection.skipped_apple_double += 1;
+            continue;
+        }
+        let destination_name =
+            placement::compute_destination_name(source_path, &relative_path, output_extension);
+        if existing_destination_filenames.contains(&destination_name) {
+            selection.skipped_already_done += 1;
+            continue;
+        }
+        selection.to_pull.push(relative_path);
+    }
+    selection
+}
+
+/// What `files_needing_pull` decided, including the two counts it used to
+/// discard silently (ADR-0130). `to_pull` doubles as the expected set the
+/// pull phase is reconciled against once the pipeline drains.
+#[derive(Debug, Default)]
+struct PullSelection {
+    to_pull: Vec<String>,
+    skipped_already_done: u64,
+    skipped_apple_double: u64,
 }
 
 /// Writes `relative_paths` newline-delimited under `staging_dir`, for
@@ -495,8 +637,6 @@ pub(crate) async fn run_transform_job(
         );
     }
 
-    crate::observability::metrics::set_macro_phase("transform", false);
-
     let output_extension = plan.input_file_type.output_extension();
 
     // The authoritative "already done" source (ADR-0120) -- fetched once,
@@ -512,8 +652,9 @@ pub(crate) async fn run_transform_job(
 
     let mut dispatched: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<PendingFile> = VecDeque::new();
+    let mut skipped_apple_double: u64 = 0;
     for pending_file in already_on_disk {
-        enqueue(
+        if enqueue(
             pending_file.relative_path,
             &source_dir,
             &plan.source_path,
@@ -521,7 +662,10 @@ pub(crate) async fn run_transform_job(
             &existing_destination_filenames,
             &mut dispatched,
             &mut queue,
-        );
+        ) == EnqueueOutcome::SkippedAppleDouble
+        {
+            skipped_apple_double += 1;
+        }
     }
 
     // ADR-0124: compute which source files still need pulling *before*
@@ -534,11 +678,34 @@ pub(crate) async fn run_transform_job(
         plan.input_file_type.extension(),
     )
     .await?;
-    let files_to_pull = files_needing_pull(
+    let selection = files_needing_pull(
         source_relative_paths,
         &plan.source_path,
         output_extension,
         &existing_destination_filenames,
+    );
+    let files_to_pull = selection.to_pull;
+    let selection_skipped_already_done = selection.skipped_already_done;
+    // The initial on-disk scan above may have found its own AppleDouble
+    // stubs; both choke points feed the same counter.
+    skipped_apple_double += selection.skipped_apple_double;
+
+    // ADR-0130: fail fast before a single byte is downloaded. Nothing has
+    // been pulled yet at this point, so there is nothing to salvage -- unlike
+    // the per-file check in `process_one`, which fails only its own file.
+    if !files_to_pull.is_empty() {
+        std::fs::create_dir_all(&source_dir)
+            .map_err(|err| format!("failed to create {}: {err}", source_dir.display()))?;
+        crate::commands::job::download::check_disk_space(&source_dir, 0)?;
+    }
+
+    tracing::info!(
+        pigeon_job = "transform",
+        files_to_pull = files_to_pull.len(),
+        skipped_already_done = selection.skipped_already_done,
+        skipped_apple_double,
+        queued_from_local_scan = queue.len(),
+        "transform: pull phase starting"
     );
 
     let (copied_tx, mut copied_rx) = mpsc::unbounded_channel();
@@ -603,13 +770,13 @@ pub(crate) async fn run_transform_job(
     let mut pull_pid: Option<u32> = None;
     let mut pull_is_paused = false;
 
-    let mut in_flight: JoinSet<(String, Result<PathBuf, String>)> = JoinSet::new();
+    let mut in_flight: JoinSet<(String, ProcessResult)> = JoinSet::new();
     let mut outcomes = Vec::new();
     let mut pushed: u64 = 0;
     let mut pull_finished = false;
     let mut copied_rx_closed = false;
     let mut pull_result = None;
-    let mut macro_phase_is_uploading = false;
+    let mut failures = FailureBreakdown::default();
 
     // Circuit breaker (ADR-0121): if the first `CIRCUIT_BREAKER_SAMPLE_SIZE`
     // per-file completions (in completion order, not dispatch order -- see
@@ -673,7 +840,12 @@ pub(crate) async fn run_transform_job(
 
                 if !circuit_breaker_tripped && circuit_breaker_samples < CIRCUIT_BREAKER_SAMPLE_SIZE {
                     circuit_breaker_samples += 1;
-                    if let Err(err) = &result
+                    // ADR-0130: require the failure to have actually come from
+                    // the transcode stage, not merely to carry a string that
+                    // matches. A place/push error is never evidence of the
+                    // systemic ffmpeg-capability gap this breaker exists for.
+                    if let Err((stage, err)) = &result
+                        && *stage == FailureStage::Transcode
                         && media::is_non_retryable_transcode_error(err)
                     {
                         circuit_breaker_matches += 1;
@@ -700,10 +872,6 @@ pub(crate) async fn run_transform_job(
                 match result {
                     Ok(final_path) => {
                         pushed += 1;
-                        if !macro_phase_is_uploading {
-                            crate::observability::metrics::set_macro_phase("transform", true);
-                            macro_phase_is_uploading = true;
-                        }
                         outcomes.push(FileOutcome {
                             relative_path,
                             destination_filename: final_path
@@ -711,14 +879,17 @@ pub(crate) async fn run_transform_job(
                                 .and_then(|name| name.to_str())
                                 .map(str::to_string),
                             outcome: outcome_for(plan.input_file_type),
+                            stage: None,
                             detail: String::new(),
                         });
                     }
-                    Err(err) => {
+                    Err((stage, err)) => {
+                        failures.record(stage);
                         outcomes.push(FileOutcome {
                             relative_path,
                             destination_filename: None,
                             outcome: Outcome::Failed,
+                            stage: Some(stage),
                             detail: err,
                         });
                     }
@@ -739,8 +910,8 @@ pub(crate) async fn run_transform_job(
             received = copied_rx.recv(), if !pull_finished && !copied_rx_closed => {
                 match received {
                     Some(relative_path) => {
-                        if !circuit_breaker_tripped {
-                            enqueue(
+                        if !circuit_breaker_tripped
+                            && enqueue(
                                 relative_path,
                                 &source_dir,
                                 &plan.source_path,
@@ -748,7 +919,9 @@ pub(crate) async fn run_transform_job(
                                 &existing_destination_filenames,
                                 &mut dispatched,
                                 &mut queue,
-                            );
+                            ) == EnqueueOutcome::SkippedAppleDouble
+                        {
+                            skipped_apple_double += 1;
                         }
                     }
                     None => copied_rx_closed = true,
@@ -761,8 +934,8 @@ pub(crate) async fn run_transform_job(
                 // the subprocess's exit -- `try_recv` is non-blocking, so
                 // this can't stall the loop.
                 while let Ok(relative_path) = copied_rx.try_recv() {
-                    if !circuit_breaker_tripped {
-                        enqueue(
+                    if !circuit_breaker_tripped
+                        && enqueue(
                             relative_path,
                             &source_dir,
                             &plan.source_path,
@@ -770,7 +943,9 @@ pub(crate) async fn run_transform_job(
                             &existing_destination_filenames,
                             &mut dispatched,
                             &mut queue,
-                        );
+                        ) == EnqueueOutcome::SkippedAppleDouble
+                    {
+                        skipped_apple_double += 1;
                     }
                 }
                 pull_result = Some(result);
@@ -796,13 +971,98 @@ pub(crate) async fn run_transform_job(
         ));
     }
 
+    // ADR-0130: reconcile the pull phase against its own intended set.
+    // `files_to_pull` is exactly what this run asked rclone for, and every
+    // path that entered the pipeline by *either* dispatch source passed
+    // through `enqueue` and so is recorded in `dispatched`. Anything intended
+    // but never dispatched was therefore never delivered -- a real per-file
+    // pull failure, at a fidelity rclone's own aggregate error count can't
+    // give us without `-v`-level logging this job doesn't enable (the same
+    // limit ADR-0102 recorded for `import`).
+    //
+    // Deliberately after the circuit-breaker return above: a tripped breaker
+    // stops dispatch on purpose, so reconciling there would manufacture
+    // hundreds of spurious "pull failures" out of work that was correctly
+    // abandoned.
+    for relative_path in &files_to_pull {
+        if dispatched.contains(relative_path) {
+            continue;
+        }
+        failures.record(FailureStage::Pull);
+        outcomes.push(FileOutcome {
+            relative_path: relative_path.clone(),
+            destination_filename: None,
+            outcome: Outcome::Failed,
+            stage: Some(FailureStage::Pull),
+            detail: "file was in this run's pull set but rclone never reported it as copied, \
+                     so it never entered the transcode pipeline"
+                .to_string(),
+        });
+    }
+    if failures.pull > 0 {
+        crate::observability::metrics::record_phase_count(
+            "transform",
+            "pull",
+            Outcome::Failed.as_str(),
+            failures.pull,
+            None,
+        );
+    }
+
+    // The two counts measure subtly different things -- rclone counts
+    // transfer *errors*, this counts *undelivered files* -- so a mismatch is
+    // surfaced rather than silently reconciled away.
+    if pull_summary.errors != failures.pull {
+        tracing::warn!(
+            pigeon_job = "transform",
+            rclone_errors = pull_summary.errors,
+            undelivered_files = failures.pull,
+            "transform: rclone's pull error count disagrees with the number of undelivered files"
+        );
+    }
+
+    tracing::info!(
+        pigeon_job = "transform",
+        transferred = pull_summary.transferred,
+        errors = pull_summary.errors,
+        "transform: pull phase complete"
+    );
+
     let failed = outcomes.iter().any(|o| o.outcome == Outcome::Failed);
+
+    let transcoded = outcomes
+        .iter()
+        .filter(|o| o.outcome == Outcome::Transcoded)
+        .count();
+    let copied_through = outcomes
+        .iter()
+        .filter(|o| o.outcome == Outcome::CopiedThrough)
+        .count();
+    tracing::info!(
+        pigeon_job = "transform",
+        pulled = pull_summary.transferred,
+        pushed,
+        transcoded,
+        copied_through,
+        failed_total = failures.total(),
+        failed_pull = failures.pull,
+        failed_transcode = failures.transcode,
+        failed_place = failures.place,
+        failed_push = failures.push,
+        skipped_already_done = selection_skipped_already_done,
+        skipped_apple_double,
+        "transform: run complete"
+    );
 
     Ok(TransformSummary {
         outcomes,
         pulled: pull_summary.transferred,
         pushed,
         failed,
+        failures,
+        skipped_already_done: selection_skipped_already_done,
+        skipped_apple_double,
+        pull_errors: pull_summary.errors,
     })
 }
 
@@ -818,7 +1078,10 @@ pub(crate) fn write_report(
 ) -> Result<PathBuf, String> {
     use std::fmt::Write as _;
 
-    let mut body = String::from("source_relative_path\toutcome\tdestination_filename\tdetail\n");
+    // `stage` column added by ADR-0130 -- a failed row now says which stage
+    // failed without the reader having to parse `detail`'s prose.
+    let mut body =
+        String::from("source_relative_path\toutcome\tstage\tdestination_filename\tdetail\n");
     let mut transcoded = 0;
     let mut copied_through = 0;
     let mut failed = 0;
@@ -830,9 +1093,10 @@ pub(crate) fn write_report(
         }
         let _ = writeln!(
             body,
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             outcome.relative_path,
             outcome.outcome.as_str(),
+            outcome.stage.map(FailureStage::as_str).unwrap_or(""),
             outcome.destination_filename.as_deref().unwrap_or(""),
             outcome.detail,
         );
@@ -840,6 +1104,22 @@ pub(crate) fn write_report(
     let _ = writeln!(
         body,
         "\n{transcoded} transcoded, {copied_through} copied through, {failed} failed."
+    );
+    let failures = summary.failures;
+    let _ = writeln!(
+        body,
+        "failures by stage: {} pull, {} transcode, {} place, {} push.",
+        failures.pull, failures.transcode, failures.place, failures.push
+    );
+    let _ = writeln!(
+        body,
+        "skipped: {} already done at the destination, {} AppleDouble sidecar(s).",
+        summary.skipped_already_done, summary.skipped_apple_double
+    );
+    let _ = writeln!(
+        body,
+        "pull: {} transferred, {} rclone error(s) reported.",
+        summary.pulled, summary.pull_errors
     );
 
     let path = local_output.join("transform-report.txt");
@@ -1516,7 +1796,143 @@ mod tests {
             &existing_destination_filenames,
         );
 
-        assert_eq!(result, vec!["b.png".to_string()]);
+        assert_eq!(result.to_pull, vec!["b.png".to_string()]);
+        assert_eq!(result.skipped_already_done, 1);
+        assert_eq!(result.skipped_apple_double, 0);
+    }
+
+    /// ADR-0130: an AppleDouble stub matches rclone's `--include '*.<ext>'`
+    /// filter but is a resource fork, not decodable media -- it must never be
+    /// downloaded, and must be counted as skipped rather than failed.
+    #[test]
+    fn files_needing_pull_excludes_apple_double_sidecars_without_failing_them() {
+        let selection = files_needing_pull(
+            vec![
+                "a.png".to_string(),
+                "._a.png".to_string(),
+                "nested/._b.png".to_string(),
+            ],
+            "source:png/",
+            "jpg",
+            &HashSet::new(),
+        );
+
+        assert_eq!(selection.to_pull, vec!["a.png".to_string()]);
+        assert_eq!(selection.skipped_apple_double, 2);
+        assert_eq!(selection.skipped_already_done, 0);
+    }
+
+    /// The second AppleDouble choke point (ADR-0130): `enqueue` covers the
+    /// initial on-disk scan and rclone's live tail, so a stub cannot reach
+    /// `ffmpeg` by any dispatch route even if it bypassed the pull filter.
+    #[test]
+    fn enqueue_skips_an_apple_double_sidecar() {
+        let mut dispatched = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        let outcome = enqueue(
+            "._a.png".to_string(),
+            Path::new("/tmp/source"),
+            "source:png/",
+            "jpg",
+            &HashSet::new(),
+            &mut dispatched,
+            &mut queue,
+        );
+
+        assert_eq!(outcome, EnqueueOutcome::SkippedAppleDouble);
+        assert!(queue.is_empty());
+        assert!(dispatched.is_empty());
+    }
+
+    #[test]
+    fn enqueue_reports_a_queued_path_and_then_a_duplicate_dispatch() {
+        let mut dispatched = HashSet::new();
+        let mut queue = VecDeque::new();
+
+        assert_eq!(
+            enqueue(
+                "a.png".to_string(),
+                Path::new("/tmp/source"),
+                "source:png/",
+                "jpg",
+                &HashSet::new(),
+                &mut dispatched,
+                &mut queue,
+            ),
+            EnqueueOutcome::Queued
+        );
+        assert_eq!(
+            enqueue(
+                "a.png".to_string(),
+                Path::new("/tmp/source"),
+                "source:png/",
+                "jpg",
+                &HashSet::new(),
+                &mut dispatched,
+                &mut queue,
+            ),
+            EnqueueOutcome::AlreadyDispatched
+        );
+        assert_eq!(queue.len(), 1);
+    }
+
+    /// ADR-0130's reconciliation, in isolation: the set difference between
+    /// what the run intended to pull and what actually reached the pipeline
+    /// is exactly the set of silently-undelivered files that used to vanish.
+    #[test]
+    fn undelivered_files_are_exactly_the_intended_set_minus_the_dispatched_set() {
+        let files_to_pull = vec![
+            "delivered.png".to_string(),
+            "never-arrived.png".to_string(),
+            "also-missing.png".to_string(),
+        ];
+        let mut dispatched = HashSet::new();
+        dispatched.insert("delivered.png".to_string());
+
+        let mut failures = FailureBreakdown::default();
+        let mut undelivered = Vec::new();
+        for relative_path in &files_to_pull {
+            if dispatched.contains(relative_path) {
+                continue;
+            }
+            failures.record(FailureStage::Pull);
+            undelivered.push(relative_path.clone());
+        }
+
+        assert_eq!(
+            undelivered,
+            vec![
+                "never-arrived.png".to_string(),
+                "also-missing.png".to_string()
+            ]
+        );
+        assert_eq!(failures.pull, 2);
+        assert_eq!(failures.total(), 2);
+    }
+
+    #[test]
+    fn failure_breakdown_tallies_each_stage_independently() {
+        let mut failures = FailureBreakdown::default();
+        failures.record(FailureStage::Pull);
+        failures.record(FailureStage::Transcode);
+        failures.record(FailureStage::Transcode);
+        failures.record(FailureStage::Place);
+        failures.record(FailureStage::Push);
+
+        assert_eq!(failures.pull, 1);
+        assert_eq!(failures.transcode, 2);
+        assert_eq!(failures.place, 1);
+        assert_eq!(failures.push, 1);
+        assert_eq!(failures.total(), 5);
+    }
+
+    #[test]
+    fn failure_stage_labels_match_the_metric_phase_names() {
+        assert_eq!(FailureStage::Pull.as_str(), "pull");
+        assert_eq!(FailureStage::Transcode.as_str(), "transcode");
+        assert_eq!(FailureStage::Place.as_str(), "place");
+        assert_eq!(FailureStage::Push.as_str(), "push");
     }
 
     #[test]
@@ -1538,26 +1954,39 @@ mod tests {
                     relative_path: "a.png".to_string(),
                     destination_filename: Some("a-abc123.jpg".to_string()),
                     outcome: Outcome::Transcoded,
+                    stage: None,
                     detail: String::new(),
                 },
                 FileOutcome {
                     relative_path: "bad.heic".to_string(),
                     destination_filename: None,
                     outcome: Outcome::Failed,
+                    stage: Some(FailureStage::Transcode),
                     detail: "ffmpeg: boom".to_string(),
                 },
             ],
             pulled: 2,
             pushed: 1,
             failed: true,
+            failures: FailureBreakdown {
+                transcode: 1,
+                ..FailureBreakdown::default()
+            },
+            skipped_already_done: 3,
+            skipped_apple_double: 2,
+            pull_errors: 0,
         };
 
         let path = write_report(dir.path(), &summary).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
 
-        assert!(contents.contains("a.png\ttranscoded\ta-abc123.jpg\t"));
-        assert!(contents.contains("bad.heic\tfailed\t\tffmpeg: boom"));
+        assert!(contents.contains("a.png\ttranscoded\t\ta-abc123.jpg\t"));
+        assert!(contents.contains("bad.heic\tfailed\ttranscode\t\tffmpeg: boom"));
         assert!(contents.contains("1 transcoded, 0 copied through, 1 failed."));
+        // ADR-0130's added lines.
+        assert!(contents.contains("failures by stage: 0 pull, 1 transcode, 0 place, 0 push."));
+        assert!(contents.contains("skipped: 3 already done at the destination, 2 AppleDouble"));
+        assert!(contents.contains("pull: 2 transferred, 0 rclone error(s) reported."));
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
     }
 }

@@ -525,6 +525,21 @@ pub(crate) fn after_zip_separator(key: &str) -> &str {
     key.rsplit('!').next().unwrap_or(key)
 }
 
+/// `true` when `key`'s final `/`-separated segment is a macOS AppleDouble
+/// resource-fork sidecar name (`._<name>`). Usable on a zip-internal entry
+/// name (via `archive::is_apple_metadata_entry`, which additionally treats a
+/// `__MACOSX/` path prefix as metadata, a convention with no equivalent on a
+/// plain bucket key), directly on a top-level bucket object's own display key
+/// (ADR-0107), or on a source-tree relative path (`transform`, ADR-0130 --
+/// these 82-byte stubs match an `--include '*.<ext>'` filter but are not
+/// decodable media, and feeding one to `ffmpeg` produces a non-retryable
+/// error that can trip the circuit breaker). Hoisted here from
+/// `pull_transform::archive` on its second consumer (ADR-0130), alongside
+/// this module's other filename predicates.
+pub(crate) fn is_apple_double_basename(key: &str) -> bool {
+    key.rsplit('/').next().unwrap_or(key).starts_with("._")
+}
+
 /// The lowercased extension of `key`'s final path segment, or `"(none)"`
 /// when there isn't one. Hoisted here (ADR-0096 §0) once `pull_transform`,
 /// `deduplicate`, and `reduce` all needed the identical logic -- this
@@ -540,6 +555,18 @@ pub(crate) fn extension_of(key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_apple_double_basename_matches_only_a_resource_fork_sidecar() {
+        assert!(is_apple_double_basename("._IMG_0001.heic"));
+        assert!(is_apple_double_basename("photos/nested/._IMG_0001.heic"));
+        assert!(!is_apple_double_basename("IMG_0001.heic"));
+        assert!(!is_apple_double_basename("photos/IMG_0001.heic"));
+        // A leading dot alone is an ordinary hidden file, not AppleDouble.
+        assert!(!is_apple_double_basename(".hidden.heic"));
+        // The `._` must be in the final segment, not an ancestor directory.
+        assert!(!is_apple_double_basename("._dir/IMG_0001.heic"));
+    }
 
     #[test]
     fn extension_of_lowercases_and_strips_the_dot() {
