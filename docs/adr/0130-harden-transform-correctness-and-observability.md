@@ -183,12 +183,12 @@ failed without parsing `detail`.
   original file when recode verification fails. Porting it would break
   `transform`'s contract that every destination object is a verified
   transcode, and would push e.g. a PNG under a `.jpg` name. Filed as an
-  `out-of-scope` issue per ADR-0031.
+  `out-of-scope` issue per ADR-0031. ([#62](https://github.com/noisypigeon/pigeon-cli/issues/62))
 - **`destination.rs`'s "directory not found" → empty-listing mapping.** A
   transient destination-side error whose stderr happens to contain that
   substring makes the whole destination look empty, re-pulling and re-pushing
   everything. The module doc already flags the fragility. Real, but a distinct
-  concern from this ADR's four defects. Filed as an `out-of-scope` issue.
+  concern from this ADR's four defects. Filed as an `out-of-scope` issue. ([#63](https://github.com/noisypigeon/pigeon-cli/issues/63))
 - Progress bar and large-operation announcements (`pull-transform`'s ADR-0075
   equivalent). A long `transform` run still prints nothing between the
   confirmation and the summary. Deliberately deferred.
