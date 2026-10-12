@@ -501,3 +501,18 @@ carries from ADR-0106/0108/0110.
   phase lines it never did before, that `deduplicate` fails fast with a clear
   message when `rclone` is absent from `PATH`, and that the three report
   artifacts land under `reports:{date}-{job-name}-{run-id}/`.
+
+## Amendment (2026-10-12): `deduplicate` becomes a fifth consumer (ADR-0133)
+
+ADR-0133 migrates `deduplicate`'s three data legs onto this ADR's
+`RcloneCommand` trait -- `Lsjson` for the pre-run preview and the
+skip-before-pull listing, `Copy` for the pull (with `files_from` and
+`on_copied`) and for the push -- making it `core::rclone`'s fifth consumer
+after `rclone copy`, `rclone delete`, and `transform`'s pull and push.
+
+It also completes one piece of cleanup this ADR could not: with
+`deduplicate` no longer downloading via `minio`, `download.rs`'s
+`download_with_retry` and `DownloadAnnounce` reach zero consumers and must be
+deleted, leaving the module holding only disk-space and hashing helpers --
+so it is renamed to `local.rs`. The `check_disk_space`/`sha256_hex` sharing
+rationale ADR-0131 recorded, and this ADR relied on, survives the rename.

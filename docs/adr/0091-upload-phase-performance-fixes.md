@@ -256,3 +256,14 @@ untouched.
   computed timeout instead of hanging; confirm `--upload-concurrency 32`
   visibly changes the number of concurrent in-flight uploads independent of
   `--concurrency`.
+
+## Amendment (2026-10-12): `--upload-concurrency` is removed for `deduplicate` (ADR-0133)
+
+ADR-0133 drops `--upload-concurrency` from `deduplicate`, because its push leg
+becomes a single bulk `rclone copy` rather than a per-file task queue --
+`--transfers`/`--checkers` take over that dial, including on the
+`--upload-only` path where this ADR noted `--upload-concurrency` was the only
+concurrency flag with any effect. The flag is unchanged for `email-sync` and
+`email-pull`. This ADR's other two fixes (the skipped pre-upload hash for a
+fresh destination, and `upload_one`'s size-scaled timeout) are unaffected and
+still serve those jobs.

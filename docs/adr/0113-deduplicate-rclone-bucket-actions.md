@@ -2,7 +2,14 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-10.
-- **Status**: Proposed.
+- **Status**: Proposed -- **superseded by ADR-0133** before any code
+  landed. The intent below (rclone-backed source/destination, three-phase
+  pipeline, `--upload-only` and the preview table kept) stands and is
+  carried forward; the mechanism it names (`rclone_transfer::run_rclone_copy`)
+  was deleted by ADR-0132, its dead-code Consequence was invalidated by
+  ADR-0131's removal of `pull_transform`, its `--report-bucket` row was
+  superseded by ADR-0132, and its strict pull-then-process barrier would
+  have regressed throughput. No code from this ADR is in `main`.
 
 ## Context
 
@@ -245,3 +252,29 @@ push).
   confirm already-processed files are skipped via the checkpoint; run
   again with `--upload-only` and confirm the push-only path succeeds
   without re-pulling anything.
+
+## Amendment (2026-10-12): superseded by ADR-0133
+
+ADR-0133 replaces this ADR as the live design for migrating `deduplicate`'s
+data operations to `rclone`. It carries forward every decision recorded above
+-- raw `--source-path`/`--destination-path` rather than keyring aliases,
+`--upload-only` kept, the `lsjson` preview table kept -- and changes four
+things this ADR could not have known:
+
+1. The mechanism is now `core::rclone`'s `RcloneCommand` trait and its
+   `Copy`/`Lsjson` implementors (ADR-0132), not
+   `rclone_transfer::run_rclone_copy`, which no longer exists.
+2. This ADR's Consequences state that `download_with_retry`/`DownloadAnnounce`
+   "drop to one remaining caller (`pull_transform`)" and that no removal
+   follows. ADR-0131 deleted `pull_transform`, so they drop to **zero** and
+   `clippy -D warnings` forces their deletion.
+3. The `--report-bucket` row in §1's table is stale -- ADR-0132 renamed it to
+   `--report-path` for this job.
+4. §2's strict Phase A -> Phase B barrier is replaced by consuming
+   `rclone::Copy`'s `on_copied` channel, because a hard barrier would discard
+   the download/process overlap the current worker pool already achieves and
+   make a run slower than it is today.
+
+ADR-0133 also settles two questions this ADR left open: what the per-item
+`source_bucket` metric label carries once aliases are gone, and the full extent
+of ADR-0109's bucket-identity threading that has to migrate with it.

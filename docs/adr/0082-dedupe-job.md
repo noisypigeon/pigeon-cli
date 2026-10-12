@@ -226,3 +226,15 @@ clean simplification versus `pull-transform`'s mandatory preflight check.
   until the third consumer" precedent (ADR-0074 §0 itself only hoisted
   `ConcurrencyInput`/`ConfirmInput` at the third consumer), it stays
   duplicated for now.
+
+## Amendment (2026-10-12): data legs move from `minio` to `rclone` (ADR-0133)
+
+ADR-0133 replaces this job's three bucket legs -- `list_objects`,
+`download_object_to_file` (via `download.rs`), and `upload_if_changed` (via
+`upload.rs`) -- with `core::rclone` commands (ADR-0132), and its
+`--source-bucket`/`--destination-bucket` keyring aliases with raw rclone
+`--source-path`/`--destination-path` strings. Everything this ADR designed
+*around* those legs is untouched: always-expand-every-zip, bucket-wide
+SHA-256 content hashing, one-copy-of-each placement, the merge report, and
+the `.staging/` vs `result/` split. §0's operational-artifacts-stay-plaintext
+stance also survives -- `deduplicate` still never encrypts.

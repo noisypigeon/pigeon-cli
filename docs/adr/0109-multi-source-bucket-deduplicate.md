@@ -202,7 +202,7 @@ positionally keeps working.
   the report's manual-followup section) — a real but separable gap once
   multiple buckets can produce similarly-keyed failing zips; left for a
   follow-up so this ADR's `dedup.rs`/report diff stays scoped to the
-  merge-record path it's actually changing.
+  merge-record path it's actually changing. ([#66](https://github.com/noisypigeon/pigeon-cli/issues/66))
 - **Per-bucket `--concurrency`/`--upload-concurrency` tuning** — the
   existing flat pools already work correctly across buckets (one shared
   queue, any item from any bucket); no evidence of a need for per-bucket
@@ -210,3 +210,24 @@ positionally keeps working.
 - **Renaming `--remote-output` on the other 3 job types that have it** —
   explicitly decided against for this ADR (see Context); `email-sync`,
   `email-pull`, and `pull-transform` are unaffected.
+
+## Amendment (2026-10-12): bucket-alias identity becomes source-path identity (ADR-0133)
+
+ADR-0133 keeps every structural decision this ADR made -- multiple sources
+deduplicated as one combined set, a repeatable source flag, and compound-keyed
+checkpoint/index/report/in-memory state so two sources holding the same key
+can never skip each other -- but replaces the identity itself: `bucket_alias`
+becomes `source_path` throughout. That means `DeduplicateTask`/`QueueItem`/
+`HashedFile`'s field, the `.processed` compound key (now
+`{source_path}\t{relative_path}`), `ContentIndex`'s 4th field, the report's two
+trailing columns (`duplicate_source_path`/`kept_source_path`), and
+`finished_root_keys`/`tainted_roots`/`apple_double_skipped_roots`/
+`finished_keys`. §4's legacy no-tab sentinel is dropped, since a
+pre-migration checkpoint is structurally incompatible either way.
+
+The per-item `source_bucket` metric label this ADR introduced is preserved
+rather than collapsed to `NO_BUCKET`, now carrying the raw `--source-path` --
+a documented exception to ADR-0102/0130, justified because the deployment
+provisions `rclone.conf` and so bounds the set of remote names. This ADR's
+deferred `archive::ArchiveFailure` provenance gap remains open and is filed as
+an issue alongside ADR-0133.
