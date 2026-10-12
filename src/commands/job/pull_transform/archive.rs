@@ -60,6 +60,11 @@ pub(crate) struct ArchiveFailure {
     pub error: String,
 }
 
+/// Re-exported so `deduplicate`'s existing `archive::is_apple_double_basename`
+/// call sites keep working after ADR-0130 hoisted the predicate itself into
+/// `core::data` for `transform`'s second use of it.
+pub(crate) use crate::core::data::is_apple_double_basename;
+
 /// `true` for a macOS AppleDouble resource-fork sidecar (`._<name>`,
 /// anywhere in the archive) or anything under a `__MACOSX/` metadata
 /// directory -- Finder-written noise that macOS zip tooling attaches
@@ -74,16 +79,6 @@ fn is_apple_metadata_entry(entry_name: &str) -> bool {
         return true;
     }
     is_apple_double_basename(entry_name)
-}
-
-/// `true` when `key`'s final `/`-separated segment is a macOS AppleDouble
-/// resource-fork sidecar name (`._<name>`) -- usable on a zip-internal entry
-/// name (via `is_apple_metadata_entry`, which additionally treats a
-/// `__MACOSX/` path prefix as metadata, a convention with no equivalent on a
-/// plain bucket key) or directly on a top-level bucket object's own display
-/// key (ADR-0107).
-pub(crate) fn is_apple_double_basename(key: &str) -> bool {
-    key.rsplit('/').next().unwrap_or(key).starts_with("._")
 }
 
 /// `true` for `is_apple_metadata_entry`'s noise, or for a `.DS_Store`
