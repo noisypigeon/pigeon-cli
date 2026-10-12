@@ -197,3 +197,15 @@ once.
   four phase-boundary lines with no per-file upload span spam at the
   default log level, and confirm the terminal shows large-download status
   as an in-place bar message rather than scrolling lines.
+
+## Amendment (2026-10-12): `ContentIndex`'s 4th field changes meaning (ADR-0133)
+
+ADR-0133 keeps the `kept_original_key` column this ADR added to
+`deduplicate-report.txt` and keeps `ContentIndex`'s backward-compatible
+tab-separated format, but the 4th field ADR-0109 later appended changes meaning
+from a bucket alias to a raw rclone source path, and
+`commit_with_key_and_bucket`/`check_with_original_key_and_bucket` are renamed
+to `_and_source` accordingly. The lenient 2-/3-/4-field `load` is untouched, so
+`email_sync`/`email_pull`'s own index files are unaffected. This ADR's
+zip-member key-corruption fix (stripping everything up to the last `!`) is
+also untouched.

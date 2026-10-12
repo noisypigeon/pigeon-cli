@@ -208,3 +208,15 @@ upload phase.
   uploads successfully, a second `--upload-only` run reports 0 pending,
   and `dedupe-report.txt` is unchanged (still 1.1GB, never touched by
   `--upload-only`).
+
+## Amendment (2026-10-12): the streaming `minio` upload is no longer used here (ADR-0133)
+
+ADR-0133 moves `deduplicate`'s push leg to a bulk `rclone copy`, so the
+`UploadBody::Path` streaming path this ADR introduced no longer serves this
+job -- it remains in use by `email-sync`/`email-pull` and by every job's
+report leg, and the 5GB single-PUT ceiling this ADR removed stays removed for
+them. This ADR's other half, `--upload-only`, is explicitly **preserved** by
+ADR-0133: resuming a crashed upload still needs no access to the source
+remote, and now needs no `rclone.conf` entry for it either. The `.uploaded`
+resume index stops applying to this job, superseded by `rclone copy`'s own
+size/modtime skip.
