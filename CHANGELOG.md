@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.11] - 2026-10-12
+
 - ADR-0129: `job run transform` splits `--transfers`/`--checkers` into separate download and upload concurrency knobs (`--download-transfers`, `--download-checkers`, `--upload-transfers`), allowing independent tuning of pull vs. push phases; adds `--max-pending-downloads` to automatically pause/resume the download phase based on backlog depth, providing self-correcting backpressure without manual tuning ([#XYZ](https://github.com/noisypigeon/pigeon-cli/pull/XYZ)).
 
 ## [0.4.10] - 2026-10-12
