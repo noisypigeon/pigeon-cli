@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0128: adds a local Docker Compose observability stack (Prometheus + Loki + Promtail + Grafana) that scrapes pigeon's existing `/metrics` endpoint and tails `pigeon.jsonl`, standing in for the Scaleway Cockpit/Alloy pipeline now that transcode/inference jobs run bare-metal instead of on cloud compute; no `pigeon-cli` source changes needed for the observability surfaces themselves ([#59](https://github.com/noisypigeon/pigeon-cli/pull/59)).
+
 ## [0.4.9] - 2026-10-11
 
 - ADR-0127: fixes `job run transform` OOM-crashing on an oversubscribed `--concurrency` by clamping it against the host's core count and capping each concurrent `ffmpeg` transcode's own thread count; also fixes a crash-resume bug where a file already transcoded and placed into `result/` before a crash got silently re-transcoded and then hard-failed on a false collision, instead of being pushed directly ([#58](https://github.com/noisypigeon/pigeon-cli/pull/58)).
