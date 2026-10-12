@@ -234,119 +234,14 @@ pub enum JobType {
         non_interactive: bool,
     },
 
-    /// Recursively pulls every object from a bucket-config, expands zips,
-    /// recodes media into a size-optimized canonical format per category
-    /// (photo/screenshot -> jpg, video -> mp4, audio -> m4a), dates and
-    /// dedups everything by content, and organizes the result by extension
-    /// -- then optionally encrypts and uploads it to a (possibly
-    /// different) bucket-config (ADR-0074). Requires `ffmpeg`/`ffprobe` on
-    /// `PATH`.
-    PullTransform {
-        /// Alias of a configured bucket-config (see `pigeon keyring add
-        /// bucket`) to pull from. Interactively selected from the
-        /// configured bucket-configs when omitted and stdin is a terminal;
-        /// required otherwise.
-        #[arg(long)]
-        source_bucket: Option<String>,
-
-        /// Local directory to stage and store output under. Defaults to a
-        /// directory under the OS temp directory when omitted.
-        #[arg(long)]
-        local_output: Option<PathBuf>,
-
-        /// Alias of a configured bucket-config to upload the organized
-        /// result to, once local processing is complete.
-        #[arg(long)]
-        remote_output: Option<String>,
-
-        /// Alias of a configured encryption key, overriding the target
-        /// bucket-config's own default (if any).
-        #[arg(long)]
-        encryption_key: Option<String>,
-
-        /// File extensions to pull/transform/upload, comma-separated (e.g.
-        /// `jpg,mp4,pdf`; use the literal `none` for extensionless keys).
-        /// Everything else is left pending, untouched, for a future run --
-        /// never checkpointed as done (ADR-0077). Interactively selected
-        /// (all pre-checked) from the pending-summary table when omitted
-        /// and stdin is a terminal; defaults to everything otherwise.
-        #[arg(long, value_delimiter = ',')]
-        file_types: Option<Vec<String>>,
-
-        /// Keys of pending zip objects to expand and transform;
-        /// comma-separated. Every other pending zip is uploaded as-is,
-        /// untouched (ADR-0077). Interactively selected (all pre-checked)
-        /// when omitted and stdin is a terminal; defaults to expanding
-        /// every pending zip otherwise.
-        #[arg(long, value_delimiter = ',')]
-        expand_zips: Option<Vec<String>>,
-
-        /// Recode target for photos/screenshots: `jpg` (default) or `png`.
-        #[arg(long)]
-        image_format: Option<String>,
-
-        /// Recode target for video: `mp4` (default), `mkv`, or `webm`.
-        #[arg(long)]
-        video_format: Option<String>,
-
-        /// Recode target for audio: `m4a` (default), `mp3`, or `flac`.
-        #[arg(long)]
-        audio_format: Option<String>,
-
-        /// Maximum number of files to download/recode concurrently.
-        #[arg(long)]
-        concurrency: Option<usize>,
-
-        /// Maximum number of files to upload concurrently, independent of
-        /// `--concurrency` (which sizes download/recode work) -- the upload
-        /// phase is network-round-trip-bound, not CPU-bound, so it benefits
-        /// from its own, separately-tuned concurrency (ADR-0091).
-        /// Interactively prompted when omitted and stdin is a terminal;
-        /// defaults to 16 otherwise. With `--upload-only`, this is the only
-        /// concurrency flag that has any effect.
-        #[arg(long)]
-        upload_concurrency: Option<usize>,
-
-        /// Resumes uploading an already-completed local pull-transform run
-        /// instead of starting a new one: skips the bucket listing/
-        /// download/classify/recode/placement phases entirely (and the
-        /// source bucket credentials and `ffmpeg`/`ffprobe` check they'd
-        /// otherwise need) and uploads straight from an existing
-        /// `--local-output`, picking up where a prior run's upload phase
-        /// left off via the same `.staging/.uploaded` index (ADR-0090).
-        /// Requires a `--local-output` from a completed prior run (its
-        /// `.processed` checkpoint must exist and it must hold at least
-        /// one placed-content subdirectory) and a mandatory
-        /// `--remote-output`.
-        #[arg(long)]
-        upload_only: bool,
-
-        /// Alias of a configured bucket-config this run's report, the
-        /// shared observability log, and a transcript of its printed
-        /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
-        /// interactively selected when omitted and stdin is a terminal;
-        /// required otherwise.
-        #[arg(long)]
-        report_bucket: Option<String>,
-
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
-        /// resolves via its non-interactive fallback (or errors if none
-        /// exists) instead of asking, and the final "proceed?"
-        /// confirmation is auto-answered yes.
-        #[arg(long)]
-        non_interactive: bool,
-    },
-
     /// Recursively scans a bucket, always inflates every zip found (the
     /// zip container itself is never uploaded, only its inflated
     /// contents), content-hashes every file bucket-wide to keep one
     /// byte-identical copy of each, writes a human-readable merge report,
     /// and optionally uploads the result unencrypted to a (possibly
-    /// different) bucket-config (ADR-0082). Unlike `pull-transform`, every
-    /// file is always processed and every zip is always expanded -- there
-    /// is no file-type or zip-expansion selection, and this job never
-    /// offers encryption.
+    /// different) bucket-config (ADR-0082). Every file is always processed
+    /// and every zip is always expanded -- there is no file-type or
+    /// zip-expansion selection, and this job never offers encryption.
     Deduplicate {
         /// Alias of a configured bucket-config to pull from. Repeat the
         /// flag for more than one (`--source-bucket a --source-bucket b`)
@@ -645,7 +540,6 @@ impl Observable for JobType {
             JobType::EmailSync { .. } => "job.email-sync",
             JobType::DecryptFiles { .. } => "job.decrypt-files",
             JobType::EmailPull { .. } => "job.email-pull",
-            JobType::PullTransform { .. } => "job.pull-transform",
             JobType::Deduplicate { .. } => "job.deduplicate",
             JobType::Rclone(args) => match args.action {
                 RcloneAction::Copy { .. } => "job.rclone-copy",

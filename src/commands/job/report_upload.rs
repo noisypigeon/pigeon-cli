@@ -204,10 +204,10 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_summary_report(dir.path(), "pull-transform", &Summary { processed: 3 }).unwrap();
+            write_summary_report(dir.path(), "email-pull", &Summary { processed: 3 }).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("processed: 3"));
-        assert_eq!(path.file_name().unwrap(), "pull-transform-report.txt");
+        assert_eq!(path.file_name().unwrap(), "email-pull-report.txt");
     }
 
     #[test]

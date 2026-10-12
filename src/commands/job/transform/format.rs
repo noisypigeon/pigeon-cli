@@ -1,7 +1,7 @@
 //! `--input-file-type` (ADR-0112, extended to video by ADR-0122): a small,
 //! vetted menu, not an arbitrary string -- mirrors
-//! `pull_transform::media::ImageFormat`/`rclone::cli::RcloneAction`'s
-//! precedent. Named `InputFileType`, not `ImageInputType`, and the job
+//! `rclone::cli::RcloneAction`'s precedent. Named `InputFileType`, not
+//! `ImageInputType`, and the job
 //! itself named `transform`, not `image-transform`, so a later iteration
 //! could add a non-image input kind to this same enum/command without a
 //! rename -- ADR-0122's `Mov`/`M4v`/`Mp4` variants are that iteration.
@@ -35,8 +35,7 @@ impl InputFileType {
         }
     }
 
-    /// Case-insensitive; `jpg` is accepted as an alias for `jpeg` (mirrors
-    /// `pull_transform::media::ImageFormat::parse`'s own leniency). Any
+    /// Case-insensitive; `jpg` is accepted as an alias for `jpeg`. Any
     /// other value is a hard error -- an invalid `--input-file-type` never
     /// falls through to an interactive prompt.
     pub(crate) fn parse(value: &str) -> Result<Self, String> {

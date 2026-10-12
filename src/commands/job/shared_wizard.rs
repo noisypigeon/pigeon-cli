@@ -1,47 +1,24 @@
 //! `WizardInput` implementors shared by more than one job type (ADR-0074).
 //! Extracted once a second/third job needed the exact same prompt, not
 //! written generically up front -- `email_sync::wizard` originated
-//! `UploadTargetInput`/`EncryptionKeyInput`; `decrypt_files::wizard`
-//! originated `ConfirmInput`. Each job keeps any wizard input that's
-//! genuinely its own (e.g. `email_sync`'s own `ConcurrencyInput`, which
-//! prints a message-count time estimate no other job has data for).
+//! `UploadTargetInput`; `decrypt_files::wizard` originated `ConfirmInput`.
+//! Each job keeps any wizard input that's genuinely its own (e.g.
+//! `email_sync`'s own `ConcurrencyInput`, which prints a message-count time
+//! estimate no other job has data for).
+//!
+//! Membership here is earned and can be lost: ADR-0131 removed
+//! `SourceBucketInput` outright and returned `EncryptionKeyInput` to
+//! `email_sync::wizard` when `pull_transform`'s deletion left them with zero
+//! and one consumer respectively -- the same un-hoisting ADR-0094 did to
+//! `ConcurrencyInput`.
 
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
 use crate::commands::keyring::store::Store;
 use crate::core::wizard::WizardInput;
 
-/// Resolves which bucket-config to pull from -- mandatory (unlike
-/// `UploadTargetInput`'s optional upload target). Originated independently
-/// in `deduplicate::wizard` and `pull_transform::wizard`; hoisted here once
-/// `reduce` needed the identical logic (ADR-0096 §0, this codebase's usual
-/// "duplicate until the third consumer" precedent).
-pub(crate) struct SourceBucketInput<'a> {
-    pub flag: Option<String>,
-    pub store: &'a Store,
-}
-
-impl WizardInput for SourceBucketInput<'_> {
-    type Value = String;
-
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(Ok)
-    }
-
-    fn prompt(&self) -> Result<String, String> {
-        self.store
-            .prompt_select_bucket()
-            .map(|bucket_config| bucket_config.alias.clone())
-    }
-
-    fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--source-bucket is required when not running interactively".to_string())
-    }
-}
-
 /// Resolves which bucket-config to upload this run's report/log/transcript
-/// to -- mandatory on every job type (ADR-0100), identical shape to
-/// `SourceBucketInput`'s mandatory selection above. Put here directly
+/// to -- mandatory on every job type (ADR-0100). Put here directly
 /// (rather than originated in one job first) since every job needs it from
 /// day one.
 pub(crate) struct ReportBucketInput<'a> {
@@ -110,83 +87,14 @@ impl WizardInput for UploadTargetInput<'_> {
     }
 }
 
-/// Resolves which encryption key to use for an upload (ADR-0027, amended):
-/// `--encryption-key` always wins outright. Otherwise, only when `uploading`
-/// (there's an upload target at all -- nothing to encrypt otherwise): if the
-/// target bucket has a `bucket_default` key, asks to use it (default yes) or
-/// pick a different one instead (declining both skips encryption for this
-/// run); if it has no default, asks "Encrypt this upload?" from scratch,
-/// mirroring `UploadTargetInput`'s own confirm-then-select shape.
-/// Non-interactively, falls back to the bucket's default (if any) rather
-/// than always skipping encryption -- a scripted/cron run against a bucket
-/// configured with a default key gets encrypted uploads without repeating
-/// `--encryption-key` every time.
-pub(crate) struct EncryptionKeyInput<'a> {
-    pub flag: Option<String>,
-    pub store: &'a Store,
-    pub uploading: bool,
-    pub bucket_default: Option<String>,
-}
-
-impl WizardInput for EncryptionKeyInput<'_> {
-    type Value = Option<String>;
-
-    fn flag_value(&self) -> Option<Result<Option<String>, String>> {
-        self.flag.clone().map(|alias| Ok(Some(alias)))
-    }
-
-    fn prompt(&self) -> Result<Option<String>, String> {
-        if !self.uploading {
-            return Ok(None);
-        }
-        if let Some(default_alias) = &self.bucket_default {
-            let use_default = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt(format!("Encrypt this upload using '{default_alias}'?"))
-                .default(true)
-                .interact()
-                .map_err(|err| format!("failed to read confirmation: {err}"))?;
-            if use_default {
-                return Ok(Some(default_alias.clone()));
-            }
-            let use_different = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Use a different encryption key instead?")
-                .default(false)
-                .interact()
-                .map_err(|err| format!("failed to read confirmation: {err}"))?;
-            if !use_different {
-                return Ok(None);
-            }
-        } else {
-            let encrypt = Confirm::with_theme(&ColorfulTheme::default())
-                .with_prompt("Encrypt this upload?")
-                .default(false)
-                .interact()
-                .map_err(|err| format!("failed to read confirmation: {err}"))?;
-            if !encrypt {
-                return Ok(None);
-            }
-        }
-        match self.store.prompt_select_encryption_key() {
-            Ok(key) => Ok(Some(key.alias.clone())),
-            Err(message) => {
-                println!("{message}");
-                Ok(None)
-            }
-        }
-    }
-
-    fn non_interactive_fallback(&self) -> Result<Option<String>, String> {
-        Ok(self.bucket_default.clone())
-    }
-}
-
 /// The machine's available core count, or `4` if it can't be determined --
 /// shared by every job whose per-item work is CPU-bound (hashing,
 /// decompression, decryption) rather than I/O-bound, where a flat `4`
 /// (tuned for IMAP/S3-bound jobs) is the wrong default. Originated in
-/// `deduplicate/wizard.rs` (ADR-0088); hoisted here once `pull-transform` and
-/// `decrypt-files` needed the identical logic (ADR-0090, this codebase's
-/// usual "duplicate until the third consumer" precedent).
+/// `deduplicate/wizard.rs` (ADR-0088); hoisted here once two more jobs
+/// needed the identical logic (ADR-0090, this codebase's usual "duplicate
+/// until the third consumer" precedent). Still three consumers after
+/// ADR-0131: `deduplicate`, `decrypt_files`, and `transform`.
 pub(crate) fn default_concurrency() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())

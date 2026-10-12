@@ -20,12 +20,13 @@ use super::worker;
 
 /// Resolves which bucket-config(s) to pull from and combine into one
 /// shared staging tree -- mandatory, at least one required (ADR-0109).
-/// Deliberately a `deduplicate`-local type, not a generalization of
-/// `shared_wizard::SourceBucketInput` (which stays single-alias for its
-/// other consumer, `pull_transform::wizard`) -- per this codebase's
-/// "duplicate until the third consumer" precedent (ADR-0082's own
-/// Out-of-scope section), one consumer doesn't justify generalizing a
-/// shared type. Shaped after `email_sync::wizard::IdentitiesInput`, the
+/// Deliberately a `deduplicate`-local type rather than a generalization of
+/// the former `shared_wizard::SourceBucketInput`, which stayed single-alias
+/// for its only other consumer and was deleted outright with that consumer
+/// (ADR-0131) -- per this codebase's "duplicate until the third consumer"
+/// precedent (ADR-0082's own Out-of-scope section), one consumer never
+/// justified generalizing a shared type. Shaped after
+/// `email_sync::wizard::IdentitiesInput`, the
 /// closest existing "mandatory, no-safe-default, multi-value, alias-
 /// resolved" wizard input.
 struct SourceBucketsInput<'a> {

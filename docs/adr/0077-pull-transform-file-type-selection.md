@@ -2,7 +2,7 @@
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-27.
-- **Status**: Accepted.
+- **Status**: Accepted. Reversed by ADR-0131.
 - **Amends**: ADR-0074, ADR-0075, ADR-0076.
 
 ## Context

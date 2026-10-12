@@ -88,8 +88,8 @@ const CIRCUIT_BREAKER_SAMPLE_SIZE: usize = 20;
 /// against the exact same bytes reproduces the identical failure every time,
 /// so retrying only doubles ffmpeg invocations and adds a guaranteed sleep
 /// for zero benefit. Kept local rather than added as a parameter to the
-/// shared `retry_with_backoff` -- that helper has 6+ unrelated consumers
-/// (`push.rs`, `deduplicate`, `pull_transform`, ...); this classification is
+/// shared `retry_with_backoff` -- that helper has 5+ unrelated consumers
+/// (`push.rs`, `destination.rs`, `deduplicate`, ...); this classification is
 /// specific to `transcode_to_jpg`'s error strings alone.
 async fn retry_transcode_unless_fatal<T, F, Fut>(
     attempts: usize,
@@ -431,8 +431,8 @@ async fn process_one(
 /// Best-effort local cleanup once a file is confirmed durably pushed
 /// (ADR-0124). `transform` has no `--upload-only`/local-state-dependent
 /// resume mechanism to preserve by keeping these files around -- unlike
-/// `deduplicate`/`pull_transform`, which deliberately retain their own
-/// `result/` tree for exactly that purpose -- every phase here is already
+/// `deduplicate`, which deliberately retains its own `result/` tree for
+/// exactly that purpose -- every phase here is already
 /// independently rerun-safe via the remote destination listing, not local
 /// state. A removal failure (e.g. a permissions issue) is logged and
 /// otherwise ignored: it must never turn an already-successful push into a

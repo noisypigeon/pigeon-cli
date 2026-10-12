@@ -87,7 +87,7 @@ mise run observability-up      # starts Prometheus, Loki, Promtail, Grafana
 ```
 
 Then run `pigeon` commands normally, bare-metal, alongside the stack —
-e.g. `pigeon job run pull-transform ...`. Open
+e.g. `pigeon job run transform ...`. Open
 [http://localhost:3000](http://localhost:3000) for Grafana (default
 credentials `admin`/`admin` on first login — change them) and open the
 pre-provisioned "pigeon-cli overview" dashboard.

@@ -258,7 +258,7 @@ async fn dispatch_copy_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    // Checked before any prompts, mirroring `pull_transform::wizard`'s
+    // Checked before any prompts, mirroring `transform::wizard`'s
     // `check_ffmpeg_available()` call -- fail immediately on a missing
     // binary, not partway through a long-running `rclone copy` subprocess.
     if let Err(err) = worker::check_rclone_available().await {

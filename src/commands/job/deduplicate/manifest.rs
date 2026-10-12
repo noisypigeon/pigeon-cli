@@ -1,7 +1,8 @@
 //! Recursive bucket listing + extension-based type summary (ADR-0082 §3) --
-//! no downloads happen here, only `list_objects`. Own copy of
-//! `pull_transform::manifest`'s pattern (that module is private, unreachable
-//! from this sibling job), with one deliberate layout correction: checkpoint
+//! no downloads happen here, only `list_objects`. Originally its own copy
+//! of the since-removed `pull_transform::manifest`'s pattern (that module
+//! was private, unreachable from this sibling job), with one deliberate
+//! layout correction: checkpoint
 //! functions take `staging_dir`, not `local_output` itself -- keeps
 //! `.processed`/`.content-hashes` out of the uploaded `result/` tree (see
 //! `deduplicate/mod.rs`'s top-level doc comment).
@@ -12,7 +13,34 @@ use std::path::Path;
 
 use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
-pub(crate) use crate::core::data::extension_of;
+
+/// The portion of `key` after its last `!` zip-member separator -- zip
+/// expansion (`deduplicate::worker`) builds a synthetic,
+/// human-readable key for an extracted member by joining the zip's own key
+/// onto the member's in-archive path with `!` (e.g.
+/// `"outer.zip!photos/img.jpg"`). `extension_of` and any filename-deriving
+/// `Path` split must look at this, not the raw key, or a zip member's
+/// synthetic prefix leaks into the derived extension/name (ADR-0099) --
+/// e.g. an extensionless member `outer.zip!README` would otherwise be seen
+/// as having extension `"zip!README"`, the only dot in the whole key.
+/// Returns `key` unchanged when there's no `!`.
+pub(crate) fn after_zip_separator(key: &str) -> &str {
+    key.rsplit('!').next().unwrap_or(key)
+}
+
+/// The lowercased extension of `key`'s final path segment, or `"(none)"`
+/// when there isn't one. Lived in `core::data` while `pull_transform`,
+/// `deduplicate`, and `reduce` all needed it (hoisted by ADR-0096 §0);
+/// returned here by ADR-0131 once the other two were removed and
+/// `deduplicate` was its only remaining consumer -- the same un-hoisting
+/// ADR-0094 did to `ConcurrencyInput`.
+pub(crate) fn extension_of(key: &str) -> String {
+    Path::new(after_zip_separator(key))
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase())
+        .unwrap_or_else(|| "(none)".to_string())
+}
 
 /// One source object pending processing -- `Job::gather`'s result. Only
 /// top-level bucket objects; zip members discovered during `run()` are
@@ -40,8 +68,8 @@ pub(crate) struct DeduplicatePlan {
 
 /// A source object key is durably marked done here once `run()` has fully
 /// handled it (itself, for a non-zip; its own successful expansion, for a
-/// zip). Same role as `pull_transform::manifest::PROCESSED_FILE_NAME`, just
-/// scoped to `staging_dir` instead of `local_output`.
+/// zip). Scoped to `staging_dir` rather than `local_output`, so it never
+/// lands in the uploaded `result/` tree.
 pub(crate) const PROCESSED_FILE_NAME: &str = ".processed";
 
 /// One checkpoint entry: `(bucket_alias, key)`, compound-keyed (ADR-0109) so
@@ -104,8 +132,7 @@ pub(crate) fn append_checkpoint(
 /// matching this job's "treat as one set" design, ADR-0109), and excludes
 /// anything the `staging_dir` checkpoint already marks done for that
 /// specific bucket -- both the returned task list and the summary table
-/// reflect only *pending* work, mirroring
-/// `pull_transform::manifest::gather_pending`.
+/// reflect only *pending* work.
 pub(crate) async fn gather_pending(
     source_buckets: &[(BucketConfig, String)],
     staging_dir: &Path,
@@ -152,6 +179,37 @@ pub(crate) async fn gather_pending(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extension_of_lowercases_and_strips_the_dot() {
+        assert_eq!(extension_of("Photos/IMG_0001.JPG"), "jpg");
+    }
+
+    #[test]
+    fn extension_of_handles_no_extension() {
+        assert_eq!(extension_of("Photos/README"), "(none)");
+    }
+
+    #[test]
+    fn extension_of_handles_dotfiles_without_extension() {
+        assert_eq!(extension_of(".DS_Store"), "(none)");
+    }
+
+    #[test]
+    fn extension_of_strips_a_zip_member_prefix_before_deriving_the_extension() {
+        assert_eq!(extension_of("outer.zip!README"), "(none)");
+        assert_eq!(extension_of("outer.zip!photos/img.JPG"), "jpg");
+    }
+
+    #[test]
+    fn after_zip_separator_returns_the_segment_after_the_last_bang() {
+        assert_eq!(after_zip_separator("outer.zip!README"), "README");
+        assert_eq!(
+            after_zip_separator("a.zip!nested.zip!photos/img.jpg"),
+            "photos/img.jpg"
+        );
+        assert_eq!(after_zip_separator("plain/key.jpg"), "plain/key.jpg");
+    }
 
     #[test]
     fn load_checkpoint_is_empty_for_a_missing_staging_dir() {

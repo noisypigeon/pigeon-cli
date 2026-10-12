@@ -57,8 +57,9 @@ pub(crate) const NO_BUCKET: &str = "n/a";
 /// with it would silently relabel this as `exported_job`). `phase` reuses
 /// each job's existing `FailureBreakdown` field names (e.g. deduplicate's
 /// "download"/"hash"/"place"); `outcome` matches that phase's real semantics
-/// rather than a forced success/failure binary (e.g. pull_transform's
-/// recode step uses "recoded"/"fallback", email_pull's attachment step
+/// rather than a forced success/failure binary (e.g. transform's
+/// transcode step uses "transcoded"/"copied_through", email_pull's
+/// attachment step
 /// uses "extracted"/"extraction_failed" since that still counts as synced
 /// in the job's own model). Supersedes ADR-0092's `record_job_summary`,
 /// which only ever reported once at the very end of a run -- a dashboard

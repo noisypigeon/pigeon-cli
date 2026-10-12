@@ -46,7 +46,7 @@ pub(crate) struct RcloneDeleteSummary {
 const LOG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// Confirms `rclone` is on `PATH`, checked once up front in the wizard
-/// before any prompts (mirrors `pull_transform::media::check_ffmpeg_available`)
+/// before any prompts (mirrors `transform::media::check_ffmpeg_available`)
 /// so a missing binary fails immediately, not partway through a
 /// long-running `rclone copy`/`rclone purge` subprocess.
 pub(crate) async fn check_rclone_available() -> Result<(), String> {

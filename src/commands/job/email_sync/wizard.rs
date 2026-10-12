@@ -1,11 +1,11 @@
 use std::fs;
 use std::path::PathBuf;
 
-use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
+use dialoguer::{Confirm, Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
-    ConfirmInput, EncryptionKeyInput, UploadConcurrencyInput, UploadTargetInput,
+    ConfirmInput, UploadConcurrencyInput, UploadTargetInput,
 };
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
@@ -16,6 +16,82 @@ use crate::core::keyring::credentials;
 use crate::core::wizard::WizardInput;
 
 use super::worker;
+
+/// Resolves which encryption key to use for an upload (ADR-0027, amended).
+/// Originated here, hoisted into `shared_wizard` once `pull_transform`
+/// needed the identical prompt, and returned here by ADR-0131 when that
+/// job's removal left `email_sync` as its only consumer -- the same
+/// un-hoisting ADR-0094 did to `ConcurrencyInput`. `decrypt_files` has its
+/// own separate, mandatory variant and never shared this one.
+///
+/// `--encryption-key` always wins outright. Otherwise, only when `uploading`
+/// (there's an upload target at all -- nothing to encrypt otherwise): if the
+/// target bucket has a `bucket_default` key, asks to use it (default yes) or
+/// pick a different one instead (declining both skips encryption for this
+/// run); if it has no default, asks "Encrypt this upload?" from scratch,
+/// mirroring `UploadTargetInput`'s own confirm-then-select shape.
+/// Non-interactively, falls back to the bucket's default (if any) rather
+/// than always skipping encryption -- a scripted/cron run against a bucket
+/// configured with a default key gets encrypted uploads without repeating
+/// `--encryption-key` every time.
+pub(crate) struct EncryptionKeyInput<'a> {
+    pub flag: Option<String>,
+    pub store: &'a Store,
+    pub uploading: bool,
+    pub bucket_default: Option<String>,
+}
+
+impl WizardInput for EncryptionKeyInput<'_> {
+    type Value = Option<String>;
+
+    fn flag_value(&self) -> Option<Result<Option<String>, String>> {
+        self.flag.clone().map(|alias| Ok(Some(alias)))
+    }
+
+    fn prompt(&self) -> Result<Option<String>, String> {
+        if !self.uploading {
+            return Ok(None);
+        }
+        if let Some(default_alias) = &self.bucket_default {
+            let use_default = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt(format!("Encrypt this upload using '{default_alias}'?"))
+                .default(true)
+                .interact()
+                .map_err(|err| format!("failed to read confirmation: {err}"))?;
+            if use_default {
+                return Ok(Some(default_alias.clone()));
+            }
+            let use_different = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Use a different encryption key instead?")
+                .default(false)
+                .interact()
+                .map_err(|err| format!("failed to read confirmation: {err}"))?;
+            if !use_different {
+                return Ok(None);
+            }
+        } else {
+            let encrypt = Confirm::with_theme(&ColorfulTheme::default())
+                .with_prompt("Encrypt this upload?")
+                .default(false)
+                .interact()
+                .map_err(|err| format!("failed to read confirmation: {err}"))?;
+            if !encrypt {
+                return Ok(None);
+            }
+        }
+        match self.store.prompt_select_encryption_key() {
+            Ok(key) => Ok(Some(key.alias.clone())),
+            Err(message) => {
+                println!("{message}");
+                Ok(None)
+            }
+        }
+    }
+
+    fn non_interactive_fallback(&self) -> Result<Option<String>, String> {
+        Ok(self.bucket_default.clone())
+    }
+}
 use super::{
     DEFAULT_MAX_CONNECTIONS_PER_IDENTITY, EmailSyncJob, IdentityContext, IdentityManifestSummary,
 };

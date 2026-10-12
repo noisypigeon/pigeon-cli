@@ -14,7 +14,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use zip::ZipArchive;
 
-/// How many nested zip levels `worker::run_pull_transform_job` will expand
+use crate::core::data::is_apple_double_basename;
+
+/// How many nested zip levels `deduplicate::worker` will expand
 /// before giving up on that branch -- a zip bomb built from many small
 /// nested zips still terminates instead of expanding forever.
 pub(crate) const MAX_ZIP_DEPTH: u32 = 10;
@@ -51,19 +53,14 @@ pub(crate) struct ExtractedMember {
 
 /// One archive that genuinely failed to open (password-protected, corrupt,
 /// etc.) -- as opposed to an AppleDouble object skipped before any open
-/// attempt was made. Collected by `deduplicate`'s and `pull_transform`'s
-/// worker loops so a run's report can itemize exactly which keys need a
+/// attempt was made. Collected by `deduplicate`'s worker loop so a run's
+/// report can itemize exactly which keys need a
 /// human to unlock or discard, instead of only a count (ADR-0107).
 #[derive(Debug, Clone)]
 pub(crate) struct ArchiveFailure {
     pub key: String,
     pub error: String,
 }
-
-/// Re-exported so `deduplicate`'s existing `archive::is_apple_double_basename`
-/// call sites keep working after ADR-0130 hoisted the predicate itself into
-/// `core::data` for `transform`'s second use of it.
-pub(crate) use crate::core::data::is_apple_double_basename;
 
 /// `true` for a macOS AppleDouble resource-fork sidecar (`._<name>`,
 /// anywhere in the archive) or anything under a `__MACOSX/` metadata
