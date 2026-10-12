@@ -160,6 +160,11 @@ pub(crate) fn log_collapsed_repeats(step: &'static str, delta: &TailDelta) {
 /// plain `--files-from` would otherwise try to interpret as a pattern.
 /// Every other caller (`rclone::worker::run_copy_job`) passes `None` and is
 /// unaffected.
+///
+/// `pid_tx` (ADR-0129), when given, receives the spawned rclone child process
+/// PID so the caller can pause/resume it based on downstream backpressure
+/// (e.g. if a backlog builds up). `transform`'s pull phase uses this;
+/// every other caller passes `None` and is unaffected.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_rclone_copy(
     source: &str,
@@ -174,6 +179,7 @@ pub(crate) async fn run_rclone_copy(
     emit_upload_metrics: bool,
     on_copied: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     files_from: Option<&Path>,
+    pid_tx: Option<tokio::sync::mpsc::Sender<u32>>,
 ) -> Result<RcloneLogSummary, String> {
     tracing::info!(
         source,
@@ -240,6 +246,11 @@ pub(crate) async fn run_rclone_copy(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|err| format!("failed to run rclone: {err}"))?;
+
+    // Send the child PID to the caller, if they want it (ADR-0129).
+    if let (Some(tx), Some(pid)) = (pid_tx, child.id()) {
+        let _ = tx.send(pid).await;
+    }
 
     // Drained concurrently, not after `wait()`: a chatty subprocess could
     // otherwise block forever on a full stderr pipe nobody's reading from
@@ -356,6 +367,7 @@ mod tests {
             true,
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -393,6 +405,7 @@ mod tests {
             "test-job",
             "pull",
             false,
+            None,
             None,
             None,
         )
@@ -434,6 +447,7 @@ mod tests {
             "transfer",
             true,
             Some(tx),
+            None,
             None,
         )
         .await
@@ -480,6 +494,7 @@ mod tests {
             false,
             None,
             Some(&files_from_path),
+            None,
         )
         .await
         .unwrap();

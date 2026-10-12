@@ -474,23 +474,38 @@ pub enum JobType {
 
         /// Maximum number of files to transcode concurrently (the ffmpeg
         /// phase only -- `rclone` manages its own internal parallelism via
-        /// `--transfers`/`--checkers`). Interactively prompted (a
-        /// cores-based default) when omitted and stdin is a terminal;
-        /// required otherwise.
+        /// `--download-transfers`/`--download-checkers`). Interactively
+        /// prompted (a cores-based default) when omitted and stdin is a
+        /// terminal; required otherwise.
         #[arg(long)]
         concurrency: Option<usize>,
 
-        /// rclone --transfers, used by both the pull and push rclone
-        /// invocations. Defaults to 8 when omitted.
+        /// rclone --transfers for the download (pull) phase. Defaults to 8
+        /// when omitted.
         #[arg(long)]
-        transfers: Option<usize>,
+        download_transfers: Option<usize>,
 
-        /// rclone --checkers, used by both rclone invocations. Defaults to
-        /// 16 when omitted.
+        /// rclone --checkers for the download (pull) phase. Defaults to 16
+        /// when omitted.
         #[arg(long)]
-        checkers: Option<usize>,
+        download_checkers: Option<usize>,
 
-        /// rclone --tpslimit, used by both rclone invocations. Unset by
+        /// Maximum number of concurrent per-file push (`rclone copyto`)
+        /// operations. Defaults to 8 when omitted. Separate from
+        /// `--download-transfers` to allow independent tuning of pull vs.
+        /// push phases (ADR-0129).
+        #[arg(long)]
+        upload_transfers: Option<usize>,
+
+        /// Maximum number of downloaded but not-yet-processed files
+        /// (pending transcode/push) before the pull phase is paused to allow
+        /// the pipeline to catch up. Defaults to `concurrency * 4` when
+        /// omitted. Enables automatic disk-pressure backpressure without
+        /// requiring manual tuning (ADR-0129).
+        #[arg(long)]
+        max_pending_downloads: Option<usize>,
+
+        /// rclone --tpslimit, used by the pull phase only. Unset by
         /// default -- no rate cap.
         #[arg(long)]
         tpslimit: Option<usize>,
