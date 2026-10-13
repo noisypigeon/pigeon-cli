@@ -21,18 +21,49 @@ pub(crate) enum InputFileType {
 }
 
 impl InputFileType {
-    /// The extension the bulk pull's `rclone --include` filter and the
-    /// per-file pipeline's local validation both match against. Lowercase,
-    /// no leading dot.
-    pub(crate) fn extension(self) -> &'static str {
+    /// Every on-disk spelling this input kind matches -- what the source
+    /// listing's `rclone --include` filters and the per-file pipeline's
+    /// local validation both check against. Lowercase, no leading dot.
+    ///
+    /// A kind may have more than one spelling (ADR-0139): `.jpg` and
+    /// `.jpeg` are the same format, and `parse` has accepted both as
+    /// *input* since ADR-0112 -- this is that same leniency finally applied
+    /// to file *matching*, which it never reached. A run against a
+    /// directory of `.jpg` files with `--input-file-type=jpeg` silently
+    /// matched nothing until this returned a set rather than one string.
+    ///
+    /// Only `Jpeg` has a second spelling; every other kind keeps exactly
+    /// one, deliberately unspeculative -- a new alias gets added when a
+    /// real run is observed to miss files, not in anticipation.
+    pub(crate) fn extensions(self) -> &'static [&'static str] {
         match self {
-            InputFileType::Png => "png",
-            InputFileType::Jpeg => "jpeg",
-            InputFileType::Heic => "heic",
-            InputFileType::Mov => "mov",
-            InputFileType::M4v => "m4v",
-            InputFileType::Mp4 => "mp4",
+            InputFileType::Png => &["png"],
+            InputFileType::Jpeg => &["jpg", "jpeg"],
+            InputFileType::Heic => &["heic"],
+            InputFileType::Mov => &["mov"],
+            InputFileType::M4v => &["m4v"],
+            InputFileType::Mp4 => &["mp4"],
         }
+    }
+
+    /// The one spelling used for display and for a default bucket prefix
+    /// (ADR-0138's `--source`/`--destination` inference) -- never for
+    /// matching, which always considers every entry in `extensions()`.
+    ///
+    /// For `Jpeg` this is `jpg`, not `jpeg` (ADR-0139): it agrees with
+    /// `output_extension()`, which has always returned `jpg` for this
+    /// kind, and with ADR-0112's own documented `source:png/` ->
+    /// `destination:jpg/` example.
+    pub(crate) fn canonical_extension(self) -> &'static str {
+        self.extensions()[0]
+    }
+
+    /// Whether `ext` (no leading dot, any case) is one of this kind's
+    /// spellings -- the membership test `manifest::gather_pending` uses in
+    /// place of an exact-string compare against a single extension.
+    pub(crate) fn matches_extension(self, ext: &str) -> bool {
+        let ext = ext.to_ascii_lowercase();
+        self.extensions().contains(&ext.as_str())
     }
 
     /// Case-insensitive; `jpg` is accepted as an alias for `jpeg`. Any
@@ -73,7 +104,7 @@ impl InputFileType {
 
 impl std::fmt::Display for InputFileType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.extension())
+        f.write_str(self.canonical_extension())
     }
 }
 
@@ -166,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn extension_and_display_agree() {
+    fn canonical_extension_and_display_agree() {
         for kind in [
             InputFileType::Png,
             InputFileType::Jpeg,
@@ -175,8 +206,58 @@ mod tests {
             InputFileType::M4v,
             InputFileType::Mp4,
         ] {
-            assert_eq!(kind.extension(), kind.to_string());
+            assert_eq!(kind.canonical_extension(), kind.to_string());
         }
+    }
+
+    /// The ADR-0139 regression: a `.jpg` file must be matched by a `jpeg`
+    /// run. Before this, `extension()` returned only `"jpeg"`, so the
+    /// source listing's `--include '*.jpeg'` silently matched nothing in a
+    /// directory of `.jpg` files.
+    #[test]
+    fn jpeg_matches_both_jpg_and_jpeg_spellings() {
+        assert_eq!(InputFileType::Jpeg.extensions(), &["jpg", "jpeg"]);
+        assert!(InputFileType::Jpeg.matches_extension("jpg"));
+        assert!(InputFileType::Jpeg.matches_extension("jpeg"));
+    }
+
+    #[test]
+    fn jpeg_canonical_extension_is_jpg_agreeing_with_its_output_extension() {
+        // Both halves of ADR-0138's prefix inference now agree: a jpeg run
+        // defaults to `source:jpg/` -> `destination:jpg/`, where the source
+        // half used to default to `jpeg/`.
+        assert_eq!(InputFileType::Jpeg.canonical_extension(), "jpg");
+        assert_eq!(InputFileType::Jpeg.output_extension(), "jpg");
+    }
+
+    #[test]
+    fn every_other_kind_has_exactly_one_spelling() {
+        for kind in [
+            InputFileType::Png,
+            InputFileType::Heic,
+            InputFileType::Mov,
+            InputFileType::M4v,
+            InputFileType::Mp4,
+        ] {
+            assert_eq!(
+                kind.extensions().len(),
+                1,
+                "{kind} gained an unintended alias"
+            );
+        }
+    }
+
+    #[test]
+    fn matches_extension_is_case_insensitive_and_rejects_other_formats() {
+        assert!(InputFileType::Jpeg.matches_extension("JPG"));
+        assert!(InputFileType::Jpeg.matches_extension("JpEg"));
+        assert!(!InputFileType::Jpeg.matches_extension("png"));
+        assert!(!InputFileType::Jpeg.matches_extension(""));
+        assert!(InputFileType::Png.matches_extension("PNG"));
+        assert!(!InputFileType::Png.matches_extension("jpg"));
+        // A video kind must not match a sibling video extension -- each
+        // run still transcodes exactly one input kind.
+        assert!(!InputFileType::Mov.matches_extension("mp4"));
     }
 
     #[test]

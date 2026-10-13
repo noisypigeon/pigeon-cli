@@ -39,19 +39,24 @@ fn relative_path_string(base: &Path, path: &Path) -> Option<String> {
 }
 
 /// Walks `source_dir` (everything the bulk pull has landed so far), keeping
-/// only files whose extension matches `input_file_type` (defensive -- the
-/// pull's own `--include` filter should already guarantee this; anything
-/// else found here is unexpected, not fatal, and is skipped with a
-/// `tracing::warn!`). Used as the pipeline's initial dispatch source
-/// (`transform::worker`), run once before the pull subprocess spawns.
-/// Whether a given file is actually already done is decided downstream by
-/// `worker::enqueue`, not here.
+/// only files whose extension is one of `input_file_type`'s spellings
+/// (defensive -- the source listing's own `--include` filters should
+/// already guarantee this; anything else found here is unexpected, not
+/// fatal, and is skipped with a `tracing::warn!`). Used as the pipeline's
+/// initial dispatch source (`transform::worker`), run once before the pull
+/// subprocess spawns. Whether a given file is actually already done is
+/// decided downstream by `worker::enqueue`, not here.
+///
+/// The check is a membership test over `InputFileType::extensions`, not an
+/// equality test against one canonical string: a `.jpg` file under a
+/// `--input-file-type=jpeg` run is legitimate and must not be dropped
+/// (ADR-0139). This was a second, independent gate failing the same way as
+/// the source listing's filter, and would have silently skipped any `.jpg`
+/// already staged on local disk even once that filter was fixed.
 pub(crate) fn gather_pending(
     source_dir: &Path,
     input_file_type: InputFileType,
 ) -> Result<Vec<PendingFile>, String> {
-    let expected_extension = input_file_type.extension();
-
     let mut pending = Vec::new();
     for absolute_path in collect_files(source_dir)? {
         let Some(relative_path) = relative_path_string(source_dir, &absolute_path) else {
@@ -60,11 +65,11 @@ pub(crate) fn gather_pending(
         let actual_extension = absolute_path
             .extension()
             .and_then(|ext| ext.to_str())
-            .map(|ext| ext.to_ascii_lowercase());
-        if actual_extension.as_deref() != Some(expected_extension) {
+            .unwrap_or_default();
+        if !input_file_type.matches_extension(actual_extension) {
             tracing::warn!(
                 path = %absolute_path.display(),
-                expected = expected_extension,
+                expected = ?input_file_type.extensions(),
                 "transform: found an unexpected extension under source/, skipping"
             );
             continue;
@@ -106,6 +111,26 @@ mod tests {
         let pending = gather_pending(&source_dir, InputFileType::Heic).unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].relative_path, "screenshots/img.heic");
+    }
+
+    /// ADR-0139's second gate: a `.jpg` staged on local disk under a
+    /// `jpeg` run must be picked up, not warned-and-skipped. Before the
+    /// membership test, this gate dropped them even once the source
+    /// listing's filter was fixed.
+    #[test]
+    fn gather_pending_accepts_every_spelling_of_one_input_kind() {
+        let dir = tempfile::tempdir().unwrap();
+        let source_dir = dir.path().join("source");
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(source_dir.join("a.jpg"), b"a").unwrap();
+        fs::write(source_dir.join("b.jpeg"), b"b").unwrap();
+        fs::write(source_dir.join("c.JPG"), b"c").unwrap();
+        fs::write(source_dir.join("stray.png"), b"a different format").unwrap();
+
+        let pending = gather_pending(&source_dir, InputFileType::Jpeg).unwrap();
+        let mut found: Vec<String> = pending.into_iter().map(|file| file.relative_path).collect();
+        found.sort();
+        assert_eq!(found, vec!["a.jpg", "b.jpeg", "c.JPG"]);
     }
 
     #[test]

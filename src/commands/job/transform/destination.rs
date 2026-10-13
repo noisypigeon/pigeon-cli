@@ -36,23 +36,31 @@ pub(crate) async fn list_existing_filenames(destination: &str) -> Result<HashSet
     Ok(entries.into_iter().map(|entry| entry.name).collect())
 }
 
-/// Lists every relative path under `source` matching `extension` (the same
-/// single-extension scope Phase A's own pull already applies), via a
-/// recursive, metadata-only `rclone lsjson` -- no file content is read or
-/// transferred. A source that doesn't exist (or exists but is empty)
-/// resolves to an empty list, same handling as `list_existing_filenames`.
+/// Lists every relative path under `source` matching any of `extensions`
+/// (one input kind's full set of on-disk spellings -- `.jpg` *and* `.jpeg`
+/// for `Jpeg`, per ADR-0139), via a recursive, metadata-only `rclone
+/// lsjson` -- no file content is read or transferred. A source that doesn't
+/// exist (or exists but is empty) resolves to an empty list, same handling
+/// as `list_existing_filenames`.
+///
+/// This listing is the **sole** input to the pull set: an empty result
+/// means `worker::run_transform_job` skips spawning `rclone` entirely, so a
+/// filter that matches nothing is indistinguishable from an empty source.
+/// That is precisely how ADR-0139's bug stayed invisible, and why the
+/// caller warns on an empty result.
+///
 /// Relative paths use `/`-separated components, matching
 /// `manifest::relative_path_string`'s convention -- both are half of
 /// `placement::compute_destination_name`'s hash input, so they must agree
 /// for the same logical file.
 pub(crate) async fn list_source_relative_paths(
     source: &str,
-    extension: &str,
+    extensions: &[&str],
 ) -> Result<Vec<String>, String> {
     let entries = (Lsjson {
         path: source.to_string(),
         recursive: true,
-        include_extension: Some(extension.to_string()),
+        include_extensions: extensions.iter().map(|ext| ext.to_string()).collect(),
         job: "transform",
     })
     .run()
@@ -122,11 +130,43 @@ mod tests {
         std::fs::write(dir.path().join("screenshots/img.png"), b"png bytes").unwrap();
         std::fs::write(dir.path().join("notes.txt"), b"not a png").unwrap();
 
-        let paths = list_source_relative_paths(dir.path().to_str().unwrap(), "png")
+        let paths = list_source_relative_paths(dir.path().to_str().unwrap(), &["png"])
             .await
             .unwrap();
 
         assert_eq!(paths, vec!["screenshots/img.png".to_string()]);
+    }
+
+    /// The ADR-0139 regression, against a real `rclone`: one input kind
+    /// with two spellings must match both. `--ignore-case` alone never
+    /// could -- it folds `.JPG` to `.jpg`, but cannot fold `jpg` to `jpeg`.
+    #[tokio::test]
+    async fn list_source_relative_paths_matches_every_spelling_of_one_input_kind() {
+        if check_rclone_available().await.is_err() {
+            eprintln!("skipping: rclone not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jpg"), b"jpg bytes").unwrap();
+        std::fs::write(dir.path().join("b.JPG"), b"uppercase jpg bytes").unwrap();
+        std::fs::write(dir.path().join("c.jpeg"), b"jpeg bytes").unwrap();
+        std::fs::write(dir.path().join("d.png"), b"a different format").unwrap();
+
+        let mut paths = list_source_relative_paths(dir.path().to_str().unwrap(), &["jpg", "jpeg"])
+            .await
+            .unwrap();
+        paths.sort();
+
+        assert_eq!(
+            paths,
+            vec![
+                "a.jpg".to_string(),
+                "b.JPG".to_string(),
+                "c.jpeg".to_string()
+            ],
+            "every jpg/jpeg spelling must match, and only those"
+        );
     }
 
     #[tokio::test]
@@ -139,7 +179,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist-yet");
 
-        let paths = list_source_relative_paths(missing.to_str().unwrap(), "png")
+        let paths = list_source_relative_paths(missing.to_str().unwrap(), &["png"])
             .await
             .unwrap();
 

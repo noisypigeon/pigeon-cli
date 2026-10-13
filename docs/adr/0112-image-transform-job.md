@@ -350,3 +350,18 @@ sites name only the fields they need instead of trailing a run of bare
 mechanics -- is what ADR-0132 completes; this ADR's three-phase pipeline,
 flags, and metric labels are unaffected. Decision point 1's `--report-bucket`
 becomes `--report-path`.
+
+## Amendment (2026-10-12): the `jpg` alias finally reaches file matching (ADR-0139)
+
+This ADR's Decision point 2 accepts `jpg` as an alias for `jpeg` on
+`--input-file-type`, and its Decision point 3 specifies the pull filter as
+`--include '*.<ext>' --ignore-case` -- two statements 13 lines apart that
+were never reconciled. `<ext>` resolved to the single string `"jpeg"`, so a
+run against a directory of `.jpg` files matched nothing, pulled nothing, and
+exited 0 reporting no errors; `--ignore-case` folds case but cannot fold
+`jpg` into `jpeg`. ADR-0139 makes an input kind own a *set* of on-disk
+spellings (`Jpeg` => `["jpg", "jpeg"]`), emits one `--include` per spelling,
+and replaces the equality check in `manifest::gather_pending` -- a second,
+independent gate that dropped `.jpg` files already staged on local disk --
+with a membership test. The `.jpg` output naming this ADR specifies is
+unchanged.

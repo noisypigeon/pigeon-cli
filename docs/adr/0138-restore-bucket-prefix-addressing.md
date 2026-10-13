@@ -212,3 +212,15 @@ without rewriting it.
   'destination:mp4/' --report-bucket reports --non-interactive ...`, plus
   the prefix-defaulted short form (`--source source --destination
   destination`) resolving to those same two addresses.
+
+## Amendment (2026-10-12): jpeg's default prefix becomes `jpg/` (ADR-0139)
+
+§3's prefix inference derives the source default from
+`input_file_type.extension()` and the destination default from
+`output_extension()`. For `Jpeg` those disagreed -- `jpeg` and `jpg`
+respectively -- so a `--input-file-type=jpeg` run with both flags bare
+addressed `source:jpeg/` but `destination:jpg/`. ADR-0139 introduces
+`canonical_extension()` (`jpg` for `Jpeg`) and uses it for the source
+default, so both halves now agree. Only runs that *omit* a prefix are
+affected; an explicit `--source 'source:jpeg/'` resolves exactly as this ADR
+specified, and the composed `alias:prefix/` form is unchanged.
