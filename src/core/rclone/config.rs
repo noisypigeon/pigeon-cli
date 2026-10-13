@@ -66,13 +66,94 @@ pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), S
     Ok(())
 }
 
-/// The rclone remote address for a configured bucket alias -- always the
-/// whole bucket's root. Unlike the raw `remote:path` strings this
-/// supersedes, there is no sub-path affordance: a bucket-config alias
-/// addresses one entire bucket, matching `deduplicate`'s existing
-/// `--source-bucket`/`--destination-bucket` model.
-pub(crate) fn remote_address(alias: &str) -> String {
-    format!("{alias}:")
+/// A configured bucket alias plus an optional prefix (sub-directory)
+/// within it -- `source` is the whole bucket root, `source:mp4/` is the
+/// `mp4/` directory inside it (ADR-0138, restoring the addressing ADR-0136
+/// removed). The spelling is deliberately rclone's own `remote:path`, since
+/// `write_sandboxed_config` keys each config section by alias: the composed
+/// address resolves natively with no further translation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteTarget {
+    alias: String,
+    /// Normalized by `parse`: no leading `/`, always a trailing `/` when
+    /// present, never empty (an empty prefix is `None`). `None` is the
+    /// whole bucket root.
+    prefix: Option<String>,
+}
+
+impl RemoteTarget {
+    /// Parses `alias` or `alias:prefix/`, splitting on the **first** colon
+    /// and validating the alias half against the keyring exactly as
+    /// ADR-0136/ADR-0137 did. A bare alias (or a trailing-colon-only
+    /// `alias:`) is the whole bucket root. Because the split takes the
+    /// first colon, an alias containing `:` is unaddressable in this form
+    /// -- a stated ADR-0138 consequence, not a guarded case.
+    pub(crate) fn parse(value: &str, store: &Store) -> Result<RemoteTarget, String> {
+        let (alias, raw_prefix) = match value.split_once(':') {
+            Some((alias, prefix)) => (alias, prefix),
+            None => (value, ""),
+        };
+        if !store.contains_alias(alias) {
+            return Err(format!("no bucket-config named '{alias}'"));
+        }
+        Ok(RemoteTarget {
+            alias: alias.to_string(),
+            prefix: normalize_prefix(raw_prefix)?,
+        })
+    }
+
+    /// The whole bucket root for an alias that is already known-valid --
+    /// `deduplicate`, which holds a resolved `BucketConfig` rather than a
+    /// raw flag string and keeps whole-bucket addressing (ADR-0138 §2, its
+    /// alias-keyed checkpoint identity would need rework to carry a
+    /// prefix). No `Store` needed, since there is nothing left to validate.
+    pub(crate) fn bucket_root(alias: &str) -> RemoteTarget {
+        RemoteTarget {
+            alias: alias.to_string(),
+            prefix: None,
+        }
+    }
+
+    /// Builds a target from an already-validated alias plus a prefix to use
+    /// when the caller's own value carried none -- `transform`'s
+    /// `--input-file-type`-derived default (ADR-0138 §3). A prefix already
+    /// present is kept verbatim; the default never overrides it.
+    pub(crate) fn with_default_prefix(mut self, default_prefix: &str) -> Result<Self, String> {
+        if self.prefix.is_none() {
+            self.prefix = normalize_prefix(default_prefix)?;
+        }
+        Ok(self)
+    }
+
+    /// The rclone address: `alias:` for a whole bucket, `alias:prefix/`
+    /// otherwise. The trailing `/` is guaranteed whenever a prefix is
+    /// present, so a caller appending an object key
+    /// (`format!("{}{key}", target.address())`) composes correctly without
+    /// having to add a separator itself.
+    pub(crate) fn address(&self) -> String {
+        match &self.prefix {
+            Some(prefix) => format!("{}:{prefix}", self.alias),
+            None => format!("{}:", self.alias),
+        }
+    }
+}
+
+/// Trims a raw prefix into `RemoteTarget`'s normalized form: `None` when
+/// empty, otherwise no leading `/` and exactly one trailing `/`. A `..`
+/// segment is rejected outright -- `rclone` would take it literally, so
+/// refusing is clearer than silently escaping the prefix that was asked
+/// for.
+fn normalize_prefix(raw: &str) -> Result<Option<String>, String> {
+    let trimmed = raw.trim_matches('/');
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    if trimmed.split('/').any(|segment| segment == "..") {
+        return Err(format!(
+            "invalid prefix '{raw}': a '..' path segment is not allowed"
+        ));
+    }
+    Ok(Some(format!("{trimmed}/")))
 }
 
 #[cfg(test)]
@@ -92,9 +173,109 @@ mod tests {
         }
     }
 
+    fn store_with(aliases: &[&str]) -> Store {
+        let mut store = Store::default();
+        for alias in aliases {
+            store.push(Entry::Bucket(sample_bucket(alias)));
+        }
+        store
+    }
+
     #[test]
-    fn remote_address_appends_a_trailing_colon() {
-        assert_eq!(remote_address("backup"), "backup:");
+    fn a_bare_alias_addresses_the_whole_bucket_root() {
+        let store = store_with(&["backup"]);
+        let target = RemoteTarget::parse("backup", &store).unwrap();
+        assert_eq!(target.address(), "backup:");
+    }
+
+    #[test]
+    fn a_trailing_colon_with_no_prefix_is_also_the_bucket_root() {
+        let store = store_with(&["backup"]);
+        assert_eq!(
+            RemoteTarget::parse("backup:", &store).unwrap().address(),
+            "backup:"
+        );
+    }
+
+    #[test]
+    fn a_prefix_is_normalized_to_exactly_one_trailing_slash() {
+        let store = store_with(&["source"]);
+        // With and without the trailing slash, and with a stray leading
+        // one, all normalize identically -- so appending an object key to
+        // `address()` always composes correctly.
+        for spelling in ["source:mp4", "source:mp4/", "source:/mp4/"] {
+            assert_eq!(
+                RemoteTarget::parse(spelling, &store).unwrap().address(),
+                "source:mp4/",
+                "spelling {spelling} did not normalize"
+            );
+        }
+    }
+
+    #[test]
+    fn a_nested_prefix_keeps_its_interior_separators() {
+        let store = store_with(&["source"]);
+        assert_eq!(
+            RemoteTarget::parse("source:video/mp4/", &store)
+                .unwrap()
+                .address(),
+            "source:video/mp4/"
+        );
+    }
+
+    #[test]
+    fn the_alias_half_is_validated_against_the_keyring() {
+        let store = store_with(&["source"]);
+        assert_eq!(
+            RemoteTarget::parse("nope:mp4/", &store),
+            Err("no bucket-config named 'nope'".to_string())
+        );
+        assert_eq!(
+            RemoteTarget::parse("nope", &store),
+            Err("no bucket-config named 'nope'".to_string())
+        );
+    }
+
+    #[test]
+    fn a_dot_dot_path_segment_is_rejected() {
+        let store = store_with(&["source"]);
+        assert!(RemoteTarget::parse("source:../escape/", &store).is_err());
+        assert!(RemoteTarget::parse("source:mp4/../other/", &store).is_err());
+        // A name merely *containing* dots is fine -- only a whole `..`
+        // segment is a traversal attempt.
+        assert_eq!(
+            RemoteTarget::parse("source:..hidden/", &store)
+                .unwrap()
+                .address(),
+            "source:..hidden/"
+        );
+    }
+
+    #[test]
+    fn with_default_prefix_fills_in_only_an_absent_prefix() {
+        let store = store_with(&["source"]);
+        let defaulted = RemoteTarget::parse("source", &store)
+            .unwrap()
+            .with_default_prefix("mp4")
+            .unwrap();
+        assert_eq!(defaulted.address(), "source:mp4/");
+
+        // An explicit prefix always wins -- the default never overrides it.
+        let explicit = RemoteTarget::parse("source:raw-video/", &store)
+            .unwrap()
+            .with_default_prefix("mp4")
+            .unwrap();
+        assert_eq!(explicit.address(), "source:raw-video/");
+    }
+
+    #[test]
+    fn with_an_empty_default_prefix_the_target_stays_the_bucket_root() {
+        let store = store_with(&["source"]);
+        let target = RemoteTarget::parse("source", &store)
+            .unwrap()
+            .with_default_prefix("")
+            .unwrap();
+        assert_eq!(target.address(), "source:");
     }
 
     #[test]

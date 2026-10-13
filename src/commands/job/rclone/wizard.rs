@@ -9,7 +9,7 @@ use crate::commands::job::shared_wizard::{
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
-use crate::core::rclone::config::{remote_address, write_sandboxed_config};
+use crate::core::rclone::config::{RemoteTarget, write_sandboxed_config};
 use crate::core::wizard::WizardInput;
 
 use super::worker;
@@ -22,64 +22,63 @@ use super::{RcloneCopyJob, RcloneDeleteJob};
 /// `rclone.conf`. Structurally identical to
 /// `shared_wizard::SourceBucketInput`'s flag/prompt/error shape; kept local
 /// since no second consumer exists yet. Shared by both `copy` and `delete`.
+///
+/// Accepts the composed `alias[:prefix/]` form (ADR-0138) -- a bare alias
+/// is the whole bucket root, as it was under ADR-0136. Unlike
+/// `transform`'s version there is no prefix default: this job has no
+/// file-type concept to derive one from, so an omitted prefix stays the
+/// root. The interactive picker yields a bucket root too; a prefix is
+/// expressible via the flag.
 struct SourceBucketInput<'a> {
     flag: Option<String>,
     store: &'a Store,
 }
 
 impl WizardInput for SourceBucketInput<'_> {
-    type Value = String;
+    type Value = RemoteTarget;
 
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(|alias| {
-            if self.store.contains_alias(&alias) {
-                Ok(alias)
-            } else {
-                Err(format!("no bucket-config named '{alias}'"))
-            }
-        })
+    fn flag_value(&self) -> Option<Result<RemoteTarget, String>> {
+        self.flag
+            .as_deref()
+            .map(|value| RemoteTarget::parse(value, self.store))
     }
 
-    fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket(None) {
-            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
+    fn prompt(&self) -> Result<RemoteTarget, String> {
+        match self.store.prompt_select_bucket() {
+            Ok(bucket_config) => Ok(RemoteTarget::bucket_root(&bucket_config.alias)),
             Err(message) => Err(message),
         }
     }
 
-    fn non_interactive_fallback(&self) -> Result<String, String> {
+    fn non_interactive_fallback(&self) -> Result<RemoteTarget, String> {
         Err("--source-bucket is required when not running interactively".to_string())
     }
 }
 
-/// Resolves `--destination-bucket`. Same shape as `SourceBucketInput`.
-/// `copy` only -- `delete` has no destination.
+/// Resolves `--destination-bucket`. Same shape as `SourceBucketInput`,
+/// composed form included. `copy` only -- `delete` has no destination.
 struct DestinationBucketInput<'a> {
     flag: Option<String>,
     store: &'a Store,
 }
 
 impl WizardInput for DestinationBucketInput<'_> {
-    type Value = String;
+    type Value = RemoteTarget;
 
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(|alias| {
-            if self.store.contains_alias(&alias) {
-                Ok(alias)
-            } else {
-                Err(format!("no bucket-config named '{alias}'"))
-            }
-        })
+    fn flag_value(&self) -> Option<Result<RemoteTarget, String>> {
+        self.flag
+            .as_deref()
+            .map(|value| RemoteTarget::parse(value, self.store))
     }
 
-    fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket(None) {
-            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
+    fn prompt(&self) -> Result<RemoteTarget, String> {
+        match self.store.prompt_select_bucket() {
+            Ok(bucket_config) => Ok(RemoteTarget::bucket_root(&bucket_config.alias)),
             Err(message) => Err(message),
         }
     }
 
-    fn non_interactive_fallback(&self) -> Result<String, String> {
+    fn non_interactive_fallback(&self) -> Result<RemoteTarget, String> {
         Err("--destination-bucket is required when not running interactively".to_string())
     }
 }
@@ -199,7 +198,7 @@ async fn dispatch_copy_async(
     })
     .resolve(non_interactive)
     {
-        Ok(alias) => remote_address(&alias),
+        Ok(target) => target.address(),
         Err(err) => return fail(err),
     };
     let destination = match (DestinationBucketInput {
@@ -208,7 +207,7 @@ async fn dispatch_copy_async(
     })
     .resolve(non_interactive)
     {
-        Ok(alias) => remote_address(&alias),
+        Ok(target) => target.address(),
         Err(err) => return fail(err),
     };
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
@@ -372,7 +371,7 @@ async fn dispatch_delete_async(
     })
     .resolve(non_interactive)
     {
-        Ok(alias) => remote_address(&alias),
+        Ok(target) => target.address(),
         Err(err) => return fail(err),
     };
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {

@@ -340,3 +340,20 @@ explicitly-passed flag is still validated against the keyring exactly as
 this ADR originally specified; inference only applies when the flag is
 omitted. `rclone copy`/`delete`/`deduplicate`'s own `--source-bucket`/
 `--destination-bucket` are untouched -- this amendment is `transform`-only.
+
+## Amendment (2026-10-12): sub-path addressing is restored as `alias:prefix/` (ADR-0138)
+
+ADR-0138 reverses §2's "No sub-path affordance" and §3's "There is no
+sub-path affordance and no raw-passthrough mode at all", resolving this
+ADR's own deferred Out of scope item ("A future ADR can add this if a real
+need for it surfaces"). That need was real and immediate: the deployment
+addresses one `source` and one `destination` bucket holding per-extension
+*directories*, so collapsing every address to a bucket root was a
+regression, not a deferral -- `remote_address` becomes a `RemoteTarget`
+parsed from `alias[:prefix/]`, where a bare alias still means the whole
+bucket root exactly as this ADR specified. Everything else here stands:
+`rclone` remains sandboxed to pigeon's generated config, and the alias
+half is still validated against `Store::contains_alias`. Applies to
+`transform` and `rclone copy`/`delete`; `deduplicate` keeps whole-bucket
+addressing, since §4's alias-keyed checkpoint identity would need rework
+first.

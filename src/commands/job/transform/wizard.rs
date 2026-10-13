@@ -14,7 +14,7 @@ use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput, Tps
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
-use crate::core::rclone::config::{remote_address, write_sandboxed_config};
+use crate::core::rclone::config::{RemoteTarget, write_sandboxed_config};
 use crate::core::wizard::WizardInput;
 
 use super::format::{InputFileType, VideoQuality};
@@ -84,97 +84,70 @@ impl WizardInput for VideoQualityInput {
     }
 }
 
-/// Resolves `--source`, a pigeon keyring `BucketConfig` alias (ADR-0136,
-/// reversing ADR-0101/ADR-0112's original raw-passthrough design) --
-/// `rclone` only ever sees a config file pigeon itself generates from this
-/// alias. Structurally identical to `rclone::wizard`'s own version of the
-/// same prompt -- kept local rather than hoisted, since this is only the
-/// second consumer of that shape, per this codebase's "duplicate until the
-/// third consumer" precedent.
+/// Resolves `--source`, a pigeon keyring `BucketConfig` alias optionally
+/// composed with a prefix within it -- `source` is the whole bucket,
+/// `source:mp4/` its `mp4/` directory (ADR-0138, restoring the addressing
+/// ADR-0136 removed and ADR-0137 compounded). `rclone` only ever sees a
+/// config file pigeon itself generates from the alias half, which is
+/// validated against the keyring exactly as before.
 ///
-/// `default_alias` is `input_file_type.extension()` (ADR-0137) -- the
-/// bucket-config alias this job assumes holds `--input-file-type`'s raw
-/// input content, by naming convention only, never auto-detected. Only
-/// consulted when `--source` is omitted: `flag_value` never looks at it,
-/// so an explicit flag is always validated and used verbatim regardless of
-/// what the inferred default would have been.
+/// `default_prefix` is `input_file_type.extension()`: the prefix used when
+/// the flag names a bucket but no prefix (`--source source` with
+/// `--input-file-type mp4` → `source:mp4/`). An explicitly-given prefix is
+/// always kept verbatim. The **alias** half is never inferred -- that was
+/// ADR-0137's mechanism, reversed by ADR-0138 because it assumed a
+/// per-file-type bucket naming convention this deployment does not use.
 struct SourceBucketInput<'a> {
     flag: Option<String>,
     store: &'a Store,
-    default_alias: &'a str,
+    default_prefix: &'a str,
 }
 
 impl WizardInput for SourceBucketInput<'_> {
-    type Value = String;
+    type Value = RemoteTarget;
 
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(|alias| {
-            if self.store.contains_alias(&alias) {
-                Ok(alias)
-            } else {
-                Err(format!("no bucket-config named '{alias}'"))
-            }
+    fn flag_value(&self) -> Option<Result<RemoteTarget, String>> {
+        self.flag.as_deref().map(|value| {
+            RemoteTarget::parse(value, self.store)?.with_default_prefix(self.default_prefix)
         })
     }
 
-    fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket(Some(self.default_alias)) {
-            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
-            Err(message) => Err(message),
-        }
+    fn prompt(&self) -> Result<RemoteTarget, String> {
+        let bucket_config = self.store.prompt_select_bucket()?;
+        RemoteTarget::bucket_root(&bucket_config.alias).with_default_prefix(self.default_prefix)
     }
 
-    fn non_interactive_fallback(&self) -> Result<String, String> {
-        if self.store.contains_alias(self.default_alias) {
-            Ok(self.default_alias.to_string())
-        } else {
-            Err(format!(
-                "--source is required when not running interactively (no bucket-config \
-                 named '{}' to default to, inferred from --input-file-type)",
-                self.default_alias
-            ))
-        }
+    fn non_interactive_fallback(&self) -> Result<RemoteTarget, String> {
+        Err("--source is required when not running interactively".to_string())
     }
 }
 
-/// Resolves `--destination`. Same shape as `SourceBucketInput`;
-/// `default_alias` is `input_file_type.output_extension()` (ADR-0137).
+/// Resolves `--destination`. Same shape as `SourceBucketInput`, composed
+/// form included; `default_prefix` is `input_file_type.output_extension()`
+/// (ADR-0138), so a `--destination destination` for an mp4 run addresses
+/// `destination:mp4/`.
 struct DestinationBucketInput<'a> {
     flag: Option<String>,
     store: &'a Store,
-    default_alias: &'a str,
+    default_prefix: &'a str,
 }
 
 impl WizardInput for DestinationBucketInput<'_> {
-    type Value = String;
+    type Value = RemoteTarget;
 
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(|alias| {
-            if self.store.contains_alias(&alias) {
-                Ok(alias)
-            } else {
-                Err(format!("no bucket-config named '{alias}'"))
-            }
+    fn flag_value(&self) -> Option<Result<RemoteTarget, String>> {
+        self.flag.as_deref().map(|value| {
+            RemoteTarget::parse(value, self.store)?.with_default_prefix(self.default_prefix)
         })
     }
 
-    fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket(Some(self.default_alias)) {
-            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
-            Err(message) => Err(message),
-        }
+    fn prompt(&self) -> Result<RemoteTarget, String> {
+        let bucket_config = self.store.prompt_select_bucket()?;
+        RemoteTarget::bucket_root(&bucket_config.alias).with_default_prefix(self.default_prefix)
     }
 
-    fn non_interactive_fallback(&self) -> Result<String, String> {
-        if self.store.contains_alias(self.default_alias) {
-            Ok(self.default_alias.to_string())
-        } else {
-            Err(format!(
-                "--destination is required when not running interactively (no bucket-config \
-                 named '{}' to default to, inferred from --input-file-type)",
-                self.default_alias
-            ))
-        }
+    fn non_interactive_fallback(&self) -> Result<RemoteTarget, String> {
+        Err("--destination is required when not running interactively".to_string())
     }
 }
 
@@ -450,21 +423,21 @@ async fn dispatch_async(
     let source_path = match (SourceBucketInput {
         flag: source,
         store: &keyring_store,
-        default_alias: input_file_type.extension(),
+        default_prefix: input_file_type.extension(),
     })
     .resolve(non_interactive)
     {
-        Ok(alias) => remote_address(&alias),
+        Ok(target) => target.address(),
         Err(err) => return fail(err),
     };
     let destination_path = match (DestinationBucketInput {
         flag: destination,
         store: &keyring_store,
-        default_alias: input_file_type.output_extension(),
+        default_prefix: input_file_type.output_extension(),
     })
     .resolve(non_interactive)
     {
-        Ok(alias) => remote_address(&alias),
+        Ok(target) => target.address(),
         Err(err) => return fail(err),
     };
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
@@ -711,86 +684,135 @@ mod tests {
         store
     }
 
+    /// The exact regression ADR-0138 fixes: a bare bucket alias plus
+    /// `--input-file-type mp4` must address that bucket's `mp4/` directory,
+    /// not its root.
     #[test]
-    fn source_bucket_input_non_interactive_fallback_succeeds_when_the_inferred_alias_exists() {
-        let store = store_with_bucket("heic");
+    fn source_bucket_input_defaults_the_prefix_to_the_input_extension() {
+        let store = store_with_bucket("source");
         let input = SourceBucketInput {
-            flag: None,
+            flag: Some("source".to_string()),
             store: &store,
-            default_alias: "heic",
-        };
-        assert_eq!(input.non_interactive_fallback(), Ok("heic".to_string()));
-    }
-
-    #[test]
-    fn source_bucket_input_non_interactive_fallback_errors_naming_the_inferred_alias_when_absent() {
-        let store = Store::default();
-        let input = SourceBucketInput {
-            flag: None,
-            store: &store,
-            default_alias: "heic",
+            default_prefix: "mp4",
         };
         assert_eq!(
-            input.non_interactive_fallback(),
-            Err(
-                "--source is required when not running interactively (no bucket-config named \
-                 'heic' to default to, inferred from --input-file-type)"
-                    .to_string()
-            )
+            input.flag_value().unwrap().unwrap().address(),
+            "source:mp4/"
         );
     }
 
     #[test]
-    fn source_bucket_input_flag_value_overrides_inference_even_when_it_differs_from_the_default() {
-        let store = store_with_bucket("my-custom-alias");
+    fn source_bucket_input_keeps_an_explicit_prefix_verbatim() {
+        let store = store_with_bucket("source");
         let input = SourceBucketInput {
-            flag: Some("my-custom-alias".to_string()),
+            flag: Some("source:raw-video/".to_string()),
             store: &store,
-            default_alias: "heic",
-        };
-        assert_eq!(input.flag_value(), Some(Ok("my-custom-alias".to_string())));
-    }
-
-    #[test]
-    fn destination_bucket_input_non_interactive_fallback_succeeds_when_the_inferred_alias_exists() {
-        let store = store_with_bucket("jpg");
-        let input = DestinationBucketInput {
-            flag: None,
-            store: &store,
-            default_alias: "jpg",
-        };
-        assert_eq!(input.non_interactive_fallback(), Ok("jpg".to_string()));
-    }
-
-    #[test]
-    fn destination_bucket_input_non_interactive_fallback_errors_naming_the_inferred_alias_when_absent()
-     {
-        let store = Store::default();
-        let input = DestinationBucketInput {
-            flag: None,
-            store: &store,
-            default_alias: "jpg",
+            default_prefix: "mp4",
         };
         assert_eq!(
-            input.non_interactive_fallback(),
-            Err(
-                "--destination is required when not running interactively (no bucket-config \
-                 named 'jpg' to default to, inferred from --input-file-type)"
-                    .to_string()
-            )
+            input.flag_value().unwrap().unwrap().address(),
+            "source:raw-video/"
         );
     }
 
     #[test]
-    fn destination_bucket_input_flag_value_overrides_inference_even_when_it_differs_from_the_default()
-     {
-        let store = store_with_bucket("my-custom-alias");
-        let input = DestinationBucketInput {
-            flag: Some("my-custom-alias".to_string()),
+    fn source_bucket_input_rejects_an_unknown_alias_in_the_composed_form() {
+        let store = store_with_bucket("source");
+        let input = SourceBucketInput {
+            flag: Some("nope:mp4/".to_string()),
             store: &store,
-            default_alias: "jpg",
+            default_prefix: "mp4",
         };
-        assert_eq!(input.flag_value(), Some(Ok("my-custom-alias".to_string())));
+        assert_eq!(
+            input.flag_value(),
+            Some(Err("no bucket-config named 'nope'".to_string()))
+        );
+    }
+
+    /// ADR-0138 reverses ADR-0137's alias inference: with no `--source` at
+    /// all there is no alias to guess, so a non-interactive run errors.
+    #[test]
+    fn source_bucket_input_non_interactive_fallback_errors_without_a_flag() {
+        let store = store_with_bucket("source");
+        let input = SourceBucketInput {
+            flag: None,
+            store: &store,
+            default_prefix: "mp4",
+        };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Err("--source is required when not running interactively".to_string())
+        );
+    }
+
+    #[test]
+    fn destination_bucket_input_defaults_the_prefix_to_the_output_extension() {
+        let store = store_with_bucket("destination");
+        let input = DestinationBucketInput {
+            flag: Some("destination".to_string()),
+            store: &store,
+            default_prefix: "mp4",
+        };
+        assert_eq!(
+            input.flag_value().unwrap().unwrap().address(),
+            "destination:mp4/"
+        );
+    }
+
+    #[test]
+    fn destination_bucket_input_keeps_an_explicit_prefix_verbatim() {
+        let store = store_with_bucket("destination");
+        let input = DestinationBucketInput {
+            flag: Some("destination:archive/2026/".to_string()),
+            store: &store,
+            default_prefix: "mp4",
+        };
+        assert_eq!(
+            input.flag_value().unwrap().unwrap().address(),
+            "destination:archive/2026/"
+        );
+    }
+
+    #[test]
+    fn destination_bucket_input_non_interactive_fallback_errors_without_a_flag() {
+        let store = store_with_bucket("destination");
+        let input = DestinationBucketInput {
+            flag: None,
+            store: &store,
+            default_prefix: "mp4",
+        };
+        assert_eq!(
+            input.non_interactive_fallback(),
+            Err("--destination is required when not running interactively".to_string())
+        );
+    }
+
+    /// Source and destination can address the *same* bucket, distinguished
+    /// only by prefix -- the layout ADR-0137's alias inference could not
+    /// express, and which collided outright for video kinds (every one of
+    /// them outputs `mp4`).
+    #[test]
+    fn one_bucket_can_serve_as_both_source_and_destination_via_differing_prefixes() {
+        let store = store_with_bucket("media");
+        let source = (SourceBucketInput {
+            flag: Some("media".to_string()),
+            store: &store,
+            default_prefix: "mov",
+        })
+        .flag_value()
+        .unwrap()
+        .unwrap();
+        let destination = (DestinationBucketInput {
+            flag: Some("media".to_string()),
+            store: &store,
+            default_prefix: "mp4",
+        })
+        .flag_value()
+        .unwrap()
+        .unwrap();
+        assert_eq!(source.address(), "media:mov/");
+        assert_eq!(destination.address(), "media:mp4/");
+        assert_ne!(source.address(), destination.address());
     }
 
     #[test]
