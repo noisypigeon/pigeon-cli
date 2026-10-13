@@ -21,8 +21,7 @@ use super::worker;
 /// Originated here, hoisted into `shared_wizard` once `pull_transform`
 /// needed the identical prompt, and returned here by ADR-0131 when that
 /// job's removal left `email_sync` as its only consumer -- the same
-/// un-hoisting ADR-0094 did to `ConcurrencyInput`. `decrypt_files` has its
-/// own separate, mandatory variant and never shared this one.
+/// un-hoisting ADR-0094 did to `ConcurrencyInput`.
 ///
 /// `--encryption-key` always wins outright. Otherwise, only when `uploading`
 /// (there's an upload target at all -- nothing to encrypt otherwise): if the

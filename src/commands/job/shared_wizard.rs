@@ -93,8 +93,9 @@ impl WizardInput for UploadTargetInput<'_> {
 /// (tuned for IMAP/S3-bound jobs) is the wrong default. Originated in
 /// `deduplicate/wizard.rs` (ADR-0088); hoisted here once two more jobs
 /// needed the identical logic (ADR-0090, this codebase's usual "duplicate
-/// until the third consumer" precedent). Still three consumers after
-/// ADR-0131: `deduplicate`, `decrypt_files`, and `transform`.
+/// until the third consumer" precedent). Two consumers remain after
+/// ADR-0131 and ADR-0134 (which removed `decrypt_files`): `deduplicate`
+/// and `transform`.
 pub(crate) fn default_concurrency() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())

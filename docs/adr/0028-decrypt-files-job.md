@@ -2,7 +2,7 @@
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-24.
-- **Status**: Accepted.
+- **Status**: Superseded by ADR-0134 — job removed.
 
 ## Context
 

@@ -18,12 +18,10 @@ pub(crate) fn generate_hex_key() -> String {
 
 /// Behavior shared by every place this CLI needs to turn plaintext bytes
 /// into bytes safe to store somewhere an attacker might read without the
-/// key, and back again. One real implementor today (`Aes256GcmSivEncryptor`,
-/// this module): `encrypt` backs `pigeon job run email-sync`'s upload phase
-/// (ADR-0025); `decrypt` backs `pigeon job run decrypt-files` (ADR-0028).
+/// key. One real implementor today (`Aes256GcmSivEncryptor`, this module):
+/// `encrypt` backs `pigeon job run email-sync`'s upload phase (ADR-0025).
 pub(crate) trait Encryptor {
     fn encrypt(&self, plaintext: &[u8]) -> Result<Vec<u8>, String>;
-    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String>;
 }
 
 /// AES-256-GCM-SIV (RFC 8452) with a nonce deterministically derived from
@@ -31,10 +29,9 @@ pub(crate) trait Encryptor {
 /// always byte-identical for the same `(key, plaintext)` pair. This is what
 /// lets `client::upload_if_changed`'s MD5-vs-S3-ETag duplicate detection
 /// keep working unchanged against ciphertext (ADR-0025).
-/// `Clone` (ADR-0090) so `decrypt_files::worker::decrypt_one` can move an
-/// owned copy into a `tokio::task::spawn_blocking` closure -- cheap, since
-/// `AesGcmSiv` itself already derives `Clone` and `nonce_key` is a plain
-/// byte array.
+/// `Clone` (ADR-0090) since `AesGcmSiv` itself already derives `Clone` and
+/// `nonce_key` is a plain byte array -- cheap to copy wherever a job needs
+/// an owned encryptor per concurrent task.
 #[derive(Clone)]
 pub(crate) struct Aes256GcmSivEncryptor {
     cipher: Aes256GcmSiv,
@@ -92,16 +89,6 @@ impl Encryptor for Aes256GcmSivEncryptor {
         out.extend_from_slice(&ciphertext);
         Ok(out)
     }
-
-    fn decrypt(&self, ciphertext: &[u8]) -> Result<Vec<u8>, String> {
-        if ciphertext.len() < NONCE_LEN {
-            return Err("ciphertext too short to contain a nonce".to_string());
-        }
-        let (nonce_bytes, sealed) = ciphertext.split_at(NONCE_LEN);
-        self.cipher
-            .decrypt(Nonce::from_slice(nonce_bytes), sealed)
-            .map_err(|err| format!("decryption failed: {err}"))
-    }
 }
 
 #[cfg(test)]
@@ -110,14 +97,6 @@ mod tests {
 
     const KEY_HEX: &str = "0101010101010101010101010101010101010101010101010101010101010101";
     const OTHER_KEY_HEX: &str = "0202020202020202020202020202020202020202020202020202020202020202";
-
-    #[test]
-    fn encrypt_decrypt_round_trips() {
-        let encryptor = Aes256GcmSivEncryptor::from_hex_key(KEY_HEX).unwrap();
-        let plaintext = b"hello, pigeon";
-        let ciphertext = encryptor.encrypt(plaintext).unwrap();
-        assert_eq!(encryptor.decrypt(&ciphertext).unwrap(), plaintext);
-    }
 
     #[test]
     fn encrypt_is_deterministic_for_same_key_and_plaintext() {
@@ -155,21 +134,6 @@ mod tests {
     fn from_hex_key_rejects_non_hex() {
         let not_hex = "z".repeat(64);
         assert!(Aes256GcmSivEncryptor::from_hex_key(&not_hex).is_err());
-    }
-
-    #[test]
-    fn decrypt_rejects_tampered_ciphertext() {
-        let encryptor = Aes256GcmSivEncryptor::from_hex_key(KEY_HEX).unwrap();
-        let mut ciphertext = encryptor.encrypt(b"trust but verify").unwrap();
-        let last = ciphertext.len() - 1;
-        ciphertext[last] ^= 0xFF;
-        assert!(encryptor.decrypt(&ciphertext).is_err());
-    }
-
-    #[test]
-    fn decrypt_rejects_short_input() {
-        let encryptor = Aes256GcmSivEncryptor::from_hex_key(KEY_HEX).unwrap();
-        assert!(encryptor.decrypt(b"too short").is_err());
     }
 
     #[test]

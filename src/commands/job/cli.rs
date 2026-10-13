@@ -113,50 +113,6 @@ pub enum JobType {
         non_interactive: bool,
     },
 
-    /// Decrypts every `*.enc` file under `--input-dir` into `--output-dir`
-    /// (`.enc` suffix stripped, relative structure preserved), using a
-    /// configured encryption key (ADR-0028).
-    DecryptFiles {
-        /// Directory containing `*.enc` files to decrypt. Interactively
-        /// prompted when omitted and stdin is a terminal; required
-        /// otherwise.
-        #[arg(long)]
-        input_dir: Option<PathBuf>,
-
-        /// Directory decrypted files are written under, mirroring
-        /// `--input-dir`'s relative structure. Must not be the same
-        /// directory as `--input-dir`. Interactively prompted when omitted
-        /// and stdin is a terminal; required otherwise.
-        #[arg(long)]
-        output_dir: Option<PathBuf>,
-
-        /// Alias of a configured encryption key (see `pigeon keyring add
-        /// encryption-key`) to decrypt with. Interactively selected when
-        /// omitted and stdin is a terminal; required otherwise.
-        #[arg(long)]
-        encryption_key: Option<String>,
-
-        /// Maximum number of files to decrypt concurrently.
-        #[arg(long)]
-        concurrency: Option<usize>,
-
-        /// Alias of a configured bucket-config this run's report, the
-        /// shared observability log, and a transcript of its printed
-        /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
-        /// interactively selected when omitted and stdin is a terminal;
-        /// required otherwise.
-        #[arg(long)]
-        report_bucket: Option<String>,
-
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
-        /// resolves via its non-interactive fallback (or errors if none
-        /// exists) instead of asking, and the final "proceed?"
-        /// confirmation is auto-answered yes.
-        #[arg(long)]
-        non_interactive: bool,
-    },
-
     /// Fetches raw `.eml` files and unpacked attachments (no Markdown/
     /// frontmatter transform) for one or more authenticated email
     /// identities, deduplicating attachments by content, and optionally
@@ -538,7 +494,6 @@ impl Observable for JobType {
     fn command_name(&self) -> &'static str {
         match self {
             JobType::EmailSync { .. } => "job.email-sync",
-            JobType::DecryptFiles { .. } => "job.decrypt-files",
             JobType::EmailPull { .. } => "job.email-pull",
             JobType::Deduplicate { .. } => "job.deduplicate",
             JobType::Rclone(args) => match args.action {
