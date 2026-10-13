@@ -221,7 +221,16 @@ impl Store {
     /// Same as `prompt_select`, scoped to bucket-configs only -- used by
     /// `job::wizard::resolve_remote_output` for its upload-target picker,
     /// which should never offer an email identity as a choice.
-    pub fn prompt_select_bucket(&self) -> Result<&BucketConfig, String> {
+    ///
+    /// `default_alias`, when `Some` and matching a configured
+    /// bucket-config's alias exactly, becomes the picker's pre-highlighted
+    /// default row instead of index 0 -- `transform::wizard`'s inferred
+    /// source/destination alias (ADR-0137). Every other caller passes
+    /// `None`, preserving the always-index-0 behavior unchanged.
+    pub fn prompt_select_bucket(
+        &self,
+        default_alias: Option<&str>,
+    ) -> Result<&BucketConfig, String> {
         let bucket_configs: Vec<&BucketConfig> = self.bucket_configs().collect();
         match bucket_configs.as_slice() {
             [] => Err(
@@ -241,7 +250,7 @@ impl Store {
                 let selection = Select::with_theme(&ColorfulTheme::default())
                     .with_prompt("Select a bucket-config")
                     .items(&labels)
-                    .default(0)
+                    .default(default_bucket_index(bucket_configs, default_alias))
                     .interact()
                     .map_err(|err| format!("failed to read bucket-config selection: {err}"))?;
                 Ok(bucket_configs[selection])
@@ -275,6 +284,22 @@ impl Store {
             }
         }
     }
+}
+
+/// The `Select` default index for `prompt_select_bucket`'s 2-or-more-config
+/// branch: the position of `default_alias` among `bucket_configs`, or `0`
+/// when it's `None` or doesn't match any configured alias. Extracted as a
+/// free function since `Select::interact()` needs a real TTY and can't be
+/// driven from `cargo test` -- this is the only part of that branch that
+/// can be unit-tested directly.
+fn default_bucket_index(bucket_configs: &[&BucketConfig], default_alias: Option<&str>) -> usize {
+    default_alias
+        .and_then(|alias| {
+            bucket_configs
+                .iter()
+                .position(|bucket_config| bucket_config.alias == alias)
+        })
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -568,14 +593,43 @@ secret = "app-password"
         let mut store = Store::default();
         store.push(Entry::Email(sample_identity("willow")));
         store.push(Entry::Bucket(sample_bucket_config("backup")));
-        assert_eq!(store.prompt_select_bucket().unwrap().alias, "backup");
+        assert_eq!(store.prompt_select_bucket(None).unwrap().alias, "backup");
     }
 
     #[test]
     fn prompt_select_bucket_errors_when_none_configured() {
         let mut store = Store::default();
         store.push(Entry::Email(sample_identity("willow")));
-        assert!(store.prompt_select_bucket().is_err());
+        assert!(store.prompt_select_bucket(None).is_err());
+    }
+
+    #[test]
+    fn prompt_select_bucket_with_two_or_more_configs_does_not_panic_without_a_tty() {
+        let mut store = Store::default();
+        store.push(Entry::Bucket(sample_bucket_config("heic")));
+        store.push(Entry::Bucket(sample_bucket_config("jpg")));
+        // No TTY under `cargo test`'s captured stdin -- this asserts a
+        // clean error from `Select::interact()`, not a panic, which is the
+        // worst case `default_bucket_index`'s lookup could cause here (an
+        // out-of-bounds index into `bucket_configs`).
+        assert!(store.prompt_select_bucket(Some("jpg")).is_err());
+        assert!(store.prompt_select_bucket(None).is_err());
+    }
+
+    #[test]
+    fn default_bucket_index_matches_the_default_alias_when_present() {
+        let a = sample_bucket_config("heic");
+        let b = sample_bucket_config("jpg");
+        assert_eq!(default_bucket_index(&[&a, &b], Some("jpg")), 1);
+        assert_eq!(default_bucket_index(&[&a, &b], Some("heic")), 0);
+    }
+
+    #[test]
+    fn default_bucket_index_falls_back_to_zero_when_default_alias_is_absent_or_unmatched() {
+        let a = sample_bucket_config("heic");
+        let b = sample_bucket_config("jpg");
+        assert_eq!(default_bucket_index(&[&a, &b], None), 0);
+        assert_eq!(default_bucket_index(&[&a, &b], Some("png")), 0);
     }
 
     #[test]

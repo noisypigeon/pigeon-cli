@@ -41,7 +41,7 @@ impl WizardInput for SourceBucketInput<'_> {
     }
 
     fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket() {
+        match self.store.prompt_select_bucket(None) {
             Ok(bucket_config) => Ok(bucket_config.alias.clone()),
             Err(message) => Err(message),
         }
@@ -73,7 +73,7 @@ impl WizardInput for DestinationBucketInput<'_> {
     }
 
     fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket() {
+        match self.store.prompt_select_bucket(None) {
             Ok(bucket_config) => Ok(bucket_config.alias.clone()),
             Err(message) => Err(message),
         }

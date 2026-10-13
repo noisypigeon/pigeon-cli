@@ -328,3 +328,15 @@ silently rewriting it.
   against each real S3-compatible backend this deployment uses, confirming
   `provider = "Other"` actually works end-to-end and that the run succeeds
   with **no** `rclone.conf` present anywhere on the host.
+
+## Amendment (2026-10-12): `transform`'s `--source-bucket`/`--destination-bucket` become optional, inferred from `--input-file-type` (ADR-0137)
+
+ADR-0137 renames `transform`'s `--source-bucket`/`--destination-bucket` to
+`--source`/`--destination` and makes both optional: when omitted, the
+bucket-config alias defaults to `input_file_type.extension()` (source) or
+`input_file_type.output_extension()` (destination) -- a documented
+bucket-naming convention, not auto-detected content inspection. An
+explicitly-passed flag is still validated against the keyring exactly as
+this ADR originally specified; inference only applies when the flag is
+omitted. `rclone copy`/`delete`/`deduplicate`'s own `--source-bucket`/
+`--destination-bucket` are untouched -- this amendment is `transform`-only.

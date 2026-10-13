@@ -893,15 +893,14 @@ fn job_run_help_lists_transform() {
 }
 
 #[test]
-fn job_run_transform_help_shows_input_file_type_source_bucket_destination_bucket_and_rclone_flags()
-{
+fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_flags() {
     pigeon()
         .args(["job", "run", "transform", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("--input-file-type"))
-        .stdout(predicate::str::contains("--source-bucket"))
-        .stdout(predicate::str::contains("--destination-bucket"))
+        .stdout(predicate::str::contains("--source"))
+        .stdout(predicate::str::contains("--destination"))
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--concurrency"))
         .stdout(predicate::str::contains("--download-transfers"))
@@ -909,6 +908,10 @@ fn job_run_transform_help_shows_input_file_type_source_bucket_destination_bucket
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
+        // ADR-0137: renamed from --source-bucket/--destination-bucket now
+        // that both are optional and inferred, not always-mandatory.
+        .stdout(predicate::str::contains("--source-bucket").not())
+        .stdout(predicate::str::contains("--destination-bucket").not())
         // ADR-0136: bucket-config aliases, not raw rclone path strings, and
         // no separate upload phase of the shape --upload-concurrency sizes.
         .stdout(predicate::str::contains("--source-path").not())
@@ -926,9 +929,9 @@ fn job_run_transform_without_input_file_type_fails_fast_non_interactively() {
             "job",
             "run",
             "transform",
-            "--source-bucket",
+            "--source",
             "source",
-            "--destination-bucket",
+            "--destination",
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
@@ -956,9 +959,9 @@ fn job_run_transform_with_invalid_input_file_type_fails_fast() {
             "transform",
             "--input-file-type",
             "gif",
-            "--source-bucket",
+            "--source",
             "source",
-            "--destination-bucket",
+            "--destination",
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
@@ -973,10 +976,12 @@ fn job_run_transform_with_invalid_input_file_type_fails_fast() {
 }
 
 #[test]
-fn job_run_transform_without_source_bucket_fails_fast_non_interactively() {
+fn job_run_transform_without_source_fails_fast_when_no_inferred_bucket_config_exists() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
-    write_bucket_config(&config_dir, "dest");
+    // "png"'s inferred source alias is never configured here -- only the
+    // (irrelevant to source resolution) "jpg" destination default is.
+    write_bucket_config(&config_dir, "jpg");
 
     pigeon_in(&config_dir)
         .args([
@@ -985,8 +990,6 @@ fn job_run_transform_without_source_bucket_fails_fast_non_interactively() {
             "transform",
             "--input-file-type",
             "png",
-            "--destination-bucket",
-            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -997,15 +1000,18 @@ fn job_run_transform_without_source_bucket_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--source-bucket is required when not running interactively",
+            "--source is required when not running interactively (no bucket-config named \
+             'png' to default to, inferred from --input-file-type)",
         ));
 }
 
 #[test]
-fn job_run_transform_without_destination_bucket_fails_fast_non_interactively() {
+fn job_run_transform_without_destination_fails_fast_when_no_inferred_bucket_config_exists() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
-    write_bucket_config(&config_dir, "source");
+    // "png"'s inferred source alias is configured; "jpg" (the inferred
+    // destination alias) deliberately is not.
+    write_bucket_config(&config_dir, "png");
 
     pigeon_in(&config_dir)
         .args([
@@ -1014,8 +1020,6 @@ fn job_run_transform_without_destination_bucket_fails_fast_non_interactively() {
             "transform",
             "--input-file-type",
             "png",
-            "--source-bucket",
-            "source",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -1026,7 +1030,105 @@ fn job_run_transform_without_destination_bucket_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--destination-bucket is required when not running interactively",
+            "--destination is required when not running interactively (no bucket-config \
+             named 'jpg' to default to, inferred from --input-file-type)",
+        ));
+}
+
+#[test]
+fn job_run_transform_infers_source_and_destination_from_input_file_type_when_omitted() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "png");
+    write_bucket_config(&config_dir, "jpg");
+
+    // Neither --source nor --destination nor --report-bucket is passed.
+    // Inference must resolve both bucket aliases from --input-file-type
+    // before the run reaches (and fails fast on) the next unresolved
+    // mandatory input, --report-bucket -- proving neither "--source is
+    // required" nor "--destination is required" ever fired.
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("--source is required").not())
+        .stderr(predicate::str::contains("--destination is required").not())
+        .stderr(predicate::str::contains(
+            "--report-bucket is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_transform_explicit_source_overrides_the_inferred_default() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    // "png" would be inferred for --source, but is deliberately left
+    // unconfigured; only the explicit override alias exists.
+    write_bucket_config(&config_dir, "my-custom-source");
+    write_bucket_config(&config_dir, "jpg");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--source",
+            "my-custom-source",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("--source is required").not())
+        .stderr(predicate::str::contains("no bucket-config named 'png'").not())
+        .stderr(predicate::str::contains(
+            "--report-bucket is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_transform_with_explicit_source_but_unknown_alias_still_errors() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--source",
+            "no-such-alias",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no bucket-config named 'no-such-alias'",
         ));
 }
 
@@ -1044,9 +1146,9 @@ fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_er
             "transform",
             "--input-file-type",
             "png",
-            "--source-bucket",
+            "--source",
             "source",
-            "--destination-bucket",
+            "--destination",
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
