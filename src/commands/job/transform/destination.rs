@@ -28,6 +28,9 @@ use crate::core::rclone::command::Lsjson;
 pub(crate) async fn list_existing_filenames(destination: &str) -> Result<HashSet<String>, String> {
     let entries = (Lsjson {
         path: destination.to_string(),
+        // The one listing in this crate that may legitimately find nothing
+        // at a path rclone cannot resolve (ADR-0140).
+        missing_ok: true,
         job: "transform",
         ..Default::default()
     })
@@ -39,9 +42,10 @@ pub(crate) async fn list_existing_filenames(destination: &str) -> Result<HashSet
 /// Lists every relative path under `source` matching any of `extensions`
 /// (one input kind's full set of on-disk spellings -- `.jpg` *and* `.jpeg`
 /// for `Jpeg`, per ADR-0139), via a recursive, metadata-only `rclone
-/// lsjson` -- no file content is read or transferred. A source that doesn't
-/// exist (or exists but is empty) resolves to an empty list, same handling
-/// as `list_existing_filenames`.
+/// lsjson` -- no file content is read or transferred. A source rclone
+/// cannot resolve at all is an `Err` here (ADR-0140), unlike
+/// `list_existing_filenames`; a source that resolves but holds nothing
+/// matching is an empty list.
 ///
 /// This listing is the **sole** input to the pull set: an empty result
 /// means `worker::run_transform_job` skips spawning `rclone` entirely, so a
@@ -61,6 +65,9 @@ pub(crate) async fn list_source_relative_paths(
         path: source.to_string(),
         recursive: true,
         include_extensions: extensions.iter().map(|ext| ext.to_string()).collect(),
+        // Deliberately *not* `missing_ok` (ADR-0140): a source rclone cannot
+        // resolve is a misconfigured address, not an empty source.
+        missing_ok: false,
         job: "transform",
     })
     .run()
@@ -169,8 +176,12 @@ mod tests {
         );
     }
 
+    /// ADR-0140: the inverse of `list_existing_filenames`' tolerance. A
+    /// source rclone cannot resolve used to come back as an empty listing,
+    /// which `run_transform_job` turns into a run that pulls nothing and
+    /// exits 0 -- indistinguishable from success.
     #[tokio::test]
-    async fn list_source_relative_paths_returns_empty_for_a_source_that_does_not_exist_yet() {
+    async fn list_source_relative_paths_errors_for_a_source_that_does_not_exist() {
         if check_rclone_available().await.is_err() {
             eprintln!("skipping: rclone not found on PATH");
             return;
@@ -179,10 +190,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let missing = dir.path().join("does-not-exist-yet");
 
-        let paths = list_source_relative_paths(missing.to_str().unwrap(), &["png"])
+        let err = list_source_relative_paths(missing.to_str().unwrap(), &["png"])
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert!(paths.is_empty());
+        assert!(
+            err.contains("does-not-exist-yet"),
+            "the unresolvable source must be named in the error: {err}"
+        );
     }
 }

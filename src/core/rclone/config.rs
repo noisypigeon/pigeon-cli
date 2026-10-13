@@ -5,12 +5,31 @@
 //! exactly the buckets configured in pigeon's own keyring, nothing else --
 //! not a separately-provisioned deployment `rclone.conf`, not the user's own
 //! general-purpose one.
+//!
+//! Each configured bucket becomes *two* sections (ADR-0140): an `s3` backend
+//! plus an `alias` section pointing into it at the configured bucket. That
+//! indirection is the only place `BucketConfig::bucket` can live -- an `s3`
+//! section has no bucket field of its own.
 
 use std::path::{Path, PathBuf};
 
 use crate::commands::keyring::store::Store;
 
 const RCLONE_CONFIG_FILE_NAME: &str = "rclone.conf";
+
+/// Suffix appended to a bucket-config's alias to name its `s3` backend
+/// section, the inner half of ADR-0140's two-section shape. Only the outer
+/// `alias` section is ever addressed by a job; this name exists purely to be
+/// pointed at.
+const BACKEND_SECTION_SUFFIX: &str = ".s3";
+
+/// The `s3` backend section name for `alias`. Not public: a caller addresses
+/// a bucket by its alias alone, exactly as before ADR-0140 -- that the
+/// address now resolves through one more hop is entirely internal to the
+/// generated file.
+fn backend_section_name(alias: &str) -> String {
+    format!("{alias}{BACKEND_SECTION_SUFFIX}")
+}
 
 /// Sibling to `Store::default_path()`'s `keyring.toml` -- same config
 /// directory, so the generated file is one well-known, inspectable artifact
@@ -26,14 +45,33 @@ pub(crate) fn rclone_config_path() -> Result<PathBuf, String> {
     Ok(dir.join(RCLONE_CONFIG_FILE_NAME))
 }
 
-/// Writes one `[alias]` section per configured `BucketConfig` to `path`,
-/// keyed directly by alias -- aliases are already globally unique
-/// (`Store::contains_alias`, ADR-0022), so no two-section indirection and no
-/// collision handling is needed, unlike the external terraform-managed
-/// config this supersedes. Regenerated fresh from the current keyring state
-/// every time this is called (no existing file at `path` is ever read
-/// first), so a `pigeon keyring modify bucket` takes effect on the very next
-/// job run with no cache to invalidate.
+/// Writes two sections per configured `BucketConfig` to `path`: an `s3`
+/// backend named `<alias>.s3`, plus an `alias` section keyed by the
+/// bucket-config's own alias whose `remote` is that backend scoped to the
+/// configured bucket (`<alias>.s3:<bucket>`).
+///
+/// The indirection is what carries `BucketConfig::bucket` into the config at
+/// all (ADR-0140). ADR-0136 wrote one `s3` section keyed directly by alias,
+/// rejecting the two-section `alias -> bucket-name` shape the deployment's
+/// own terraform-managed `rclone.conf` uses on the grounds that globally
+/// unique aliases (`Store::contains_alias`, ADR-0022) need no collision
+/// handling -- which answered a different question than where the bucket
+/// name lives. An `s3` section has none, so the bucket was simply dropped:
+/// `alias:` addressed the *account* root (a bucket listing) and
+/// `alias:prefix/` a bucket literally named `prefix`, which is why a
+/// `transform` run against `source:jpg/` matched nothing at all.
+///
+/// The backend is keyed by alias, not by bucket name (the terraform config's
+/// own convention): aliases are unique by construction, whereas two
+/// bucket-configs may legitimately name the same bucket on different
+/// endpoints or with different credentials. A configured alias that is
+/// literally another alias's derived backend name is rejected outright
+/// rather than silently misrouted.
+///
+/// Regenerated fresh from the current keyring state every time this is
+/// called (no existing file at `path` is ever read first), so a `pigeon
+/// keyring modify bucket` takes effect on the very next job run with no
+/// cache to invalidate.
 pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), String> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -42,12 +80,22 @@ pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), S
 
     let mut contents = String::new();
     for bucket_config in store.bucket_configs() {
+        let backend = backend_section_name(&bucket_config.alias);
+        if store.contains_alias(&backend) {
+            return Err(format!(
+                "cannot generate an rclone config: the backend section for bucket-config '{}' \
+                 would be named '{backend}', which collides with another configured alias -- \
+                 rename one of them",
+                bucket_config.alias,
+            ));
+        }
         contents.push_str(&format!(
-            "[{}]\ntype = s3\nprovider = Other\naccess_key_id = {}\nsecret_access_key = {}\nendpoint = {}\nacl = private\nno_check_bucket = true\n\n",
-            bucket_config.alias,
+            "[{backend}]\ntype = s3\nprovider = Other\naccess_key_id = {}\nsecret_access_key = {}\nendpoint = {}\nacl = private\nno_check_bucket = true\n\n[{}]\ntype = alias\nremote = {backend}:{}\n\n",
             bucket_config.access_key_id,
             bucket_config.secret_key,
             bucket_config.endpoint,
+            bucket_config.alias,
+            bucket_config.bucket,
         ));
     }
 
@@ -288,24 +336,74 @@ mod tests {
         assert!(contents.is_empty());
     }
 
+    /// ADR-0140: the alias section must resolve *into* the configured
+    /// bucket. Without the indirection, `backup:` was the account root and
+    /// `backup:jpg/` a bucket literally named `jpg`.
     #[test]
-    fn write_sandboxed_config_writes_one_section_per_bucket_keyed_by_alias() {
+    fn write_sandboxed_config_writes_an_s3_backend_plus_a_bucket_scoped_alias_per_bucket_config() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rclone.conf");
         let mut store = Store::default();
         store.push(Entry::Bucket(sample_bucket("backup")));
         write_sandboxed_config(&store, &path).unwrap();
         let contents = std::fs::read_to_string(&path).unwrap();
-        assert!(contents.contains("[backup]"));
-        assert!(contents.contains("type = s3"));
-        assert!(contents.contains("provider = Other"));
+        assert_eq!(
+            contents,
+            "[backup.s3]\n\
+             type = s3\n\
+             provider = Other\n\
+             access_key_id = AKID\n\
+             secret_access_key = shh\n\
+             endpoint = https://nyc3.digitaloceanspaces.com\n\
+             acl = private\n\
+             no_check_bucket = true\n\
+             \n\
+             [backup]\n\
+             type = alias\n\
+             remote = backup.s3:my-bucket\n\
+             \n"
+        );
+    }
+
+    /// The backend is keyed by alias, not by bucket name: two bucket-configs
+    /// may legitimately name the same bucket on different endpoints, and
+    /// collapsing them onto one bucket-named backend section would give one
+    /// of them the other's credentials.
+    #[test]
+    fn two_aliases_naming_the_same_bucket_get_their_own_backend_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rclone.conf");
+        let mut store = Store::default();
+        store.push(Entry::Bucket(sample_bucket("here")));
+        let mut elsewhere = sample_bucket("there");
+        elsewhere.endpoint = "https://s3.fr-par.scw.cloud".to_string();
+        elsewhere.access_key_id = "OTHER".to_string();
+        store.push(Entry::Bucket(elsewhere));
+
+        write_sandboxed_config(&store, &path).unwrap();
+        let contents = std::fs::read_to_string(&path).unwrap();
+
+        assert!(contents.contains("[here.s3]"));
+        assert!(contents.contains("remote = here.s3:my-bucket"));
+        assert!(contents.contains("[there.s3]"));
+        assert!(contents.contains("remote = there.s3:my-bucket"));
         assert!(contents.contains("access_key_id = AKID"));
-        assert!(contents.contains("secret_access_key = shh"));
-        assert!(contents.contains("endpoint = https://nyc3.digitaloceanspaces.com"));
-        // No terraform-style second, bucket-named indirection section --
-        // aliases are already globally unique, so one section per bucket
-        // config is sufficient.
-        assert!(!contents.contains("[my-bucket]"));
+        assert!(contents.contains("access_key_id = OTHER"));
+    }
+
+    /// Aliases are unbounded strings, so a configured alias can collide
+    /// with another's derived backend name. Rejected outright rather than
+    /// silently misrouting one alias into the other's bucket.
+    #[test]
+    fn write_sandboxed_config_rejects_an_alias_colliding_with_a_derived_backend_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rclone.conf");
+        let mut store = Store::default();
+        store.push(Entry::Bucket(sample_bucket("backup")));
+        store.push(Entry::Bucket(sample_bucket("backup.s3")));
+
+        let err = write_sandboxed_config(&store, &path).unwrap_err();
+        assert!(err.contains("backup.s3"), "unexpected error: {err}");
     }
 
     #[test]

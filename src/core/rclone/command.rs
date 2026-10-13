@@ -203,6 +203,14 @@ pub(crate) struct Lsjson {
     /// when this held one `Option<String>`, a `jpeg` run over a directory
     /// of `.jpg` files silently matched nothing. Empty means no filter.
     pub include_extensions: Vec<String>,
+    /// Whether a path that doesn't exist resolves to an empty listing
+    /// instead of an error (ADR-0140). Only a *destination* listing wants
+    /// this -- the brand-new-destination case (ADR-0120). A source listing
+    /// leaves it `false`: a source rclone cannot find is a misconfigured
+    /// address, and swallowing it produced a run indistinguishable from a
+    /// successful no-op (0 pulled, 0 failed, exit 0), which is exactly how
+    /// ADR-0140's dropped bucket name stayed invisible through two runs.
+    pub missing_ok: bool,
     pub job: &'static str,
 }
 
@@ -252,20 +260,26 @@ impl RcloneCommand for Lsjson {
         }
     }
 
-    /// A path that doesn't exist yet (the very first run against a brand
-    /// new destination, or a source nothing has ever pulled from) is
-    /// treated as empty, not an error -- confirmed against a real rclone
-    /// local-backend run: a missing directory exits non-zero with
-    /// `"directory not found"` in stderr. Pattern-matching subprocess
-    /// stderr is inherently version-fragile (issue #63) -- reconfirm this
-    /// text against whatever `rclone` version is actually deployed before
-    /// relying on it in production.
+    /// With `missing_ok`, a path that doesn't exist yet (the very first run
+    /// against a brand new destination) is treated as empty rather than an
+    /// error -- confirmed against a real rclone local-backend run: a missing
+    /// directory exits non-zero with `"directory not found"` in stderr.
+    /// Pattern-matching subprocess stderr is inherently version-fragile
+    /// (issue #63) -- reconfirm this text against whatever `rclone` version
+    /// is actually deployed before relying on it in production.
+    ///
+    /// Without `missing_ok` the same failure propagates (ADR-0140). On S3
+    /// that costs nothing in false positives: a missing *prefix* inside an
+    /// existing bucket exits 0 with `[]` (verified against the live
+    /// remote), so `"directory not found"` there only ever means the bucket
+    /// itself is wrong.
     fn finish(&self, outcome: Outcome) -> Result<Vec<LsjsonEntry>, String> {
         if !outcome.success {
-            if outcome
-                .stderr
-                .to_ascii_lowercase()
-                .contains("directory not found")
+            if self.missing_ok
+                && outcome
+                    .stderr
+                    .to_ascii_lowercase()
+                    .contains("directory not found")
             {
                 return Ok(Vec::new());
             }
@@ -411,6 +425,7 @@ mod tests {
             path: "source:jpg/".to_string(),
             recursive: true,
             include_extensions: vec!["jpg".to_string(), "jpeg".to_string()],
+            missing_ok: false,
             job: "transform",
         })
         .args();
@@ -445,5 +460,67 @@ mod tests {
         assert!(!args.contains(&"--ignore-case".to_string()));
         assert!(!args.contains(&"--recursive".to_string()));
         assert!(args.contains(&"--files-only".to_string()));
+    }
+
+    fn missing_directory_outcome() -> Outcome {
+        Outcome {
+            exit_code: Some(1),
+            success: false,
+            stdout: b"[\n]\n".to_vec(),
+            stderr: "2026/10/12 21:39:09 ERROR : error listing: directory not found".to_string(),
+            log: RcloneLogSummary::default(),
+        }
+    }
+
+    /// ADR-0140: only a `missing_ok` listing may turn a failed invocation
+    /// into an empty result.
+    #[test]
+    fn lsjson_finish_treats_a_missing_path_as_empty_only_when_missing_ok() {
+        let forgiving = (Lsjson {
+            path: "destination:jpg/".to_string(),
+            missing_ok: true,
+            job: "transform",
+            ..Default::default()
+        })
+        .finish(missing_directory_outcome())
+        .unwrap();
+        assert!(forgiving.is_empty());
+
+        let err = (Lsjson {
+            path: "source:jpg/".to_string(),
+            missing_ok: false,
+            job: "transform",
+            ..Default::default()
+        })
+        .finish(missing_directory_outcome())
+        .unwrap_err();
+        assert!(err.contains("source:jpg/"), "unexpected error: {err}");
+        assert!(
+            err.contains("directory not found"),
+            "the real rclone stderr must survive into the error: {err}"
+        );
+    }
+
+    /// A failure that is *not* a missing path was always an error, and
+    /// still is, `missing_ok` or not.
+    #[test]
+    fn lsjson_finish_propagates_any_other_failure_even_when_missing_ok() {
+        let outcome = Outcome {
+            exit_code: Some(1),
+            success: false,
+            stdout: Vec::new(),
+            stderr: "SignatureDoesNotMatch".to_string(),
+            log: RcloneLogSummary::default(),
+        };
+
+        let err = (Lsjson {
+            path: "destination:jpg/".to_string(),
+            missing_ok: true,
+            job: "transform",
+            ..Default::default()
+        })
+        .finish(outcome)
+        .unwrap_err();
+        assert!(err.contains("SignatureDoesNotMatch"), "unexpected: {err}");
     }
 }
