@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0135: retires the OS keychain entirely -- every secret (IMAP password, S3 secret key, encryption key) now lives in `keyring.toml` as a plaintext field, protected only by `0600` file permissions. Obsoletes rejected ADR-0035's unsolved macOS keychain-prompt problem and makes ADR-0085's Linux-keyutils workaround moot; `core::keyring::credentials` collapses to one infallible `resolve_secret` function still honoring `PIGEON_SECRET_<ALIAS>` (ADR-0087); the `keyring` crate is removed from `Cargo.toml`. No automated migration -- every existing entry needs re-adding via `pigeon keyring add` ([#69](https://github.com/noisypigeon/pigeon-cli/pull/69)).
+
 ## [0.4.16] - 2026-10-13
 
 - ADR-0134: removes `pigeon job run decrypt-files` entirely -- no evidenced ongoing use, mirroring the redundancy argument that retired `sort` (ADR-0094) and `reduce` (ADR-0103). `Encryptor::decrypt` (`core::crypto`) is deleted outright, having never had a caller outside this job since ADR-0025 added it speculatively; every shared wizard helper it used had other active consumers and needed no un-hoisting ([#68](https://github.com/noisypigeon/pigeon-cli/pull/68)).

@@ -545,6 +545,7 @@ mod tests {
             host: "imap.gmail.com".to_string(),
             port: 993,
             max_imap_connections: None,
+            secret: "unused".to_string(),
         }
     }
 

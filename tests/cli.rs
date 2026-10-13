@@ -16,15 +16,17 @@ fn pigeon_in(config_dir: &TempDir) -> Command {
     cmd
 }
 
-/// Writes a fake `keyring.toml` entry directly (no `keyring add`/keychain
-/// needed for the error paths these tests exercise, which fail before ever
-/// reaching a secret lookup or a real IMAP/S3 connection). Appends, so
-/// multiple calls build up a mixed store.
+/// Writes a fake `keyring.toml` entry directly (no `keyring add` needed for
+/// the error paths these tests exercise, which fail before ever reaching a
+/// secret lookup or a real IMAP/S3 connection). Appends, so multiple calls
+/// build up a mixed store. Includes a dummy secret field (ADR-0135: `secret`/
+/// `secret_key` have no `#[serde(default)]`, so a real `keyring.toml` entry
+/// always carries one).
 fn write_identity(config_dir: &TempDir, alias: &str, email: &str) {
     append_keyring_entry(
         config_dir,
         &format!(
-            "[[entries]]\nkind = \"email\"\nalias = \"{alias}\"\nemail = \"{email}\"\nprovider = \"gmail\"\nhost = \"imap.gmail.com\"\nport = 993\n"
+            "[[entries]]\nkind = \"email\"\nalias = \"{alias}\"\nemail = \"{email}\"\nprovider = \"gmail\"\nhost = \"imap.gmail.com\"\nport = 993\nsecret = \"fake-secret\"\n"
         ),
     );
 }
@@ -33,7 +35,7 @@ fn write_bucket_config(config_dir: &TempDir, alias: &str) {
     append_keyring_entry(
         config_dir,
         &format!(
-            "[[entries]]\nkind = \"bucket\"\nalias = \"{alias}\"\nendpoint = \"https://nyc3.digitaloceanspaces.com\"\nbucket = \"my-bucket\"\naccess_key_id = \"AKID\"\n"
+            "[[entries]]\nkind = \"bucket\"\nalias = \"{alias}\"\nendpoint = \"https://nyc3.digitaloceanspaces.com\"\nbucket = \"my-bucket\"\naccess_key_id = \"AKID\"\nsecret_key = \"fake-secret\"\n"
         ),
     );
 }
@@ -179,7 +181,7 @@ fn keyring_add_email_failure_does_not_persist_an_entry() {
 
     // Nothing listens on 127.0.0.1:1 (a privileged, unassigned port), so
     // this deterministically fails at the connection step without ever
-    // reaching a real IMAP server or the OS keychain.
+    // reaching a real IMAP server.
     pigeon_in(&config_dir)
         .args([
             "keyring",
@@ -272,10 +274,9 @@ fn keyring_delete_declined_keeps_it() {
     assert!(contents.contains("backup"));
 }
 
-/// Confirming removes the entry even though no keychain secret was ever
-/// created for it (`write_bucket_config` bypasses `keyring add`) --
-/// exercises `credentials::delete_secret`'s `NoEntry`-tolerant handling end
-/// to end.
+/// Confirming removes the entry from `keyring.toml` directly (ADR-0135: the
+/// secret lives in the same file, so removing the entry removes the secret
+/// too -- no separate keychain delete step).
 #[test]
 fn keyring_delete_confirmed_deletes_it() {
     let config_dir = TempDir::new().unwrap();

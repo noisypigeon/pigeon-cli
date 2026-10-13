@@ -411,10 +411,7 @@ async fn dispatch_async(
 
     let mut contexts = Vec::new();
     for identity in &selected_identities {
-        let secret = match credentials::get_secret(&identity.alias) {
-            Ok(secret) => secret,
-            Err(err) => return fail(err),
-        };
+        let secret = credentials::resolve_secret(&identity.alias, &identity.secret);
         let identity_root = local_output.join(&identity.alias);
         contexts.push(IdentityContext {
             identity: identity.clone(),
@@ -470,10 +467,8 @@ async fn dispatch_async(
                 Some(bucket_config) => bucket_config.clone(),
                 None => return fail(format!("no bucket-config named '{alias}'")),
             };
-            let secret = match credentials::get_secret(&bucket_config.alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
-            };
+            let secret =
+                credentials::resolve_secret(&bucket_config.alias, &bucket_config.secret_key);
             Some((bucket_config, secret))
         }
         None => None,
@@ -498,10 +493,11 @@ async fn dispatch_async(
     };
     job.encryptor = match resolved_encryption_key_alias {
         Some(alias) => {
-            let key_hex = match credentials::get_secret(&alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
+            let stored_key_hex = match keyring_store.encryption_keys().find(|k| k.alias == alias) {
+                Some(key) => key.key_hex.clone(),
+                None => return fail(format!("no encryption key named '{alias}'")),
             };
+            let key_hex = credentials::resolve_secret(&alias, &stored_key_hex);
             match Aes256GcmSivEncryptor::from_hex_key(&key_hex) {
                 Ok(encryptor) => Some(encryptor),
                 Err(err) => return fail(err),
@@ -703,10 +699,10 @@ async fn dispatch_upload_only(
         Some(bucket_config) => bucket_config.clone(),
         None => return fail(format!("no bucket-config named '{remote_alias}'")),
     };
-    let remote_secret = match credentials::get_secret(&remote_bucket_config.alias) {
-        Ok(secret) => secret,
-        Err(err) => return fail(err),
-    };
+    let remote_secret = credentials::resolve_secret(
+        &remote_bucket_config.alias,
+        &remote_bucket_config.secret_key,
+    );
 
     let resolved_encryption_key_alias = match (EncryptionKeyInput {
         flag: encryption_key,
@@ -721,10 +717,11 @@ async fn dispatch_upload_only(
     };
     let encryptor = match resolved_encryption_key_alias {
         Some(alias) => {
-            let key_hex = match credentials::get_secret(&alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
+            let stored_key_hex = match keyring_store.encryption_keys().find(|k| k.alias == alias) {
+                Some(key) => key.key_hex.clone(),
+                None => return fail(format!("no encryption key named '{alias}'")),
             };
+            let key_hex = credentials::resolve_secret(&alias, &stored_key_hex);
             match Aes256GcmSivEncryptor::from_hex_key(&key_hex) {
                 Ok(encryptor) => Some(encryptor),
                 Err(err) => return fail(err),
@@ -833,6 +830,7 @@ mod tests {
                 host: "imap.gmail.com".to_string(),
                 port: 993,
                 max_imap_connections: None,
+                secret: "unused".to_string(),
             },
             secret: "unused".to_string(),
             staging_dir: PathBuf::from("/unused/staging"),

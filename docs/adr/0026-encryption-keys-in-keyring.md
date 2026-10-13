@@ -149,3 +149,11 @@ Still fails fast in the same place ADR-0025 did -- before concurrency/proceed pr
 - Persisting "which encryption-key alias to use" on `BucketConfig` itself -- selection stays a per-job-run choice, not stored on the bucket-config.
 
 Implementation is a separate, later task.
+
+## Amendment (2026-10-12): secrets move out of the OS keychain (ADR-0135)
+
+ADR-0135 retires the OS keychain entirely. The generated/entered encryption
+key now lives in `keyring.toml` as a plain `key_hex` field, protected only
+by file permissions, instead of in the OS keychain this ADR originally
+specified. The key is still never displayed after creation, per this ADR's
+own choice -- only its storage backend changes.

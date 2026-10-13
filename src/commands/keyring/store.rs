@@ -113,6 +113,9 @@ impl Store {
     }
 
     /// Writes the store to `path`, creating its parent directory if needed.
+    /// Every entry's secret lives in this file as plaintext (ADR-0135), so
+    /// on Unix this also sets `0600` permissions -- the file's only
+    /// protection now that there's no OS keychain backing it.
     pub fn save(&self, path: &Path) -> Result<(), String> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
@@ -124,7 +127,16 @@ impl Store {
         let contents = toml::to_string_pretty(&file)
             .map_err(|err| format!("failed to serialize keyring entries: {err}"))?;
         std::fs::write(path, contents)
-            .map_err(|err| format!("failed to write {}: {err}", path.display()))
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+                .map_err(|err| format!("failed to set permissions on {}: {err}", path.display()))?;
+        }
+
+        Ok(())
     }
 
     /// True if `alias` is already used by *either* kind of entry -- this is
@@ -278,6 +290,7 @@ mod tests {
             host: "imap.gmail.com".to_string(),
             port: 993,
             max_imap_connections: None,
+            secret: "app-password".to_string(),
         }
     }
 
@@ -288,6 +301,7 @@ mod tests {
             bucket: "my-bucket".to_string(),
             access_key_id: "AKID".to_string(),
             encryption_key_alias: None,
+            secret_key: "s3-secret-key".to_string(),
         }
     }
 
@@ -295,6 +309,7 @@ mod tests {
         EncryptionKey {
             alias: alias.to_string(),
             created_at: "2026-09-24T00:00:00Z".to_string(),
+            key_hex: "0".repeat(64),
         }
     }
 
@@ -317,6 +332,58 @@ mod tests {
         assert_eq!(loaded.email_identities().count(), 1);
         assert_eq!(loaded.bucket_configs().count(), 1);
         assert_eq!(loaded.encryption_keys().count(), 1);
+        assert_eq!(
+            loaded.email_identities().next().unwrap().secret,
+            "app-password"
+        );
+        assert_eq!(
+            loaded.bucket_configs().next().unwrap().secret_key,
+            "s3-secret-key"
+        );
+        assert_eq!(
+            loaded.encryption_keys().next().unwrap().key_hex,
+            "0".repeat(64)
+        );
+    }
+
+    #[test]
+    fn load_rejects_a_pre_migration_file_missing_the_secret_field() {
+        // Simulates a `keyring.toml` written before ADR-0135 added secret
+        // fields -- unlike `max_imap_connections` (ADR-0080), these fields
+        // deliberately have no `#[serde(default)]`: a missing secret must
+        // fail loudly, not silently load as an empty string.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyring.toml");
+        std::fs::write(
+            &path,
+            r#"[[entries]]
+kind = "email"
+alias = "willow"
+email = "willow@example.com"
+provider = "gmail"
+host = "imap.gmail.com"
+port = 993
+"#,
+        )
+        .unwrap();
+
+        assert!(Store::load(&path).is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn save_sets_0600_permissions_on_the_written_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyring.toml");
+
+        let mut store = Store::default();
+        store.push(Entry::Bucket(sample_bucket_config("backup")));
+        store.save(&path).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
@@ -379,6 +446,7 @@ email = "willow@example.com"
 provider = "gmail"
 host = "imap.gmail.com"
 port = 993
+secret = "app-password"
 "#,
         )
         .unwrap();

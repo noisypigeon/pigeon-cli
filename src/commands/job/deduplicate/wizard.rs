@@ -101,7 +101,7 @@ fn resolve_bucket(alias: &str, store: &Store) -> Result<(BucketConfig, String), 
         .find(|bucket_config| bucket_config.alias == alias)
         .ok_or_else(|| format!("no bucket-config named '{alias}'"))?
         .clone();
-    let secret = credentials::get_secret(&bucket_config.alias)?;
+    let secret = credentials::resolve_secret(&bucket_config.alias, &bucket_config.secret_key);
     Ok((bucket_config, secret))
 }
 
@@ -307,10 +307,8 @@ async fn dispatch_async(
                 Some(bucket_config) => bucket_config.clone(),
                 None => return fail(format!("no bucket-config named '{alias}'")),
             };
-            let secret = match credentials::get_secret(&bucket_config.alias) {
-                Ok(secret) => secret,
-                Err(err) => return fail(err),
-            };
+            let secret =
+                credentials::resolve_secret(&bucket_config.alias, &bucket_config.secret_key);
             Some((bucket_config, secret))
         }
         None => None,
@@ -465,10 +463,10 @@ async fn dispatch_upload_only(
         Some(bucket_config) => bucket_config.clone(),
         None => return fail(format!("no bucket-config named '{remote_alias}'")),
     };
-    let remote_secret = match credentials::get_secret(&remote_bucket_config.alias) {
-        Ok(secret) => secret,
-        Err(err) => return fail(err),
-    };
+    let remote_secret = credentials::resolve_secret(
+        &remote_bucket_config.alias,
+        &remote_bucket_config.secret_key,
+    );
 
     let upload_concurrency = match (UploadConcurrencyInput {
         flag: upload_concurrency,
