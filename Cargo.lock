@@ -2097,7 +2097,7 @@ dependencies = [
 
 [[package]]
 name = "pigeon-cli"
-version = "0.4.20"
+version = "0.4.21"
 dependencies = [
  "aes-gcm-siv",
  "assert_cmd",

@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.21] - 2026-10-13
+
 - ADR-0139: fixes `job run transform --input-file-type=jpeg` silently matching **no** `.jpg` files -- a run over a `.jpg` source pulled nothing, reported `0 rclone error(s)`, and exited 0. `parse` has accepted `jpg` as an alias for `jpeg` since ADR-0112, but `extension()` returned the single string `"jpeg"` and that became the source listing's `--include` pattern (`--ignore-case` folds case, not spelling). `extension()` is replaced by `extensions()` (a set per kind; only `Jpeg` is plural), `canonical_extension()` for display and prefix defaults, and `matches_extension()` for membership; `Lsjson` emits one `--include` per spelling. Auditing every consumer found a **second, independent gate** failing the same way -- `manifest::gather_pending` compared extensions for exact equality and would have dropped any `.jpg` already staged locally even once the listing filter was fixed. Also: jpeg's canonical spelling becomes `jpg` so ADR-0138's source and destination prefix defaults agree; a zero-match listing now warns on stderr *and* tracing (a `warn!` alone never reaches the terminal, which is how this hid); the dead `Copy.include_extension` is deleted. Closes the coverage hole that let it ship -- every prior jpeg test used a `.jpeg` fixture and none used `.jpg`, and the `--include` argv had no test at all. Amends ADR-0112, ADR-0122, and ADR-0138 ([#74](https://github.com/noisypigeon/pigeon-cli/pull/74)).
 
 ## [0.4.20] - 2026-10-13
