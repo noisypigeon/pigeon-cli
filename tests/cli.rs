@@ -1380,3 +1380,293 @@ fn deduplicate_generates_the_sandboxed_rclone_config_beside_the_keyring() {
         "the default config dir must be left untouched"
     );
 }
+
+// --- `job run email import` (ADR-0146) ---------------------------------
+//
+// No test reaches a real IMAP server or rclone transfer: every one fails at
+// the wizard, before a connection is attempted. rclone's `--retries 5
+// --low-level-retries 20` turns even a refused connection into minutes of
+// backoff (the test-cost constraint ADR-0145 recorded).
+
+#[test]
+fn job_run_help_lists_the_email_group() {
+    pigeon()
+        .args(["job", "run", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"));
+}
+
+#[test]
+fn job_run_email_help_lists_import() {
+    pigeon()
+        .args(["job", "run", "email", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("import"));
+}
+
+#[test]
+fn job_run_email_import_help_shows_its_full_flag_set() {
+    pigeon()
+        .args(["job", "run", "email", "import", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--identities"))
+        .stdout(predicate::str::contains("--destination"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--messages-per-minute"))
+        .stdout(predicate::str::contains("--batch-size"))
+        .stdout(predicate::str::contains("--max-connections"))
+        .stdout(predicate::str::contains("--push-concurrency"))
+        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--non-interactive"));
+}
+
+/// Pins ADR-0146 §1's scoping decisions, the way ADR-0081's own
+/// `--encryption-key` test pins email-pull's. Each absence is deliberate
+/// and each would be easy to add back by accident:
+/// `--encryption-key` is permanently out of scope; `--upload-only` is
+/// meaningless when delivery is inline; `--concurrency` would imply it
+/// governs throughput when `--messages-per-minute` does; and `--tpslimit`
+/// and friends do not apply to `rclone copyto`.
+#[test]
+fn job_run_email_import_help_omits_every_deliberately_absent_flag() {
+    pigeon()
+        .args(["job", "run", "email", "import", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--encryption-key").not())
+        .stdout(predicate::str::contains("--upload-only").not())
+        .stdout(predicate::str::contains("--concurrency").not())
+        .stdout(predicate::str::contains("--tpslimit").not())
+        .stdout(predicate::str::contains("--transfers").not())
+        .stdout(predicate::str::contains("--checkers").not());
+}
+
+/// `--push-concurrency` ends in "concurrency", so the negative assertion
+/// above has to be checking for the standalone `--concurrency` flag rather
+/// than a substring that `--push-concurrency` would satisfy.
+#[test]
+fn job_run_email_import_help_still_shows_push_concurrency() {
+    pigeon()
+        .args(["job", "run", "email", "import", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--push-concurrency"));
+}
+
+#[test]
+fn job_run_email_import_without_identities_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--report-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--identities is required when not running interactively",
+        ));
+}
+
+/// `--destination` is mandatory, unlike the sibling email jobs'
+/// `--remote-output`, which silently resolves to "don't upload"
+/// (ADR-0146 §1): a job whose only purpose is delivery must not be able to
+/// run without somewhere to deliver to.
+#[test]
+fn job_run_email_import_without_a_destination_fails_fast_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--report-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--destination is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_email_import_requires_a_report_bucket_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--report-bucket is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_email_import_with_an_unknown_identity_fails() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "nope",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--report-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no identity with alias 'nope'"));
+}
+
+#[test]
+fn job_run_email_import_with_an_unknown_destination_alias_fails() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--destination",
+            "nope:eml/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--report-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no bucket-config named 'nope'"));
+}
+
+/// ADR-0138's prefix validation reaches this job's `--destination` too: a
+/// `..` segment would be taken literally by rclone, writing outside the
+/// configured prefix.
+#[test]
+fn job_run_email_import_rejects_a_parent_directory_segment_in_the_destination_prefix() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--destination",
+            "dest:../escape/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--report-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "a '..' path segment is not allowed",
+        ));
+}
+
+/// The first email job to depend on `rclone` (ADR-0146 §9): both siblings
+/// are `minio`-only, so this preflight is new behavior for an email job and
+/// must fail before any IMAP credential is touched.
+#[test]
+fn job_run_email_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--report-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("was not found on PATH"));
+}
