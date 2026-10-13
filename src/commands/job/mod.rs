@@ -1,7 +1,6 @@
 pub(crate) mod archive;
 pub mod cli;
 pub mod commands;
-pub mod decrypt_files;
 pub mod deduplicate;
 pub(crate) mod download;
 pub mod email_pull;

@@ -1,5 +1,5 @@
 use crate::commands::job::cli::{JobCommands, JobType, RcloneAction, RcloneArgs};
-use crate::commands::job::{decrypt_files, deduplicate, email_pull, email_sync, rclone, transform};
+use crate::commands::job::{deduplicate, email_pull, email_sync, rclone, transform};
 use crate::core::observability::Observable as _;
 
 pub fn dispatch(command: JobCommands) -> i32 {
@@ -136,22 +136,6 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     upload_transfers,
                     max_pending_downloads,
                     tpslimit,
-                    report_bucket,
-                    job_name,
-                    non_interactive,
-                ),
-                JobType::DecryptFiles {
-                    input_dir,
-                    output_dir,
-                    encryption_key,
-                    concurrency,
-                    report_bucket,
-                    non_interactive,
-                } => decrypt_files::wizard::dispatch(
-                    input_dir,
-                    output_dir,
-                    encryption_key,
-                    concurrency,
                     report_bucket,
                     job_name,
                     non_interactive,
