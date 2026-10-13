@@ -132,7 +132,7 @@ WARN/ERROR call sites.
   arbitrary track among several differently-lengthed real video streams
   needs its own design for how to pick the "right" one; a narrow, rare
   edge case next to the 480-file failure mode this ADR fixes. Filed as an
-  `out-of-scope` issue per ADR-0031.
+  `out-of-scope` issue per ADR-0031. ([#77](https://github.com/noisypigeon/pigeon-cli/issues/77))
 - **Actually preserving audio-only content.** This ADR only makes the
   failure fast and accurately diagnosed; it does not transcode or push
   anything for an audio-only input. See ADR-0142.
