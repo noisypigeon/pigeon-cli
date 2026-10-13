@@ -1,29 +1,9 @@
-/// One keychain service for every kind of secret this CLI stores (ADR-0022)
-/// -- replaces `email::credentials`'s `"pigeon"` and `dataops::credentials`'s
-/// `"pigeon-dataops"`. Safe to merge now specifically because
-/// `keyring::store::Store::contains_alias` enforces alias uniqueness across
-/// both kinds: the entire reason dataops picked a separate service name in
-/// the first place (so a same-alias identity and bucket-config could never
-/// collide in the keychain) is now structurally moot.
-const SERVICE_NAME: &str = "pigeon";
-
-/// Stores `secret` in the OS-native secure credential store (macOS Keychain,
-/// Linux Secret Service, Windows Credential Manager), keyed by `alias`.
-pub fn set_secret(alias: &str, secret: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, alias)
-        .map_err(|err| format!("failed to open keychain entry for '{alias}': {err}"))?;
-    entry
-        .set_password(secret)
-        .map_err(|err| format!("failed to store secret for '{alias}': {err}"))
-}
-
-/// Env var name checked by `get_secret` before it falls back to the OS
-/// keyring (ADR-0087) -- `PIGEON_SECRET_` plus `alias` uppercased, with every
-/// character outside `[A-Z0-9_]` replaced by `_`. Lets a secret be injected
-/// directly (no OS keyring involved at all), which is what makes a
-/// non-interactive or restarted container usable: the Linux kernel-keyutils
-/// backend (ADR-0085) doesn't survive a process/session reset, and a
-/// container restart is exactly that.
+/// Env var name checked ahead of a stored secret (ADR-0087) -- `PIGEON_SECRET_`
+/// plus `alias` uppercased, with every character outside `[A-Z0-9_]` replaced
+/// by `_`. Lets a secret be injected directly, independent of wherever
+/// `keyring.toml` itself stores its secret fields -- which is what makes a
+/// non-interactive or restarted container usable without touching the config
+/// file at all.
 fn env_var_name(alias: &str) -> String {
     let mut name = String::from("PIGEON_SECRET_");
     for ch in alias.chars() {
@@ -37,32 +17,12 @@ fn env_var_name(alias: &str) -> String {
     name
 }
 
-/// Reads back the secret stored for `alias` via `set_secret`, unless
-/// `env_var_name(alias)` is set in the environment, in which case that value
-/// is returned directly and the OS keyring is never consulted (ADR-0087).
-pub fn get_secret(alias: &str) -> Result<String, String> {
-    if let Ok(secret) = std::env::var(env_var_name(alias)) {
-        return Ok(secret);
-    }
-    let entry = keyring::Entry::new(SERVICE_NAME, alias)
-        .map_err(|err| format!("failed to open keychain entry for '{alias}': {err}"))?;
-    entry
-        .get_password()
-        .map_err(|err| format!("failed to read secret for '{alias}': {err}"))
-}
-
-/// Removes the stored secret for `alias`, if any. A missing entry
-/// (`keyring::Error::NoEntry`) is treated as success, not a failure -- used
-/// both to roll back a partially completed `keyring add`/`modify` and by
-/// `keyring delete`, which should cleanly no-op if there was never a secret
-/// to begin with (e.g. a hand-edited `keyring.toml` entry).
-pub fn delete_secret(alias: &str) -> Result<(), String> {
-    let entry = keyring::Entry::new(SERVICE_NAME, alias)
-        .map_err(|err| format!("failed to open keychain entry for '{alias}': {err}"))?;
-    match entry.delete_credential() {
-        Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-        Err(err) => Err(format!("failed to delete secret for '{alias}': {err}")),
-    }
+/// Resolves the secret to use for `alias`: `PIGEON_SECRET_<ALIAS>` (ADR-0087)
+/// wins outright if set, otherwise `stored` -- the plain secret field already
+/// loaded from `keyring.toml` (ADR-0135) -- is returned as-is. Storage-backend
+/// independent and infallible: there is no OS keychain left to fail to open.
+pub(crate) fn resolve_secret(alias: &str, stored: &str) -> String {
+    std::env::var(env_var_name(alias)).unwrap_or_else(|_| stored.to_string())
 }
 
 #[cfg(test)]
@@ -76,18 +36,24 @@ mod tests {
     }
 
     #[test]
-    fn get_secret_prefers_the_env_var_over_the_os_keyring() {
-        let alias = "adr-0087-test-alias";
+    fn resolve_secret_prefers_the_env_var_over_the_stored_value() {
+        let alias = "adr-0135-test-alias";
         let var = env_var_name(alias);
         // SAFETY: tests run single-threaded within this process for this env var
         // (no other test reads/writes a PIGEON_SECRET_* var concurrently).
         unsafe {
             std::env::set_var(&var, "injected-secret");
         }
-        let result = get_secret(alias);
+        let result = resolve_secret(alias, "stored-secret");
         unsafe {
             std::env::remove_var(&var);
         }
-        assert_eq!(result.unwrap(), "injected-secret");
+        assert_eq!(result, "injected-secret");
+    }
+
+    #[test]
+    fn resolve_secret_falls_back_to_the_stored_value_when_no_env_var_is_set() {
+        let alias = "adr-0135-test-alias-unset";
+        assert_eq!(resolve_secret(alias, "stored-secret"), "stored-secret");
     }
 }

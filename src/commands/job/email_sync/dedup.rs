@@ -592,6 +592,7 @@ mod tests {
                 host: "imap.gmail.com".to_string(),
                 port: 993,
                 max_imap_connections: None,
+                secret: "unused".to_string(),
             },
             input_root: input.path().to_path_buf(),
             staging_root: staging.path().to_path_buf(),

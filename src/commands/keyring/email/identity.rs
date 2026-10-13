@@ -2,11 +2,15 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::keyring::email::provider::Provider;
 
-/// A single authenticated email identity's non-secret metadata. The actual
-/// secret (app/bridge password) lives in the OS keychain, keyed by `alias`
-/// -- see `crate::core::keyring::credentials`. Metadata persistence itself
-/// lives in `crate::commands::keyring::store` (ADR-0022) -- this struct is
-/// kept here since `commands::job::email_sync` is its main consumer.
+/// A single authenticated email identity's metadata, including its secret
+/// (app/bridge password) as a plain field -- `keyring.toml` is this
+/// identity's sole storage since ADR-0135 retired the OS keychain, protected
+/// only by `Store::save`'s `0600` file permissions. Deliberately has no
+/// `#[serde(default)]`: a pre-ADR-0135 `keyring.toml` entry with no `secret`
+/// field fails to parse loudly rather than silently loading an empty
+/// secret. Metadata persistence itself lives in
+/// `crate::commands::keyring::store` (ADR-0022) -- this struct is kept here
+/// since `commands::job::email_sync` is its main consumer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub alias: String,
@@ -14,6 +18,9 @@ pub struct Identity {
     pub provider: Provider,
     pub host: String,
     pub port: u16,
+    /// IMAP app/bridge password. See `crate::core::keyring::credentials::resolve_secret`
+    /// for the one remaining override (ADR-0087's `PIGEON_SECRET_<ALIAS>`).
+    pub secret: String,
     /// Caps how many simultaneous IMAP connections `job run email-sync`
     /// (`commands::job::email_sync::worker`) will open to this identity,
     /// overriding that job's `--max-connections-per-identity` default for

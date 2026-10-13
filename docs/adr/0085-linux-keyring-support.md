@@ -74,3 +74,11 @@ This is a deliberate, narrowly-scoped choice, not an attempt to support every po
 - Recovering or migrating any already-attempted keyring entries from before this fix — confirmed none exist, since the failed `add` in the bug report never reached the metadata-write step (ADR-0022 §4's set-secret-then-persist ordering).
 
 Implementation is a separate, later task.
+
+## Amendment (2026-10-12): moot once the OS keychain is retired (ADR-0135)
+
+ADR-0135 removes the `keyring` crate entirely, including the
+`linux-keyutils-keyring-store` backend override this ADR added. The reboot
+caveat this ADR accepted no longer applies — secrets in `keyring.toml` now
+survive a reboot exactly like the rest of the file's contents, trading that
+caveat for file-permission-only protection instead.

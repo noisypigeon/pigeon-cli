@@ -826,6 +826,7 @@ mod tests {
             bucket: "unused".to_string(),
             access_key_id: "unused".to_string(),
             encryption_key_alias: None,
+            secret_key: "unused".to_string(),
         }
     }
 

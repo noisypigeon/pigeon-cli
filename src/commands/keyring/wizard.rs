@@ -11,7 +11,6 @@ use crate::commands::keyring::store::{Entry, Store};
 use crate::commands::{FAILURE_EXIT_CODE, print_table};
 use crate::core::crypto::{Aes256GcmSivEncryptor, generate_hex_key};
 use crate::core::keyring::KeyringEntry as _;
-use crate::core::keyring::credentials;
 use crate::core::wizard::{confirm, read_secret};
 
 fn fail(message: impl std::fmt::Display) -> i32 {
@@ -138,10 +137,6 @@ fn add_email(
         return fail(err);
     }
 
-    if let Err(err) = credentials::set_secret(&alias, &secret) {
-        return fail(err);
-    }
-
     let max_imap_connections = match confirm(
         "Cap simultaneous IMAP connections for this identity?",
         false,
@@ -164,11 +159,9 @@ fn add_email(
         host,
         port,
         max_imap_connections,
+        secret,
     }));
     if let Err(err) = store.save(&path) {
-        // The keychain write already succeeded; don't leave an orphaned
-        // secret behind if the metadata write failed.
-        let _ = credentials::delete_secret(&alias);
         return fail(err);
     }
 
@@ -244,6 +237,7 @@ fn add_bucket(alias: Option<String>) -> i32 {
         bucket,
         access_key_id,
         encryption_key_alias,
+        secret_key: secret_key.clone(),
     };
 
     match check_bucket_exists(&candidate, &secret_key) {
@@ -252,13 +246,8 @@ fn add_bucket(alias: Option<String>) -> i32 {
         Err(err) => return fail(format!("failed to verify bucket: {err}")),
     }
 
-    if let Err(err) = credentials::set_secret(&alias, &secret_key) {
-        return fail(err);
-    }
-
     store.push(Entry::Bucket(candidate));
     if let Err(err) = store.save(&path) {
-        let _ = credentials::delete_secret(&alias);
         return fail(err);
     }
 
@@ -271,8 +260,8 @@ fn add_bucket(alias: Option<String>) -> i32 {
 /// one via `core::crypto::generate_hex_key`; pasting a value in both
 /// imports an externally-managed key (e.g. one used under ADR-0025's old
 /// `PIGEON_ENCRYPTION_KEY` workflow) and validates it up front via
-/// `from_hex_key`. The generated/entered key is never printed -- the OS
-/// keychain is its only storage, exactly like every other secret this
+/// `from_hex_key`. The generated/entered key is never printed -- `keyring.toml`
+/// is its only storage (ADR-0135), exactly like every other secret this
 /// wizard collects.
 fn add_encryption_key(alias: Option<String>) -> i32 {
     let path = match Store::default_path() {
@@ -308,16 +297,12 @@ fn add_encryption_key(alias: Option<String>) -> i32 {
         .format(&time::format_description::well_known::Rfc3339)
         .unwrap_or_else(|_| String::new());
 
-    if let Err(err) = credentials::set_secret(&alias, &key_hex) {
-        return fail(err);
-    }
-
     store.push(Entry::EncryptionKey(EncryptionKey {
         alias: alias.clone(),
         created_at,
+        key_hex,
     }));
     if let Err(err) = store.save(&path) {
-        let _ = credentials::delete_secret(&alias);
         return fail(err);
     }
 
@@ -400,13 +385,7 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         Err(err) => return fail(err),
     };
 
-    let secret = match &new_secret {
-        Some(secret) => secret.clone(),
-        None => match credentials::get_secret(&current.alias) {
-            Ok(secret) => secret,
-            Err(err) => return fail(err),
-        },
-    };
+    let secret = new_secret.unwrap_or_else(|| current.secret.clone());
 
     if let Err(err) = imap_client::verify_login(
         &host,
@@ -415,12 +394,6 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         &secret,
         provider.accepts_invalid_certs(),
     ) {
-        return fail(err);
-    }
-
-    if let Some(secret) = &new_secret
-        && let Err(err) = credentials::set_secret(&current.alias, secret)
-    {
         return fail(err);
     }
 
@@ -449,6 +422,7 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         host,
         port,
         max_imap_connections,
+        secret,
     };
     store.remove(&current.alias);
     store.push(Entry::Email(updated));
@@ -494,13 +468,9 @@ fn modify_bucket(store: &mut Store, path: &std::path::Path, current: &BucketConf
         Err(err) => return fail(err),
     };
 
-    let secret_key = match &new_secret {
-        Some(secret) => secret.clone(),
-        None => match credentials::get_secret(&current.alias) {
-            Ok(secret) => secret,
-            Err(err) => return fail(err),
-        },
-    };
+    let secret_key = new_secret
+        .clone()
+        .unwrap_or_else(|| current.secret_key.clone());
 
     let encryption_key_alias = match confirm(
         "Encrypt uploads to this bucket by default?",
@@ -523,18 +493,13 @@ fn modify_bucket(store: &mut Store, path: &std::path::Path, current: &BucketConf
         bucket,
         access_key_id,
         encryption_key_alias,
+        secret_key: secret_key.clone(),
     };
 
     match check_bucket_exists(&candidate, &secret_key) {
         Ok(true) => {}
         Ok(false) => return fail(format!("bucket '{}' does not exist", candidate.bucket)),
         Err(err) => return fail(format!("failed to verify bucket: {err}")),
-    }
-
-    if let Some(secret) = &new_secret
-        && let Err(err) = credentials::set_secret(&current.alias, secret)
-    {
-        return fail(err);
     }
 
     store.remove(&current.alias);
@@ -565,14 +530,13 @@ fn modify_encryption_key(
         Err(err) => return fail(err),
     };
 
-    if let Some(key_hex) = &new_key
-        && let Err(err) = credentials::set_secret(&current.alias, key_hex)
-    {
-        return fail(err);
-    }
+    let key_hex = new_key.unwrap_or_else(|| current.key_hex.clone());
 
     store.remove(&current.alias);
-    store.push(Entry::EncryptionKey(current.clone()));
+    store.push(Entry::EncryptionKey(EncryptionKey {
+        key_hex,
+        ..current.clone()
+    }));
     if let Err(err) = store.save(path) {
         return fail(err);
     }
@@ -610,9 +574,6 @@ pub fn delete(alias: String) -> i32 {
 
     store.remove(&alias);
     if let Err(err) = store.save(&path) {
-        return fail(err);
-    }
-    if let Err(err) = credentials::delete_secret(&alias) {
         return fail(err);
     }
 

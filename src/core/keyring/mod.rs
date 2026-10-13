@@ -1,7 +1,7 @@
 pub mod credentials;
 
 /// Behavior shared by every kind of secret this CLI manages under one
-/// `keyring.toml` + one keychain service (ADR-0022), implemented by
+/// `keyring.toml` (ADR-0022, secret storage per ADR-0135), implemented by
 /// `commands::keyring::email::Identity`, `commands::keyring::bucket::
 /// BucketConfig`, and the concrete `Entry` enum that wraps both
 /// (`commands::keyring::store::Entry`) for storage (ADR-0023).

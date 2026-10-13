@@ -115,3 +115,12 @@ This rewiring is real and necessary — Rust's whole-crate compilation means it 
 - Any change to how `job run email-sync` itself discovers configured bucket-configs to upload to, beyond reading them from the new unified store instead of the old one.
 
 Implementation is a separate, later task.
+
+## Amendment (2026-10-12): secrets move out of the OS keychain (ADR-0135)
+
+ADR-0135 retires the OS keychain entirely: every secret this ADR routed to
+it now lives in `keyring.toml` itself as plaintext, protected only by file
+permissions. The one keychain service name this ADR established
+(`"pigeon"`) and the alias-uniqueness guarantee it built to make that
+service name safe to share across kinds are both superseded — there is no
+keychain service left.

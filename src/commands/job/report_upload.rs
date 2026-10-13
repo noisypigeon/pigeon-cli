@@ -33,7 +33,7 @@ pub(crate) fn resolve(
         .find(|bucket_config| bucket_config.alias == alias)
         .ok_or_else(|| format!("no bucket-config named '{alias}'"))?
         .clone();
-    let secret = credentials::get_secret(&bucket_config.alias)?;
+    let secret = credentials::resolve_secret(&bucket_config.alias, &bucket_config.secret_key);
     Ok((bucket_config, secret))
 }
 
