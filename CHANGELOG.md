@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.16] - 2026-10-13
+
 - ADR-0134: removes `pigeon job run decrypt-files` entirely -- no evidenced ongoing use, mirroring the redundancy argument that retired `sort` (ADR-0094) and `reduce` (ADR-0103). `Encryptor::decrypt` (`core::crypto`) is deleted outright, having never had a caller outside this job since ADR-0025 added it speculatively; every shared wizard helper it used had other active consumers and needed no un-hoisting ([#68](https://github.com/noisypigeon/pigeon-cli/pull/68)).
 
 ## [0.4.15] - 2026-10-12
