@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.20] - 2026-10-13
+
 - ADR-0138: restores composed `alias:prefix/` addressing, which ADR-0136 removed as having "no sub-path affordance" -- a regression, not a deferral, since the real deployment addresses one `source` and one `destination` bucket holding per-extension *directories*. `remote_address` becomes a `RemoteTarget` parsed from `alias[:prefix/]`: a bare alias is still the whole bucket root, the alias half is still keyring-validated, and prefixes are normalized (leading `/` stripped, one trailing `/`, `..` segments rejected). ADR-0137's `--input-file-type` inference moves off the bucket alias and onto the prefix, so `--source source` means `source:mp4/` while an explicit prefix wins verbatim -- which makes the alias mandatory again non-interactively and deletes ADR-0137's `prompt_select_bucket` default-alias hint as zero-consumer code. Applies to `transform` and `rclone copy`/`delete`; `deduplicate` keeps whole-bucket addressing pending its alias-keyed checkpoint rework ([#73](https://github.com/noisypigeon/pigeon-cli/issues/73)). Amends ADR-0136 and ADR-0137 ([#72](https://github.com/noisypigeon/pigeon-cli/pull/72)).
 
 ## [0.4.19] - 2026-10-13
