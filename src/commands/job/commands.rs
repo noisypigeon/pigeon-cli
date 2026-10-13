@@ -1,5 +1,7 @@
-use crate::commands::job::cli::{JobCommands, JobType, RcloneAction, RcloneArgs};
-use crate::commands::job::{deduplicate, email_pull, email_sync, rclone, transform};
+use crate::commands::job::cli::{
+    EmailAction, EmailArgs, JobCommands, JobType, RcloneAction, RcloneArgs,
+};
+use crate::commands::job::{deduplicate, email_import, email_pull, email_sync, rclone, transform};
 use crate::core::observability::Observable as _;
 
 pub fn dispatch(command: JobCommands) -> i32 {
@@ -54,6 +56,30 @@ pub fn dispatch(command: JobCommands) -> i32 {
                     job_name,
                     non_interactive,
                 ),
+                JobType::Email(EmailArgs { action }) => match action {
+                    EmailAction::Import {
+                        identities,
+                        destination,
+                        local_output,
+                        messages_per_minute,
+                        batch_size,
+                        max_connections,
+                        push_concurrency,
+                        report_bucket,
+                        non_interactive,
+                    } => email_import::wizard::dispatch(
+                        identities,
+                        destination,
+                        local_output,
+                        messages_per_minute,
+                        batch_size,
+                        max_connections,
+                        push_concurrency,
+                        report_bucket,
+                        job_name,
+                        non_interactive,
+                    ),
+                },
                 JobType::Deduplicate {
                     source_bucket,
                     local_output,

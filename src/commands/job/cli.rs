@@ -190,6 +190,10 @@ pub enum JobType {
         non_interactive: bool,
     },
 
+    /// Email jobs addressed through the keyring. See subcommands for the
+    /// available actions.
+    Email(EmailArgs),
+
     /// Recursively scans a bucket, always inflates every zip found (the
     /// zip container itself is never uploaded, only its inflated
     /// contents), content-hashes every file bucket-wide to keep one
@@ -405,6 +409,105 @@ pub enum JobType {
 }
 
 #[derive(Args, Debug)]
+pub struct EmailArgs {
+    #[command(subcommand)]
+    pub action: EmailAction,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum EmailAction {
+    /// Reads one or more authenticated IMAP identities and delivers each
+    /// message's raw `.eml` plus its unpacked attachments to
+    /// `--destination`, at a declared, rate-limit-respecting pace
+    /// (ADR-0146). Deliberately minimal: no deduplication, no indexing, no
+    /// renaming, no content transform, and no encryption -- it moves bytes
+    /// and nothing else. Each message is pushed individually via `rclone
+    /// copyto` the moment it is fetched and its local copy deleted
+    /// immediately afterwards, so a run lasting days delivers
+    /// incrementally and local disk stays bounded to the in-flight window
+    /// regardless of how large the account is. A message that fails is
+    /// simply not checkpointed, so a rerun refetches it; nothing is
+    /// retained locally for diagnosis, because the server still has it.
+    /// Requires `rclone` on `PATH`.
+    Import {
+        /// Aliases of the identities to import, comma-separated.
+        /// Interactively multi-selected from the authenticated identities
+        /// when omitted and stdin is a terminal; required otherwise.
+        #[arg(long, value_delimiter = ',')]
+        identities: Option<Vec<String>>,
+
+        /// Where to deliver to: a configured bucket-config alias,
+        /// optionally composed with a prefix inside it -- `archive` is the
+        /// whole bucket, `archive:eml/` its `eml/` directory (ADR-0138).
+        /// Unlike `transform`, an omitted prefix stays the bucket root
+        /// (this job has no file-type concept to derive one from).
+        /// Mandatory -- interactively selected when omitted and stdin is a
+        /// terminal; required otherwise.
+        #[arg(long)]
+        destination: Option<String>,
+
+        /// Local directory in-flight messages and this run's bookkeeping
+        /// are staged under. Defaults to a directory under the OS temp
+        /// directory when omitted. Unlike the other email jobs this is not
+        /// an output tree: each message's local copy is deleted as soon as
+        /// its push resolves (ADR-0146 §5), so it stays near-empty.
+        #[arg(long)]
+        local_output: Option<PathBuf>,
+
+        /// Ceiling on how many messages per minute are fetched, across
+        /// every selected identity -- the run's throughput governor
+        /// (ADR-0146 §4). Deliberately has no "unlimited" value: the
+        /// absence of a cap is what this job exists to fix. Interactively
+        /// prompted when omitted and stdin is a terminal; defaults to 120
+        /// otherwise, which puts a 200,000-message account at roughly 28
+        /// hours.
+        #[arg(long)]
+        messages_per_minute: Option<usize>,
+
+        /// How many UIDs one `UID FETCH` asks for at a time. Small enough
+        /// that a failed batch loses little work, large enough to amortise
+        /// the round trip. Interactively prompted when omitted and stdin is
+        /// a terminal; defaults to 20 otherwise.
+        #[arg(long)]
+        batch_size: Option<usize>,
+
+        /// Maximum simultaneous IMAP connections opened to any one
+        /// identity. A per-identity cap set via `pigeon keyring
+        /// add/modify email` still overrides this for that identity only
+        /// (ADR-0080). Interactively prompted when omitted and stdin is a
+        /// terminal; defaults to 2 otherwise -- well below the other email
+        /// jobs' 6, since throughput here comes from
+        /// `--messages-per-minute` rather than from parallelism.
+        #[arg(long)]
+        max_connections: Option<usize>,
+
+        /// Maximum concurrent per-object pushes (`rclone copyto`).
+        /// Interactively prompted when omitted and stdin is a terminal;
+        /// defaults to 4 otherwise -- deliberately below the other jobs'
+        /// upload concurrency, since these pushes interleave with a
+        /// throttled fetch rather than racing to drain a finished queue.
+        #[arg(long)]
+        push_concurrency: Option<usize>,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        report_bucket: Option<String>,
+
+        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
+        #[arg(long)]
+        non_interactive: bool,
+    },
+}
+
+#[derive(Args, Debug)]
 pub struct RcloneArgs {
     #[command(subcommand)]
     pub action: RcloneAction,
@@ -527,6 +630,9 @@ impl Observable for JobType {
         match self {
             JobType::EmailSync { .. } => "job.email-sync",
             JobType::EmailPull { .. } => "job.email-pull",
+            JobType::Email(args) => match args.action {
+                EmailAction::Import { .. } => "job.email-import",
+            },
             JobType::Deduplicate { .. } => "job.deduplicate",
             JobType::Rclone(args) => match args.action {
                 RcloneAction::Copy { .. } => "job.rclone-copy",

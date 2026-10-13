@@ -2,6 +2,7 @@ pub(crate) mod archive;
 pub mod cli;
 pub mod commands;
 pub mod deduplicate;
+pub mod email_import;
 pub mod email_pull;
 pub mod email_sync;
 pub(crate) mod local;
