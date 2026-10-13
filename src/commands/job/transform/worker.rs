@@ -676,9 +676,39 @@ pub(crate) async fn run_transform_job(
     // locally (ADR-0120's "Accepted limitation").
     let source_relative_paths = destination::list_source_relative_paths(
         &plan.source_path,
-        plan.input_file_type.extension(),
+        plan.input_file_type.extensions(),
     )
     .await?;
+    // ADR-0139: a listing that matches nothing produces a run that is
+    // byte-for-byte indistinguishable from a successful no-op (0 pulled, 0
+    // failed, 0 rclone errors, exit 0) -- which is exactly how the
+    // `.jpg`-vs-`.jpeg` filter bug stayed invisible. Say so out loud.
+    // `eprintln!` as well as `tracing::warn!` on purpose: `observability::
+    // init` deliberately registers no console layer, so a `warn!` alone
+    // reaches only `pigeon.jsonl` and never the operator's terminal. Safe
+    // here specifically because `transform` runs no `MultiProgress` bars
+    // for a stray write to corrupt (ADR-0015).
+    if source_relative_paths.is_empty() {
+        let patterns = plan
+            .input_file_type
+            .extensions()
+            .iter()
+            .map(|extension| format!("*.{extension}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        eprintln!(
+            "WARNING: {} matched 0 files for --input-file-type {} (patterns: {patterns}). \
+             Nothing to do -- check the prefix and file type.",
+            plan.source_path, plan.input_file_type
+        );
+        tracing::warn!(
+            pigeon_job = "transform",
+            source = %plan.source_path,
+            input_file_type = %plan.input_file_type,
+            patterns = %patterns,
+            "transform: source listing matched no files"
+        );
+    }
     let selection = files_needing_pull(
         source_relative_paths,
         &plan.source_path,
@@ -747,7 +777,6 @@ pub(crate) async fn run_transform_job(
                         on_copied: Some(copied_tx),
                         pid_tx: Some(pull_pid_tx_clone),
                     },
-                    ..Default::default()
                 })
                 .run()
                 .await
@@ -1262,6 +1291,111 @@ mod tests {
         let rerun_summary = run_transform_job(&plan, 2, 2).await.unwrap();
         assert_eq!(rerun_summary.pushed, 0);
         assert!(rerun_summary.outcomes.is_empty());
+    }
+
+    /// The end-to-end regression test for ADR-0139, and the coverage hole
+    /// that let it ship: every pre-existing jpeg test used a `.jpeg`
+    /// fixture and none used `.jpg`, so a filter that matched only one
+    /// spelling passed the whole suite. A `--input-file-type=jpeg` run over
+    /// a source of `.jpg` files silently pushed nothing.
+    #[tokio::test]
+    async fn run_transform_job_handles_every_spelling_of_one_input_kind() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        // The reported failure's shape: a source holding only the `.jpg`
+        // spelling, plus the `.jpeg` one to prove both still work together,
+        // plus an unrelated format that must stay excluded.
+        std::fs::write(source_for_pull.join("a.jpg"), b"jpg bytes").unwrap();
+        std::fs::write(source_for_pull.join("b.jpeg"), b"jpeg bytes").unwrap();
+        std::fs::write(source_for_pull.join("c.png"), b"a different format").unwrap();
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output,
+            input_file_type: InputFileType::Jpeg,
+            download_transfers: 2,
+            download_checkers: 4,
+            video_quality: VideoQuality::Medium,
+            tpslimit: None,
+            max_pending_downloads: 100,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed);
+        assert_eq!(
+            summary.pushed, 2,
+            "both the .jpg and the .jpeg file must be pushed"
+        );
+        assert!(
+            summary
+                .outcomes
+                .iter()
+                .all(|outcome| outcome.outcome == Outcome::CopiedThrough),
+            "jpeg input is copied through, never transcoded"
+        );
+        let mut processed: Vec<&str> = summary
+            .outcomes
+            .iter()
+            .map(|outcome| outcome.relative_path.as_str())
+            .collect();
+        processed.sort();
+        assert_eq!(processed, vec!["a.jpg", "b.jpeg"]);
+
+        // The `.png` must not have been swept up by the widened filter.
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 2);
+    }
+
+    /// ADR-0139: a source whose listing matches nothing is a clean, quiet
+    /// no-op in the summary (0 pulled, 0 failed, exit 0) -- which is why it
+    /// was mistaken for success. The run must stay a no-op, but also emit a
+    /// warning; run with `--nocapture` to see the WARNING line this prints.
+    #[tokio::test]
+    async fn run_transform_job_is_a_clean_no_op_when_the_source_matches_nothing() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        // Present, but not of the requested input kind.
+        std::fs::write(source_for_pull.join("notes.txt"), b"not an image").unwrap();
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: dir.path().join("work"),
+            input_file_type: InputFileType::Jpeg,
+            download_transfers: 2,
+            download_checkers: 4,
+            video_quality: VideoQuality::Medium,
+            tpslimit: None,
+            max_pending_downloads: 100,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed);
+        assert_eq!(summary.pulled, 0);
+        assert_eq!(summary.pushed, 0);
+        assert!(summary.outcomes.is_empty());
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
     }
 
     /// The direct regression test for ADR-0116's production incident: one

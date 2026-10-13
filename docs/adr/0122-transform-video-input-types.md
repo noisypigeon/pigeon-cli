@@ -205,3 +205,15 @@ implementation resolved immediately after `input_file_type`, conditionally.
   a short test .mp4> --destination-path <local dir> --non-interactive`, then
   `ffprobe` the output to confirm codec `hevc`, tag `hvc1`, and matching
   dimensions/duration against the source.
+
+## Amendment (2026-10-12): "one extension per run" becomes one input *kind* per run (ADR-0139)
+
+This ADR cites ADR-0112's `jpg`-for-`jpeg` alias approvingly as leniency
+precedent while reaffirming that a run "still names exactly one extension to
+pull per run". Those two statements were in tension: the alias means one
+input kind can legitimately have two on-disk spellings, and the
+single-extension filter silently matched only one of them (a `jpeg` run found
+no `.jpg` files at all). ADR-0139 keeps this ADR's real constraint -- one
+input *kind* per run, so a `mov` run still never picks up `.mp4` -- while
+letting that kind match every spelling of itself. The video kinds this ADR
+added each keep exactly one spelling; only `Jpeg` has two.

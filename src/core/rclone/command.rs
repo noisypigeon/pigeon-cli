@@ -19,10 +19,6 @@ pub(crate) struct Copy {
     pub transfers: usize,
     pub checkers: usize,
     pub tpslimit: Option<usize>,
-    /// Restricts the copy to `*.<extension>` (case-insensitive) --
-    /// `transform`'s pull phase uses this to avoid transferring anything
-    /// outside its single `--input-file-type` scope.
-    pub include_extension: Option<String>,
     /// Restricts the copy to exactly the relative paths listed in this
     /// file, via `--files-from-raw` (ADR-0124) -- a literal filename, never
     /// reinterpreted as a glob pattern.
@@ -53,11 +49,6 @@ impl RcloneCommand for Copy {
         if let Some(tpslimit) = self.tpslimit {
             args.push("--tpslimit".to_string());
             args.push(tpslimit.to_string());
-        }
-        if let Some(extension) = &self.include_extension {
-            args.push("--include".to_string());
-            args.push(format!("*.{extension}"));
-            args.push("--ignore-case".to_string());
         }
         if let Some(files_from) = &self.files_from {
             args.push("--files-from-raw".to_string());
@@ -196,7 +187,7 @@ pub(crate) struct LsjsonEntry {
 }
 
 /// `rclone lsjson <path>` -- a metadata-only listing, no bytes transferred.
-/// `recursive` + `include_extension` together give `transform`'s source
+/// `recursive` + `include_extensions` together give `transform`'s source
 /// listing; neither given gives a flat destination listing. No `log_path`
 /// at all: `lsjson`'s own stdout *is* the data this command returns, so it
 /// carries no separate `--use-json-log` operation log the way `copy`/
@@ -205,7 +196,13 @@ pub(crate) struct LsjsonEntry {
 pub(crate) struct Lsjson {
     pub path: String,
     pub recursive: bool,
-    pub include_extension: Option<String>,
+    /// Restricts the listing to these extensions, one `--include
+    /// '*.<ext>'` per entry (rclone ORs repeated `--include` flags).
+    /// A collection rather than one string because a single input kind can
+    /// have several on-disk spellings -- `.jpg` and `.jpeg` (ADR-0139);
+    /// when this held one `Option<String>`, a `jpeg` run over a directory
+    /// of `.jpg` files silently matched nothing. Empty means no filter.
+    pub include_extensions: Vec<String>,
     pub job: &'static str,
 }
 
@@ -225,9 +222,13 @@ impl RcloneCommand for Lsjson {
         if self.recursive {
             args.push("--recursive".to_string());
         }
-        if let Some(extension) = &self.include_extension {
-            args.push("--include".to_string());
-            args.push(format!("*.{extension}"));
+        if !self.include_extensions.is_empty() {
+            for extension in &self.include_extensions {
+                args.push("--include".to_string());
+                args.push(format!("*.{extension}"));
+            }
+            // One `--ignore-case` governs every filter rule, so it is
+            // pushed once rather than per pattern.
             args.push("--ignore-case".to_string());
         }
         args.push(self.path.clone());
@@ -394,5 +395,55 @@ impl RcloneCommand for CopyTo {
 
     fn retry(&self) -> Option<(usize, Duration)> {
         Some((3, Duration::from_secs(2)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// First argv coverage for any implementor (ADR-0139): the `--include`
+    /// construction was previously untested, which is how a filter that
+    /// could only ever express one extension spelling went unnoticed.
+    #[test]
+    fn lsjson_emits_one_include_per_extension_and_a_single_ignore_case() {
+        let args = (Lsjson {
+            path: "source:jpg/".to_string(),
+            recursive: true,
+            include_extensions: vec!["jpg".to_string(), "jpeg".to_string()],
+            job: "transform",
+        })
+        .args();
+
+        let includes: Vec<&String> = args
+            .iter()
+            .zip(args.iter().skip(1))
+            .filter(|(flag, _)| *flag == "--include")
+            .map(|(_, pattern)| pattern)
+            .collect();
+        assert_eq!(includes, vec!["*.jpg", "*.jpeg"]);
+        // rclone ORs repeated --include rules, and one --ignore-case
+        // governs all of them.
+        assert_eq!(args.iter().filter(|arg| *arg == "--ignore-case").count(), 1);
+        assert!(args.contains(&"--recursive".to_string()));
+        // The path is last, after every flag.
+        assert_eq!(args.last().unwrap(), "source:jpg/");
+    }
+
+    #[test]
+    fn lsjson_emits_no_include_or_ignore_case_when_unfiltered() {
+        // The destination listing relies on this: it must see every
+        // filename regardless of the run's input kind.
+        let args = (Lsjson {
+            path: "destination:jpg/".to_string(),
+            job: "transform",
+            ..Default::default()
+        })
+        .args();
+
+        assert!(!args.contains(&"--include".to_string()));
+        assert!(!args.contains(&"--ignore-case".to_string()));
+        assert!(!args.contains(&"--recursive".to_string()));
+        assert!(args.contains(&"--files-only".to_string()));
     }
 }

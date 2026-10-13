@@ -91,7 +91,7 @@ impl WizardInput for VideoQualityInput {
 /// config file pigeon itself generates from the alias half, which is
 /// validated against the keyring exactly as before.
 ///
-/// `default_prefix` is `input_file_type.extension()`: the prefix used when
+/// `default_prefix` is `input_file_type.canonical_extension()`: the prefix used when
 /// the flag names a bucket but no prefix (`--source source` with
 /// `--input-file-type mp4` → `source:mp4/`). An explicitly-given prefix is
 /// always kept verbatim. The **alias** half is never inferred -- that was
@@ -423,7 +423,7 @@ async fn dispatch_async(
     let source_path = match (SourceBucketInput {
         flag: source,
         store: &keyring_store,
-        default_prefix: input_file_type.extension(),
+        default_prefix: input_file_type.canonical_extension(),
     })
     .resolve(non_interactive)
     {
