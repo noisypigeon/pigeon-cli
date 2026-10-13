@@ -913,6 +913,8 @@ fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_fl
         .stdout(predicate::str::contains("--destination-bucket").not())
         // ADR-0138: the composed form is documented on both flags.
         .stdout(predicate::str::contains("media:mp4/"))
+        // ADR-0142: the audio-only input kind is listed.
+        .stdout(predicate::str::contains("mp4-audio"))
         // ADR-0136: bucket-config aliases, not raw rclone path strings, and
         // no separate upload phase of the shape --upload-concurrency sizes.
         .stdout(predicate::str::contains("--source-path").not())

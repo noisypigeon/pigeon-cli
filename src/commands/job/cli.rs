@@ -281,8 +281,10 @@ pub enum JobType {
     Rclone(RcloneArgs),
 
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
-    /// maximum-quality `.jpg`, or video files (`mov`/`m4v`/`mp4`, ADR-0122)
-    /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`
+    /// maximum-quality `.jpg`, video files (`mov`/`m4v`/`mp4`, ADR-0122)
+    /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`,
+    /// or audio-only recordings carrying an `.mp4` extension (`mp4-audio`,
+    /// ADR-0142) into Opus `.opus`
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
     /// pull `--source` into a local staging tree, transcoding/copying each
     /// file locally and pushing it individually via `rclone copyto` the
@@ -302,16 +304,22 @@ pub enum JobType {
     /// `ffmpeg`/`ffprobe` on `PATH`.
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
-        /// `mov`, `m4v`, or `mp4`. Interactively selected when omitted and
-        /// stdin is a terminal; required otherwise.
+        /// `mov`, `m4v`, `mp4`, or `mp4-audio`. Interactively selected when
+        /// omitted and stdin is a terminal; required otherwise.
+        /// `mp4-audio` is for audio-only recordings carrying an `.mp4`
+        /// extension (voice notes), transcoded to `.opus`; a file that
+        /// actually has a video stream is refused rather than silently
+        /// losing its video.
         #[arg(long)]
         input_file_type: Option<String>,
 
-        /// Compression level for a video input kind (`mov`/`m4v`/`mp4`):
+        /// Compression level for a true video input kind (`mov`/`m4v`/`mp4`
+        /// -- not `mp4-audio`, which has no video stream):
         /// `low`, `medium` (default), `high`, or `lossless` -- a small
-        /// vetted `libx265` CRF menu (ADR-0122). Ignored for an image input
-        /// kind. Interactively selected when omitted, stdin is a terminal,
-        /// and the input kind is video; defaults to `medium` otherwise.
+        /// vetted `libx265` CRF menu (ADR-0122). Ignored for every other
+        /// input kind. Interactively selected when omitted, stdin is a
+        /// terminal, and the input kind is video; defaults to `medium`
+        /// otherwise.
         #[arg(long)]
         video_quality: Option<String>,
 
@@ -329,8 +337,8 @@ pub enum JobType {
         /// Where to push to, same `alias[:prefix/]` form as `--source`
         /// (ADR-0138). An omitted prefix defaults to `--input-file-type`'s
         /// *output* extension (`jpg` for an image kind, `mp4` for a video
-        /// one), so one bucket can serve as both source and destination
-        /// when the prefixes differ.
+        /// one, `opus` for `mp4-audio`), so one bucket can serve as both
+        /// source and destination when the prefixes differ.
         #[arg(long)]
         destination: Option<String>,
 
