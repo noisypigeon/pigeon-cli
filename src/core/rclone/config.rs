@@ -31,11 +31,24 @@ fn backend_section_name(alias: &str) -> String {
     format!("{alias}{BACKEND_SECTION_SUFFIX}")
 }
 
-/// Sibling to `Store::default_path()`'s `keyring.toml` -- same config
+/// Sibling to `Store::resolve_path()`'s `keyring.toml` -- same config
 /// directory, so the generated file is one well-known, inspectable artifact
 /// rather than a new one per run.
 pub(crate) fn rclone_config_path() -> Result<PathBuf, String> {
-    let keyring_path = Store::default_path()?;
+    rclone_config_path_beside(&Store::resolve_path()?)
+}
+
+/// `rclone_config_path`'s derivation, as a pure function of the keyring's
+/// location. Split out so the sibling relationship stays testable now that
+/// `Store::resolve_path` can be redirected by `--keyring-path`, which lives
+/// in a `OnceLock` a test cannot set per-case (ADR-0145 §3).
+///
+/// The generated config deliberately follows the keyring rather than
+/// staying at the OS config directory: both files carry the same plaintext
+/// credentials, and keeping them together means two runs against different
+/// keyrings no longer race on one shared generated file -- narrowing the
+/// edge case ADR-0136's Consequences named.
+fn rclone_config_path_beside(keyring_path: &Path) -> Result<PathBuf, String> {
     let dir = keyring_path.parent().ok_or_else(|| {
         format!(
             "could not determine a parent directory for {}",
@@ -209,6 +222,18 @@ mod tests {
     use super::*;
     use crate::commands::keyring::bucket::store::BucketConfig;
     use crate::commands::keyring::store::Entry;
+
+    #[test]
+    fn rclone_config_path_lands_beside_an_overridden_keyring_path() {
+        let path = rclone_config_path_beside(Path::new("/etc/pigeon/keyring.toml")).unwrap();
+        assert_eq!(path, PathBuf::from("/etc/pigeon/rclone.conf"));
+    }
+
+    #[test]
+    fn rclone_config_path_follows_the_keyring_into_any_directory() {
+        let path = rclone_config_path_beside(Path::new("/tmp/alt/custom-name.toml")).unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/alt/rclone.conf"));
+    }
 
     fn sample_bucket(alias: &str) -> BucketConfig {
         BucketConfig {

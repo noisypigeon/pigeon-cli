@@ -46,6 +46,27 @@ fn append_keyring_entry(config_dir: &TempDir, toml_block: &str) {
     fs::write(path, existing + toml_block).unwrap();
 }
 
+/// Writes a bucket-config to an arbitrary `keyring.toml` outside any
+/// `PIGEON_CONFIG_DIR`, for the `--keyring-path` tests (ADR-0145). Mirrors
+/// `write_bucket_config`'s entry shape; takes a file path rather than a
+/// config directory, which is exactly the distinction the flag draws.
+///
+/// The endpoint is an unroutable loopback port rather than
+/// `write_bucket_config`'s plausible-looking URL, so that a test which
+/// accidentally got past alias resolution would fail locally instead of
+/// making a real network call to a third party. No test here should reach
+/// one: rclone's `--retries 5 --low-level-retries 20` turns even a refused
+/// connection into minutes of backoff.
+fn write_bucket_config_at(keyring_path: &std::path::Path, alias: &str) {
+    fs::write(
+        keyring_path,
+        format!(
+            "[[entries]]\nkind = \"bucket\"\nalias = \"{alias}\"\nendpoint = \"http://127.0.0.1:1\"\nbucket = \"my-bucket\"\naccess_key_id = \"AKID\"\nsecret_key = \"fake-secret\"\n"
+        ),
+    )
+    .unwrap();
+}
+
 #[test]
 fn top_level_help_lists_keyring_and_job_commands() {
     pigeon()
@@ -1198,4 +1219,164 @@ fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_er
         .failure()
         .code(1)
         .stderr(predicate::str::contains("was not found on PATH"));
+}
+
+// --- ADR-0145: --keyring-path -------------------------------------------
+
+#[test]
+fn top_level_help_shows_the_keyring_path_flag() {
+    pigeon()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--keyring-path"));
+}
+
+#[test]
+fn keyring_path_is_global_and_accepted_after_a_job_subcommand() {
+    // The whole point of `global = true`: the flag parses *after* the
+    // subcommand, which is where an operator naturally types it.
+    for args in [
+        vec!["job", "run", "transform", "--help"],
+        vec!["job", "run", "deduplicate", "--help"],
+        vec!["job", "run", "rclone", "copy", "--help"],
+        vec!["job", "run", "rclone", "delete", "--help"],
+    ] {
+        pigeon()
+            .args(&args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--keyring-path"));
+    }
+}
+
+#[test]
+fn keyring_path_takes_precedence_over_the_config_dir_env_var() {
+    // The env-var keyring HAS the bucket; the --keyring-path one does not.
+    // Resolving the alias must therefore fail -- which it only can if the
+    // flag beat the env var (ADR-0145 §1).
+    let config_dir = TempDir::new().unwrap();
+    let alt = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "src-bucket");
+    write_bucket_config_at(&alt.path().join("keyring.toml"), "a-different-bucket");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "deduplicate",
+            "--keyring-path",
+            alt.path().join("keyring.toml").to_str().unwrap(),
+            "--source-bucket",
+            "src-bucket",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "no bucket-config named 'src-bucket'",
+        ));
+}
+
+#[test]
+fn an_explicit_keyring_path_that_does_not_exist_fails_fast_naming_the_path() {
+    // Without the guard, `Store::load` treats a missing file as an EMPTY
+    // store, so a typo'd path surfaces much later as "no bucket-config
+    // named ...", naming neither the real problem nor the path.
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "src-bucket");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "deduplicate",
+            "--keyring-path",
+            "/no/such/dir/keyring.toml",
+            "--source-bucket",
+            "src-bucket",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--keyring-path /no/such/dir/keyring.toml does not exist",
+        ))
+        .stderr(predicate::str::contains("no bucket-config named").not());
+}
+
+#[test]
+fn keyring_list_reads_the_overridden_keyring_path() {
+    // `--keyring-path` is global, so it reaches `pigeon keyring` too, not
+    // only the job types that motivated it.
+    let config_dir = TempDir::new().unwrap();
+    let alt = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "in-the-env-dir");
+    write_bucket_config_at(&alt.path().join("keyring.toml"), "only-at-the-flag-path");
+
+    pigeon_in(&config_dir)
+        .args([
+            "keyring",
+            "list",
+            "--keyring-path",
+            alt.path().join("keyring.toml").to_str().unwrap(),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("only-at-the-flag-path"))
+        .stdout(predicate::str::contains("in-the-env-dir").not());
+}
+
+#[test]
+fn deduplicate_generates_the_sandboxed_rclone_config_beside_the_keyring() {
+    // ADR-0145 §5: `deduplicate` never called `write_sandboxed_config` at
+    // all, so it ran against whatever a previous `transform`/`rclone` run
+    // happened to leave behind -- or nothing. The generated config must now
+    // appear beside the keyring this run was pointed at, and it must appear
+    // even though this run goes on to fail, since preflight precedes
+    // resolution.
+    let config_dir = TempDir::new().unwrap();
+    let alt = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config_at(&alt.path().join("keyring.toml"), "src-bucket");
+
+    let generated = alt.path().join("rclone.conf");
+    assert!(!generated.exists());
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "deduplicate",
+            "--keyring-path",
+            alt.path().join("keyring.toml").to_str().unwrap(),
+            "--source-bucket",
+            "no-such-bucket",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--non-interactive",
+        ])
+        .assert()
+        .failure();
+
+    assert!(
+        generated.exists(),
+        "deduplicate did not generate rclone.conf"
+    );
+    let contents = fs::read_to_string(&generated).unwrap();
+    assert!(contents.contains("[src-bucket]"), "{contents}");
+    assert!(
+        !config_dir.path().join("rclone.conf").exists(),
+        "the default config dir must be left untouched"
+    );
 }

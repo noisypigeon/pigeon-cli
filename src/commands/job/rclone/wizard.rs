@@ -4,15 +4,14 @@ use dialoguer::Input;
 
 use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
-    CheckersInput, ConfirmInput, TpslimitInput, TransfersInput,
+    CheckersInput, ConfirmInput, TpslimitInput, TransfersInput, load_keyring, prepare_rclone,
 };
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
-use crate::core::rclone::config::{RemoteTarget, write_sandboxed_config};
+use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
-use super::worker;
 use super::{RcloneCopyJob, RcloneDeleteJob};
 
 /// Resolves `--source-bucket`, a pigeon keyring `BucketConfig` alias
@@ -169,26 +168,11 @@ async fn dispatch_copy_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    // Checked before any prompts, mirroring `transform::wizard`'s
-    // `check_ffmpeg_available()` call -- fail immediately on a missing
-    // binary, not partway through a long-running `rclone copy` subprocess.
-    if let Err(err) = worker::check_rclone_available().await {
-        return fail(err);
-    }
-
-    let keyring_store_path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let keyring_store = match Store::load(&keyring_store_path) {
+    let keyring_store = match load_keyring() {
         Ok(store) => store,
         Err(err) => return fail(err),
     };
-    let rclone_config_path = match crate::core::rclone::config::rclone_config_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    if let Err(err) = write_sandboxed_config(&keyring_store, &rclone_config_path) {
+    if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
 
@@ -345,23 +329,11 @@ async fn dispatch_delete_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    if let Err(err) = worker::check_rclone_available().await {
-        return fail(err);
-    }
-
-    let keyring_store_path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let keyring_store = match Store::load(&keyring_store_path) {
+    let keyring_store = match load_keyring() {
         Ok(store) => store,
         Err(err) => return fail(err),
     };
-    let rclone_config_path = match crate::core::rclone::config::rclone_config_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    if let Err(err) = write_sandboxed_config(&keyring_store, &rclone_config_path) {
+    if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
 

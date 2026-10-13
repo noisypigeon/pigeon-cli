@@ -17,8 +17,56 @@
 
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
-use crate::commands::keyring::store::Store;
+use crate::commands::keyring::store::{Store, keyring_path_override};
 use crate::core::wizard::WizardInput;
+
+/// Resolves the keyring's path and loads it, the first thing every job's
+/// async dispatch does. Hoisted from six byte-identical copies, one per job
+/// wizard (ADR-0145 §4).
+///
+/// Refuses an explicitly-passed `--keyring-path` naming a file that doesn't
+/// exist, rather than loading the empty store `Store::load` returns for any
+/// missing file. Without the guard a typo'd path surfaces much later as
+/// "no bucket-configs are configured", which names neither the real problem
+/// nor the path -- the same exit-successfully-having-done-nothing failure
+/// ADR-0140 closed for a source `Lsjson`. The check lives here rather than
+/// in `Store::load` precisely because `pigeon keyring add` must still be
+/// able to create a keyring at a path that doesn't exist yet, so
+/// `keyring::wizard` keeps calling `Store::resolve_path`/`Store::load`
+/// directly.
+pub(crate) fn load_keyring() -> Result<Store, String> {
+    let path = Store::resolve_path()?;
+    if let Some(explicit) = keyring_path_override()
+        && !explicit.exists()
+    {
+        return Err(format!(
+            "--keyring-path {} does not exist",
+            explicit.display()
+        ));
+    }
+    Store::load(&path)
+}
+
+/// Every rclone-backed job's preflight: confirm the binary is on `PATH`,
+/// then regenerate the sandboxed config from the current keyring (ADR-0136
+/// §2). Hoisted from three byte-identical copies in `rclone::wizard`
+/// (copy and delete) and `transform::wizard` (ADR-0145 §5).
+///
+/// `deduplicate` is the fourth call site and the reason this is shared at
+/// all: it had neither half, despite all three of its data legs
+/// (`manifest`'s `Lsjson`, `worker`'s per-item `CopyTo` and bulk `Copy`)
+/// being alias-addressed rclone calls that read the generated config. It
+/// ran against whatever a previous `transform`/`rclone` run happened to
+/// leave behind -- or nothing at all -- so a `pigeon keyring modify bucket`
+/// never reached it, contradicting ADR-0136's "regenerated fresh from the
+/// current keyring state every time" guarantee.
+pub(crate) async fn prepare_rclone(store: &Store) -> Result<(), String> {
+    crate::core::rclone::check_available().await.map_err(|_| {
+        "'rclone' was not found on PATH -- required for every bucket-addressed job".to_string()
+    })?;
+    let config_path = crate::core::rclone::config::rclone_config_path()?;
+    crate::core::rclone::config::write_sandboxed_config(store, &config_path)
+}
 
 /// Resolves which bucket-config to upload this run's report/log/transcript
 /// to -- mandatory on every job type (ADR-0100). Put here directly

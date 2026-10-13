@@ -6,7 +6,7 @@ use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
     CheckersInput, ConfirmInput, CpuConcurrencyInput, TpslimitInput, TransfersInput,
-    UploadTargetInput,
+    UploadTargetInput, load_keyring, prepare_rclone,
 };
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::store::Store;
@@ -237,14 +237,16 @@ async fn dispatch_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    let keyring_store_path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let keyring_store = match Store::load(&keyring_store_path) {
+    let keyring_store = match load_keyring() {
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+    // Ahead of the `--upload-only` branch: that path's bulk `Copy` is an
+    // alias-addressed rclone call too, so it needs the generated config
+    // just as much as a full run does (ADR-0145 §5).
+    if let Err(err) = prepare_rclone(&keyring_store).await {
+        return fail(err);
+    }
 
     if upload_only {
         return dispatch_upload_only(
