@@ -58,6 +58,7 @@ use std::time::Duration;
 
 use tokio::sync::{Semaphore, mpsc};
 use tokio::task::JoinSet;
+use tracing::Instrument;
 
 use super::format::{InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
@@ -92,9 +93,17 @@ const CIRCUIT_BREAKER_SAMPLE_SIZE: usize = 20;
 /// shared `retry_with_backoff` -- that helper has 5+ unrelated consumers
 /// (`push.rs`, `destination.rs`, `deduplicate`, ...); this classification is
 /// specific to `transcode_to_jpg`'s error strings alone.
+///
+/// `context` is the file's source-relative path, emitted as a
+/// `relative_path` field on every event below (ADR-0141). Without it these
+/// events named no file at all: `process_one`'s own span carries
+/// `relative_path` but stays at `debug` per ADR-0099's log-volume
+/// reasoning, so it is absent from a default-level run -- which is exactly
+/// the run whose failures someone reads afterwards.
 async fn retry_transcode_unless_fatal<T, F, Fut>(
     attempts: usize,
     backoff: Duration,
+    context: &str,
     mut f: F,
 ) -> Result<T, String>
 where
@@ -111,6 +120,7 @@ where
             Err(err) => {
                 if media::is_non_retryable_transcode_error(&err) {
                     tracing::warn!(
+                        relative_path = %context,
                         attempt = attempt + 1,
                         attempts,
                         error = %err,
@@ -119,6 +129,7 @@ where
                     return Err(err);
                 }
                 tracing::warn!(
+                    relative_path = %context,
                     attempt = attempt + 1,
                     attempts,
                     error = %err,
@@ -129,7 +140,12 @@ where
         }
     }
     if let Some(err) = &last_err {
-        tracing::error!(attempts, error = %err, "retries exhausted");
+        tracing::error!(
+            relative_path = %context,
+            attempts,
+            error = %err,
+            "retries exhausted"
+        );
     }
     Err(last_err
         .unwrap_or_else(|| "retry_transcode_unless_fatal called with zero attempts".to_string()))
@@ -349,20 +365,28 @@ async fn process_one(
         let transcode_result = match input_file_type {
             InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
             InputFileType::Png | InputFileType::Heic => {
-                retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
-                    media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path)
-                })
+                retry_transcode_unless_fatal(
+                    TRANSCODE_RETRIES,
+                    TRANSCODE_RETRY_BACKOFF,
+                    &pending_file.relative_path,
+                    || media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path),
+                )
                 .await
             }
             InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
-                retry_transcode_unless_fatal(TRANSCODE_RETRIES, TRANSCODE_RETRY_BACKOFF, || {
-                    media::transcode_video(
-                        &pending_file.absolute_path,
-                        &scratch_path,
-                        video_quality,
-                        transcode_threads,
-                    )
-                })
+                retry_transcode_unless_fatal(
+                    TRANSCODE_RETRIES,
+                    TRANSCODE_RETRY_BACKOFF,
+                    &pending_file.relative_path,
+                    || {
+                        media::transcode_video(
+                            &pending_file.absolute_path,
+                            &scratch_path,
+                            video_quality,
+                            transcode_threads,
+                        )
+                    },
+                )
                 .await
             }
         };
@@ -825,6 +849,15 @@ pub(crate) async fn run_transform_job(
     let mut circuit_breaker_tripped = false;
     let mut circuit_breaker_example: Option<String> = None;
 
+    // ADR-0141: `tokio::spawn` does not propagate the caller's ambient span,
+    // so without this every per-file event below (notably
+    // `retry_transcode_unless_fatal`'s WARN/ERROR lines) landed in
+    // `pigeon.jsonl` with no `command` span at all -- invisible to the
+    // `analyze-job-run` skill's documented `spans[].command` filter. Same
+    // capture-then-`.instrument()` shape ADR-0098 applied to
+    // `deduplicate::worker`'s own spawned tasks.
+    let command_span = tracing::Span::current();
+
     loop {
         while !circuit_breaker_tripped && in_flight.len() < concurrency.max(1) {
             let Some(pending_file) = queue.pop_front() else {
@@ -839,22 +872,25 @@ pub(crate) async fn run_transform_job(
             let push_semaphore = push_semaphore.clone();
             let input_file_type = plan.input_file_type;
             let video_quality = plan.video_quality;
-            in_flight.spawn(async move {
-                let outcome = process_one(
-                    &pending_file,
-                    input_file_type,
-                    video_quality,
-                    transcode_threads,
-                    &source_path,
-                    &destination_path,
-                    &result_dir,
-                    &scratch_dir,
-                    &push_log_dir,
-                    push_semaphore,
-                )
-                .await;
-                (relative_path, outcome)
-            });
+            in_flight.spawn(
+                async move {
+                    let outcome = process_one(
+                        &pending_file,
+                        input_file_type,
+                        video_quality,
+                        transcode_threads,
+                        &source_path,
+                        &destination_path,
+                        &result_dir,
+                        &scratch_dir,
+                        &push_log_dir,
+                        push_semaphore,
+                    )
+                    .await;
+                    (relative_path, outcome)
+                }
+                .instrument(command_span.clone()),
+            );
         }
 
         if in_flight.is_empty() && pull_finished && (queue.is_empty() || circuit_breaker_tripped) {
@@ -1173,7 +1209,7 @@ mod tests {
     async fn retry_transcode_unless_fatal_does_not_retry_a_non_retryable_error() {
         let attempts = AtomicUsize::new(0);
         let result: Result<(), String> =
-            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_secs(60), || {
+            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_secs(60), "x.heic", || {
                 attempts.fetch_add(1, Ordering::SeqCst);
                 async { Err("ffmpeg failed to transcode x.heic: moov atom not found".to_string()) }
             })
@@ -1188,7 +1224,7 @@ mod tests {
      {
         let attempts = AtomicUsize::new(0);
         let result: Result<&str, String> =
-            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_millis(1), || {
+            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_millis(1), "x.png", || {
                 let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
                 async move {
                     if count < 3 {
@@ -1209,7 +1245,7 @@ mod tests {
      {
         let attempts = AtomicUsize::new(0);
         let result: Result<(), String> =
-            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_millis(1), || {
+            retry_transcode_unless_fatal(TEST_RETRIES, Duration::from_millis(1), "x.mp4", || {
                 let count = attempts.fetch_add(1, Ordering::SeqCst) + 1;
                 async move { Err(format!("Cannot allocate memory (attempt {count})")) }
             })

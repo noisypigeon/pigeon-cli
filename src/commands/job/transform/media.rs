@@ -251,6 +251,34 @@ async fn probe_video_diagnostics(path: &Path) -> String {
     }
 }
 
+/// Whether `path` contains at least one video stream, used by
+/// `transcode_video` to reject an audio-only input before `ffmpeg` runs
+/// (ADR-0141). Unlike `probe_dimensions`/`probe_duration_seconds`, an
+/// `ffprobe` failure here returns `false` rather than "skip the check": a
+/// file whose streams can't be enumerated at all has no video stream this
+/// job can transcode, and `transcode_video`'s mandatory `-map 0:v:0` would
+/// fail on it regardless.
+async fn has_video_stream(path: &Path) -> bool {
+    let Ok(output) = tokio::process::Command::new("ffprobe")
+        .args([
+            "-v",
+            "error",
+            "-select_streams",
+            "v",
+            "-show_entries",
+            "stream=index",
+            "-of",
+            "csv=p=0",
+        ])
+        .arg(path)
+        .output()
+        .await
+    else {
+        return false;
+    };
+    output.status.success() && !output.stdout.is_empty()
+}
+
 /// Transcodes `input` (mov/m4v/mp4) to `output` (always `.mp4`, H.265/HEVC,
 /// ADR-0122):
 /// ```text
@@ -310,12 +338,28 @@ async fn probe_video_diagnostics(path: &Path) -> String {
 /// the process count. Callers pass `(available_parallelism /
 /// concurrency).max(1)` so the whole fleet of concurrent `ffmpeg`
 /// invocations stays within the host's real core count.
+///
+/// An audio-only input is rejected up front via `has_video_stream`
+/// (ADR-0141), before `ffmpeg` runs. `-map 0:v:0` is mandatory, so such a
+/// file always failed anyway -- but with ffmpeg's raw `"Stream map ''
+/// matches no streams"` stderr, which named neither the real problem nor
+/// the file, and which (not being a known non-retryable signature) was
+/// retried twice for a guaranteed-identical outcome. Voice-note recordings
+/// saved with an `.mp4` extension are the real-world source of these.
 pub(crate) async fn transcode_video(
     input: &Path,
     output: &Path,
     quality: VideoQuality,
     threads: usize,
 ) -> Result<(), String> {
+    if !has_video_stream(input).await {
+        return Err(format!(
+            "{} has no video stream (likely an audio-only recording saved with a video \
+             extension); see ADR-0142 for an audio-preserving input type",
+            input.display()
+        ));
+    }
+
     let mut command = tokio::process::Command::new("ffmpeg");
     command.args([
         "-y",
@@ -400,6 +444,7 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         "could not find codec parameters",
         "refusing an output that isn't full-size",
         "Unknown encoder",
+        "has no video stream",
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -787,6 +832,96 @@ mod tests {
         assert!(result.is_err());
     }
 
+    /// Generates an audio-only `.mp4` (an AAC stream, no video stream at
+    /// all) via ffmpeg's `anullsrc` test source -- mirrors the real-world
+    /// `audioclip*.mp4` voice-note recordings that reached
+    /// `transcode_video` in production (ADR-0141).
+    async fn generate_audio_only_mp4(path: &Path) -> Result<(), String> {
+        let result = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "anullsrc=duration=1",
+                "-c:a",
+                "aac",
+                "-f",
+                "mp4",
+            ])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
+    }
+
+    /// ADR-0141 regression test: an audio-only input must be rejected with a
+    /// message naming the real problem, before `ffmpeg` runs -- not with
+    /// ffmpeg's own `"Stream map '' matches no streams"` stderr, which named
+    /// neither the file nor the cause, and which was retried twice because
+    /// it matched no non-retryable signature.
+    #[tokio::test]
+    async fn transcode_video_fails_with_a_clear_error_on_an_audio_only_input() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("audioclip.mp4");
+        if generate_audio_only_mp4(&input).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate an audio-only fixture");
+            return;
+        }
+        assert!(!has_video_stream(&input).await);
+
+        let output = dir.path().join("out.mp4");
+        let err = transcode_video(&input, &output, VideoQuality::Medium, 1)
+            .await
+            .expect_err("an audio-only input must not transcode as video");
+
+        assert!(
+            err.contains("has no video stream"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            is_non_retryable_transcode_error(&err),
+            "an audio-only input is deterministic and must never be retried: {err}"
+        );
+        assert!(
+            !output.exists(),
+            "ffmpeg must not have run at all for an audio-only input"
+        );
+    }
+
+    #[tokio::test]
+    async fn has_video_stream_is_true_for_a_real_video_and_false_for_an_unreadable_file() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let video = dir.path().join("test.mp4");
+        if generate_test_video(&video).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate a test fixture");
+            return;
+        }
+        assert!(has_video_stream(&video).await);
+
+        let garbage = dir.path().join("not-a-video.mp4");
+        std::fs::write(&garbage, b"this is not a real mp4 file").unwrap();
+        assert!(!has_video_stream(&garbage).await);
+
+        assert!(!has_video_stream(&dir.path().join("does-not-exist.mp4")).await);
+    }
+
     #[test]
     fn is_non_retryable_transcode_error_matches_every_known_deterministic_signature() {
         assert!(is_non_retryable_transcode_error(
@@ -808,6 +943,10 @@ mod tests {
         ));
         assert!(is_non_retryable_transcode_error(
             "ffmpeg failed to transcode /x.mp4: Unknown encoder 'libx265'"
+        ));
+        assert!(is_non_retryable_transcode_error(
+            "/x.mp4 has no video stream (likely an audio-only recording saved with a video \
+             extension); see ADR-0142 for an audio-preserving input type"
         ));
     }
 
