@@ -224,3 +224,14 @@ points 3 and 4 survive exactly: still `rclone purge`, still the same flag set,
 still `"rclone-copy"`/`"rclone-delete"` job names and `"transfer"`/`"delete"`
 `step` labels. Decision point 2's `--report-bucket` becomes `--report-path` on
 both actions.
+
+## Amendment (2026-10-12): `--source-path`/`--destination-path` revert to bucket-config aliases; `--report-path` never happens (ADR-0136)
+
+ADR-0136 reverses this ADR's flag rename: `--source-path`/
+`--destination-path` become `--source-bucket`/`--destination-bucket` again,
+now resolving a validated `BucketConfig` alias rather than accepting an
+opaque passthrough string -- the exact distinction this ADR's rename was
+originally meant to preserve no longer applies, since the value is
+unambiguously a bucket alias again. The previous amendment's planned
+`--report-bucket` → `--report-path` change (ADR-0132 §10) never lands:
+`--report-bucket` stays as-is on every job, including `copy` and `delete`.

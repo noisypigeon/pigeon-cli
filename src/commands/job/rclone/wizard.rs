@@ -3,172 +3,84 @@ use std::path::PathBuf;
 use dialoguer::Input;
 
 use crate::commands::job::report_upload;
-use crate::commands::job::shared_wizard::ConfirmInput;
+use crate::commands::job::shared_wizard::{
+    CheckersInput, ConfirmInput, TpslimitInput, TransfersInput,
+};
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
+use crate::core::rclone::config::{remote_address, write_sandboxed_config};
 use crate::core::wizard::WizardInput;
 
 use super::worker;
 use super::{RcloneCopyJob, RcloneDeleteJob};
 
-/// Resolves the rclone source path, e.g. `source:media/`. A plain string,
-/// not a pigeon bucket-config alias -- this job never looks it up against
-/// the keyring (ADR-0101). Structurally identical to
+/// Resolves `--source-bucket`, a pigeon keyring `BucketConfig` alias
+/// (ADR-0136, reversing ADR-0101's original raw-passthrough design) --
+/// `rclone` only ever sees a config file pigeon itself generates from this
+/// alias, never an externally-provisioned or user-general-purpose
+/// `rclone.conf`. Structurally identical to
 /// `shared_wizard::SourceBucketInput`'s flag/prompt/error shape; kept local
 /// since no second consumer exists yet. Shared by both `copy` and `delete`.
-struct SourcePathInput {
+struct SourceBucketInput<'a> {
     flag: Option<String>,
+    store: &'a Store,
 }
 
-impl WizardInput for SourcePathInput {
+impl WizardInput for SourceBucketInput<'_> {
     type Value = String;
 
     fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(Ok)
+        self.flag.clone().map(|alias| {
+            if self.store.contains_alias(&alias) {
+                Ok(alias)
+            } else {
+                Err(format!("no bucket-config named '{alias}'"))
+            }
+        })
     }
 
     fn prompt(&self) -> Result<String, String> {
-        Input::<String>::new()
-            .with_prompt("rclone source path (e.g. 'source:media/')")
-            .interact_text()
-            .map_err(|err| format!("failed to read source path: {err}"))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--source-path is required when not running interactively".to_string())
-    }
-}
-
-/// Resolves the rclone destination path, e.g. `destination:`. Same shape as
-/// `SourcePathInput`. `copy` only -- `delete` has no destination.
-struct DestinationPathInput {
-    flag: Option<String>,
-}
-
-impl WizardInput for DestinationPathInput {
-    type Value = String;
-
-    fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(Ok)
-    }
-
-    fn prompt(&self) -> Result<String, String> {
-        Input::<String>::new()
-            .with_prompt("rclone destination path (e.g. 'destination:')")
-            .interact_text()
-            .map_err(|err| format!("failed to read destination path: {err}"))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--destination-path is required when not running interactively".to_string())
-    }
-}
-
-/// Flat default for `TransfersInput` (ADR-0108) -- matches ADR-0106's
-/// tuned value, now overridable rather than fixed. `copy` only.
-const TRANSFERS_DEFAULT: usize = 8;
-
-/// Resolves rclone's `--transfers` (concurrent file transfers). Falls
-/// back to the flat default rather than erroring non-interactively
-/// (ADR-0108, same `UploadConcurrencyInput` precedent): this is a new
-/// flag being added to a command that already runs unattended in
-/// scripts/cron today.
-struct TransfersInput {
-    flag: Option<usize>,
-}
-
-impl WizardInput for TransfersInput {
-    type Value = usize;
-
-    fn flag_value(&self) -> Option<Result<usize, String>> {
-        self.flag.map(|value| Ok(value.max(1)))
-    }
-
-    fn prompt(&self) -> Result<usize, String> {
-        let value = Input::<usize>::new()
-            .with_prompt("rclone --transfers")
-            .default(TRANSFERS_DEFAULT)
-            .interact_text()
-            .map_err(|err| format!("failed to read transfers: {err}"))?;
-        Ok(value.max(1))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Ok(TRANSFERS_DEFAULT)
-    }
-}
-
-/// Flat default for `CheckersInput` (ADR-0106) -- shared by `copy` and
-/// `delete` (purge still enumerates objects before deleting them).
-const CHECKERS_DEFAULT: usize = 16;
-
-/// Resolves rclone's `--checkers` (concurrent list/compare operations).
-/// Same shape and non-interactive-fallback reasoning as `TransfersInput`.
-struct CheckersInput {
-    flag: Option<usize>,
-}
-
-impl WizardInput for CheckersInput {
-    type Value = usize;
-
-    fn flag_value(&self) -> Option<Result<usize, String>> {
-        self.flag.map(|value| Ok(value.max(1)))
-    }
-
-    fn prompt(&self) -> Result<usize, String> {
-        let value = Input::<usize>::new()
-            .with_prompt("rclone --checkers")
-            .default(CHECKERS_DEFAULT)
-            .interact_text()
-            .map_err(|err| format!("failed to read checkers: {err}"))?;
-        Ok(value.max(1))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Ok(CHECKERS_DEFAULT)
-    }
-}
-
-/// Resolves rclone's `--tpslimit` (transactions/sec ceiling across
-/// transfers and checkers combined). Unlike `TransfersInput`/
-/// `CheckersInput`, "no cap" is itself a legitimate, distinct value here
-/// (rclone's own behavior when the flag is omitted), not just "use a
-/// baked-in default" -- so this resolves to `Option<usize>`, and both the
-/// empty-prompt and non-interactive paths resolve to `None` (ADR-0108,
-/// reverting ADR-0106's hardcoded `10` default: a single default rate
-/// ceiling has been shown wrong in both directions -- too loose for B2,
-/// too tight for Scaleway -- so the safer default is no cap at all).
-/// `copy` only -- `delete` has no `--tpslimit` flag at all (ADR-0110).
-struct TpslimitInput {
-    flag: Option<usize>,
-}
-
-impl WizardInput for TpslimitInput {
-    type Value = Option<usize>;
-
-    fn flag_value(&self) -> Option<Result<Option<usize>, String>> {
-        self.flag.map(|value| Ok(Some(value)))
-    }
-
-    fn prompt(&self) -> Result<Option<usize>, String> {
-        let value = Input::<String>::new()
-            .with_prompt("rclone --tpslimit (blank = no cap)")
-            .allow_empty(true)
-            .interact_text()
-            .map_err(|err| format!("failed to read tpslimit: {err}"))?;
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
+        match self.store.prompt_select_bucket() {
+            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
+            Err(message) => Err(message),
         }
-        trimmed
-            .parse::<usize>()
-            .map(Some)
-            .map_err(|_| format!("'{trimmed}' is not a valid tpslimit"))
     }
 
-    fn non_interactive_fallback(&self) -> Result<Option<usize>, String> {
-        Ok(None)
+    fn non_interactive_fallback(&self) -> Result<String, String> {
+        Err("--source-bucket is required when not running interactively".to_string())
+    }
+}
+
+/// Resolves `--destination-bucket`. Same shape as `SourceBucketInput`.
+/// `copy` only -- `delete` has no destination.
+struct DestinationBucketInput<'a> {
+    flag: Option<String>,
+    store: &'a Store,
+}
+
+impl WizardInput for DestinationBucketInput<'_> {
+    type Value = String;
+
+    fn flag_value(&self) -> Option<Result<String, String>> {
+        self.flag.clone().map(|alias| {
+            if self.store.contains_alias(&alias) {
+                Ok(alias)
+            } else {
+                Err(format!("no bucket-config named '{alias}'"))
+            }
+        })
+    }
+
+    fn prompt(&self) -> Result<String, String> {
+        match self.store.prompt_select_bucket() {
+            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
+            Err(message) => Err(message),
+        }
+    }
+
+    fn non_interactive_fallback(&self) -> Result<String, String> {
+        Err("--destination-bucket is required when not running interactively".to_string())
     }
 }
 
@@ -210,8 +122,8 @@ impl WizardInput for LocalOutputInput {
 /// ADR-0110).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_copy(
-    source_path: Option<String>,
-    destination_path: Option<String>,
+    source_bucket: Option<String>,
+    destination_bucket: Option<String>,
     local_output: Option<PathBuf>,
     report_bucket: Option<String>,
     transfers: Option<usize>,
@@ -228,8 +140,8 @@ pub fn dispatch_copy(
         Err(err) => return fail(format!("failed to start async runtime: {err}")),
     };
     runtime.block_on(dispatch_copy_async(
-        source_path,
-        destination_path,
+        source_bucket,
+        destination_bucket,
         local_output,
         report_bucket,
         transfers,
@@ -242,8 +154,8 @@ pub fn dispatch_copy(
 
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_copy_async(
-    source_path: Option<String>,
-    destination_path: Option<String>,
+    source_bucket: Option<String>,
+    destination_bucket: Option<String>,
     local_output: Option<PathBuf>,
     report_bucket: Option<String>,
     transfers: Option<usize>,
@@ -273,17 +185,30 @@ async fn dispatch_copy_async(
         Ok(store) => store,
         Err(err) => return fail(err),
     };
-
-    let source = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
-        Ok(value) => value,
+    let rclone_config_path = match crate::core::rclone::config::rclone_config_path() {
+        Ok(path) => path,
         Err(err) => return fail(err),
     };
-    let destination = match (DestinationPathInput {
-        flag: destination_path,
+    if let Err(err) = write_sandboxed_config(&keyring_store, &rclone_config_path) {
+        return fail(err);
+    }
+
+    let source = match (SourceBucketInput {
+        flag: source_bucket,
+        store: &keyring_store,
     })
     .resolve(non_interactive)
     {
-        Ok(value) => value,
+        Ok(alias) => remote_address(&alias),
+        Err(err) => return fail(err),
+    };
+    let destination = match (DestinationBucketInput {
+        flag: destination_bucket,
+        store: &keyring_store,
+    })
+    .resolve(non_interactive)
+    {
+        Ok(alias) => remote_address(&alias),
         Err(err) => return fail(err),
     };
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
@@ -386,7 +311,7 @@ async fn dispatch_copy_async(
 
 /// Entry point for `pigeon job run rclone delete` (ADR-0110).
 pub fn dispatch_delete(
-    source_path: Option<String>,
+    source_bucket: Option<String>,
     local_output: Option<PathBuf>,
     report_bucket: Option<String>,
     checkers: Option<usize>,
@@ -401,7 +326,7 @@ pub fn dispatch_delete(
         Err(err) => return fail(format!("failed to start async runtime: {err}")),
     };
     runtime.block_on(dispatch_delete_async(
-        source_path,
+        source_bucket,
         local_output,
         report_bucket,
         checkers,
@@ -411,7 +336,7 @@ pub fn dispatch_delete(
 }
 
 async fn dispatch_delete_async(
-    source_path: Option<String>,
+    source_bucket: Option<String>,
     local_output: Option<PathBuf>,
     report_bucket: Option<String>,
     checkers: Option<usize>,
@@ -433,9 +358,21 @@ async fn dispatch_delete_async(
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+    let rclone_config_path = match crate::core::rclone::config::rclone_config_path() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    if let Err(err) = write_sandboxed_config(&keyring_store, &rclone_config_path) {
+        return fail(err);
+    }
 
-    let source = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
-        Ok(value) => value,
+    let source = match (SourceBucketInput {
+        flag: source_bucket,
+        store: &keyring_store,
+    })
+    .resolve(non_interactive)
+    {
+        Ok(alias) => remote_address(&alias),
         Err(err) => return fail(err),
     };
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
@@ -542,56 +479,41 @@ mod tests {
     }
 
     #[test]
-    fn transfers_input_flag_value_overrides_the_default() {
-        let input = TransfersInput { flag: Some(32) };
-        assert_eq!(input.flag_value(), Some(Ok(32)));
-    }
-
-    #[test]
-    fn transfers_input_falls_back_to_a_default_when_not_interactive() {
-        let input = TransfersInput { flag: None };
-        assert_eq!(input.non_interactive_fallback(), Ok(TRANSFERS_DEFAULT));
-    }
-
-    #[test]
-    fn checkers_input_flag_value_overrides_the_default() {
-        let input = CheckersInput { flag: Some(64) };
-        assert_eq!(input.flag_value(), Some(Ok(64)));
-    }
-
-    #[test]
-    fn checkers_input_falls_back_to_a_default_when_not_interactive() {
-        let input = CheckersInput { flag: None };
-        assert_eq!(input.non_interactive_fallback(), Ok(CHECKERS_DEFAULT));
-    }
-
-    #[test]
-    fn tpslimit_input_flag_value_overrides_the_default() {
-        let input = TpslimitInput { flag: Some(10) };
-        assert_eq!(input.flag_value(), Some(Ok(Some(10))));
-    }
-
-    #[test]
-    fn tpslimit_input_falls_back_to_no_cap_when_not_interactive() {
-        let input = TpslimitInput { flag: None };
-        assert_eq!(input.non_interactive_fallback(), Ok(None));
-    }
-
-    #[test]
-    fn source_path_input_non_interactive_fallback_errors() {
-        let input = SourcePathInput { flag: None };
+    fn source_bucket_input_non_interactive_fallback_errors() {
+        let store = Store::default();
+        let input = SourceBucketInput {
+            flag: None,
+            store: &store,
+        };
         assert_eq!(
             input.non_interactive_fallback(),
-            Err("--source-path is required when not running interactively".to_string())
+            Err("--source-bucket is required when not running interactively".to_string())
         );
     }
 
     #[test]
-    fn destination_path_input_non_interactive_fallback_errors() {
-        let input = DestinationPathInput { flag: None };
+    fn source_bucket_input_flag_value_rejects_an_unknown_alias() {
+        let store = Store::default();
+        let input = SourceBucketInput {
+            flag: Some("nope".to_string()),
+            store: &store,
+        };
+        assert_eq!(
+            input.flag_value(),
+            Some(Err("no bucket-config named 'nope'".to_string()))
+        );
+    }
+
+    #[test]
+    fn destination_bucket_input_non_interactive_fallback_errors() {
+        let store = Store::default();
+        let input = DestinationBucketInput {
+            flag: None,
+            store: &store,
+        };
         assert_eq!(
             input.non_interactive_fallback(),
-            Err("--destination-path is required when not running interactively".to_string())
+            Err("--destination-bucket is required when not running interactively".to_string())
         );
     }
 }

@@ -108,3 +108,18 @@ spawn/stderr-drain mechanics, its fixed reliability flags, and its
 `--use-json-log` approach all survive behaviorally -- they just stop being
 hand-written per call site. The `rclone.conf`-is-external, raw-passthrough
 design this ADR established is unchanged and is extended to the report leg.
+
+## Amendment (2026-10-12): sandboxed to pigeon's own generated config, bucket-config aliases only (ADR-0136)
+
+ADR-0136 reverses the central design decision this ADR made: `rclone copy`/
+`rclone delete` no longer reach raw `remote:path` strings against an
+externally-provisioned `rclone.conf`. Every invocation runs against a
+config file pigeon itself generates from its own keyring
+(`src/core/rclone/config.rs`), and `--source`/`--destination` (by then
+`--source-path`/`--destination-path`, ADR-0110) become
+`--source-bucket`/`--destination-bucket` -- validated `BucketConfig`
+aliases, not opaque strings. Justified directly: every real use of this
+job has only ever addressed pigeon-managed buckets, and the translation
+this reversal performs already happened externally (confirmed against
+`noisypigeon/pigeon.dev`'s terraform cloud-init template) -- internalizing
+it removes a dependency on a process pigeon could not see or test.

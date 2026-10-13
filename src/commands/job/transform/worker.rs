@@ -4,7 +4,7 @@
 //! efficiency), but the worker consumes it *live* instead of blocking on its
 //! exit: as each file's bytes land, rclone's own JSON log reports it
 //! ("Copied (new)"/"Copied (replaced existing)", surfaced via
-//! `rclone_transfer::run_rclone_copy`'s `on_copied` channel), and that file
+//! `core::rclone::command::Copy`'s `on_copied` channel), and that file
 //! enters the transcode/copy-through -&gt; place -&gt; push pipeline immediately --
 //! it never waits for the rest of the batch to finish downloading. Transcode
 //! is bounded by `--concurrency` (CPU-bound); the new per-file push (`rclone
@@ -62,7 +62,8 @@ use tokio::task::JoinSet;
 use super::format::{InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
 use super::{destination, media, placement, push};
-use crate::commands::job::rclone_transfer;
+use crate::core::rclone::RcloneCommand as _;
+use crate::core::rclone::command::Copy;
 
 /// Wraps `media::transcode_to_jpg` at the call site (not inside `media.rs`
 /// itself, mirroring `upload.rs`'s separation of retry policy from the thing
@@ -342,7 +343,7 @@ async fn process_one(
         // best-effort, so repeated removal failures accumulate sources with
         // nothing watching free space). Fails just this one file, matching
         // `check_disk_space`'s own documented contract.
-        crate::commands::job::download::check_disk_space(scratch_dir, 0)
+        crate::commands::job::local::check_disk_space(scratch_dir, 0)
             .map_err(|err| (FailureStage::Transcode, err))?;
 
         let transcode_result = match input_file_type {
@@ -696,7 +697,7 @@ pub(crate) async fn run_transform_job(
     if !files_to_pull.is_empty() {
         std::fs::create_dir_all(&source_dir)
             .map_err(|err| format!("failed to create {}: {err}", source_dir.display()))?;
-        crate::commands::job::download::check_disk_space(&source_dir, 0)?;
+        crate::commands::job::local::check_disk_space(&source_dir, 0)?;
     }
 
     tracing::info!(
@@ -719,7 +720,7 @@ pub(crate) async fn run_transform_job(
         // empty files-from list.
         tokio::spawn(async move {
             drop(copied_tx);
-            Ok::<_, String>(crate::commands::job::rclone_log::RcloneLogSummary::default())
+            Ok::<_, String>(crate::core::rclone::RcloneLogSummary::default())
         })
     } else {
         let files_from_path = write_files_from(&staging_dir(&plan.local_output), &files_to_pull)?;
@@ -731,21 +732,24 @@ pub(crate) async fn run_transform_job(
             let download_checkers = plan.download_checkers;
             let tpslimit = plan.tpslimit;
             async move {
-                rclone_transfer::run_rclone_copy(
-                    &source_path,
-                    &source_dir_str,
-                    None,
-                    &pull_log_path,
-                    download_transfers,
-                    download_checkers,
+                (Copy {
+                    source: source_path,
+                    destination: source_dir_str,
+                    log_path: pull_log_path,
+                    transfers: download_transfers,
+                    checkers: download_checkers,
                     tpslimit,
-                    "transform",
-                    "pull",
-                    false,
-                    Some(copied_tx),
-                    Some(&files_from_path),
-                    Some(pull_pid_tx_clone),
-                )
+                    files_from: Some(files_from_path),
+                    job: "transform",
+                    step: "pull",
+                    upload_metrics: false,
+                    hooks: crate::core::rclone::StreamHooks {
+                        on_copied: Some(copied_tx),
+                        pid_tx: Some(pull_pid_tx_clone),
+                    },
+                    ..Default::default()
+                })
+                .run()
                 .await
             }
         })

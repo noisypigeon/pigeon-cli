@@ -1,6 +1,6 @@
 //! Concurrent download + zip-expansion pipeline (ADR-0082 §4): every item is
 //! either a zip (expanded, never itself hashed/placed -- members requeued)
-//! or a plain file (hashed via `download::sha256_file` and staged for the
+//! or a plain file (hashed via `local::sha256_file` and staged for the
 //! sequential dedup+placement pass, `dedup.rs`). No classification beyond
 //! "is this a zip" -- no media recoding and no date extraction at all;
 //! every file is always processed and every zip is always expanded
@@ -17,11 +17,13 @@ use indicatif::MultiProgress;
 use tracing::Instrument;
 
 use crate::commands::job::archive;
-use crate::commands::job::download;
 use crate::commands::job::email_sync::sink;
-use crate::commands::job::upload::{self, UploadedIndex};
+use crate::commands::job::local;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::core::data::{ContentIndex, is_apple_double_basename};
+use crate::core::rclone::RcloneCommand as _;
+use crate::core::rclone::command::{Copy, CopyTo};
+use crate::core::rclone::config::remote_address;
 
 use super::dedup::{self, DeduplicateDedup, HashedFile};
 use super::manifest::{self, DeduplicateTask, extension_of};
@@ -141,7 +143,6 @@ async fn process_item(
     item: QueueItem,
     raw_dir: &Path,
     counter: &Arc<AtomicU64>,
-    announce: &download::DownloadAnnounce,
 ) -> (String, ItemOutcome) {
     let root_key = item.root_key.clone();
     let depth = item.depth;
@@ -164,7 +165,7 @@ async fn process_item(
     let path = match item.path {
         Some(path) => path,
         None => {
-            let Some((bucket_config, secret)) = buckets.get(&item.bucket_alias) else {
+            let Some((bucket_config, _secret)) = buckets.get(&item.bucket_alias) else {
                 tracing::warn!(key = %item.display_key, bucket_alias = %item.bucket_alias, step = "download", "unknown source bucket alias");
                 return (
                     root_key,
@@ -174,7 +175,7 @@ async fn process_item(
                 );
             };
             let key = item.source_key.as_deref().unwrap_or(&item.display_key);
-            if let Err(err) = download::check_disk_space(raw_dir, item.size) {
+            if let Err(err) = local::check_disk_space(raw_dir, item.size) {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "not enough disk space");
                 return (
                     root_key,
@@ -195,16 +196,22 @@ async fn process_item(
                     );
                 }
             };
-            if let Err(err) = download::download_with_retry(
-                bucket_config,
-                secret,
-                key,
-                item.size,
-                &raw_path,
-                announce,
-            )
-            .await
-            {
+            // One small per-item JSON log, same "never share one --log-file
+            // across concurrent single-file rclone subprocesses" discipline
+            // `transform::push` already uses -- named off `raw_path`, which
+            // `next_scratch_path` already guarantees unique.
+            let pull_log_path = raw_path.with_extension("pull.jsonl");
+            let pull = (CopyTo {
+                source: format!("{}{key}", remote_address(&bucket_config.alias)),
+                destination: raw_path.display().to_string(),
+                log_path: pull_log_path,
+                job: "deduplicate",
+                step: "download",
+                ..Default::default()
+            })
+            .run()
+            .await;
+            if let Err(err) = pull {
                 tracing::warn!(key = %item.display_key, step = "download", error = %err, "download failed");
                 let _ = fs::remove_file(&raw_path);
                 return (
@@ -235,7 +242,7 @@ async fn process_item(
                 },
             );
         }
-        if let Err(err) = download::check_disk_space(raw_dir, 0) {
+        if let Err(err) = local::check_disk_space(raw_dir, 0) {
             tracing::warn!(key = %item.display_key, step = "archive", error = %err, "not enough disk space to expand");
             let _ = fs::remove_file(&path);
             return (
@@ -299,8 +306,7 @@ async fn process_item(
     let hash_path = path.clone();
     let span = tracing::Span::current();
     let hash_result =
-        tokio::task::spawn_blocking(move || span.in_scope(|| download::sha256_file(&hash_path)))
-            .await;
+        tokio::task::spawn_blocking(move || span.in_scope(|| local::sha256_file(&hash_path))).await;
     let outcome = match hash_result {
         Ok(Ok(content_hash)) => ItemOutcome::Hashed {
             depth,
@@ -350,8 +356,11 @@ pub(crate) struct DeduplicateSummary {
     /// `deduplicate-report.txt`) so they're individually actionable
     /// (ADR-0107).
     pub archive_failures: Vec<archive::ArchiveFailure>,
+    /// From `RcloneLogSummary.transferred` (ADR-0136) -- rclone's own
+    /// size/modtime comparison is this job's "skip if unchanged" mechanism
+    /// now, so there's no separate "unchanged" count the old per-file
+    /// `minio` upload path used to report.
     pub uploaded: usize,
-    pub unchanged: usize,
     pub upload_failed: usize,
 }
 
@@ -362,12 +371,15 @@ pub(crate) struct DeduplicateSummary {
 /// `source_buckets` (ADR-0109) holds every source bucket this run can pull
 /// from, keyed by alias at the top so each queued item's own
 /// `bucket_alias` resolves to the right `(BucketConfig, secret)` pair.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn run_deduplicate_job(
     source_buckets: &[(BucketConfig, String)],
     local_output: &Path,
     tasks: Vec<DeduplicateTask>,
     concurrency: usize,
-    upload_concurrency: usize,
+    transfers: usize,
+    checkers: usize,
+    tpslimit: Option<usize>,
     remote: Option<(&BucketConfig, &str)>,
 ) -> Result<DeduplicateSummary, String> {
     let buckets: HashMap<String, (BucketConfig, String)> = source_buckets
@@ -392,7 +404,6 @@ pub(crate) async fn run_deduplicate_job(
     let _ = multi_progress.println(format!("Downloading and processing {total} object(s)..."));
     tracing::info!(total, "deduplicate: download/expand/hash phase starting");
     let bar = sink::new_progress_bar("deduplicate".to_string(), total, &multi_progress);
-    let announce = download::DownloadAnnounce::new(bar.clone());
 
     let queue: Arc<Mutex<VecDeque<QueueItem>>> = Arc::new(Mutex::new(
         tasks
@@ -452,7 +463,6 @@ pub(crate) async fn run_deduplicate_job(
         let counter = Arc::clone(&counter);
         let buckets = buckets.clone();
         let raw_dir = raw_dir.clone();
-        let announce = announce.clone();
         let bar = bar.clone();
 
         handles.push(tokio::spawn(
@@ -470,7 +480,7 @@ pub(crate) async fn run_deduplicate_job(
 
                     let bucket_alias = item.bucket_alias.clone();
                     let (root_key, outcome) =
-                        process_item(&buckets, item, &raw_dir, &counter, &announce).await;
+                        process_item(&buckets, item, &raw_dir, &counter).await;
 
                     match outcome {
                         ItemOutcome::ZipExpanded {
@@ -702,78 +712,60 @@ pub(crate) async fn run_deduplicate_job(
     // of adding the live per-phase metric at that same call site).
     summary.failure_breakdown.placement = placement_summary.failed;
 
-    if let Some((remote_bucket, remote_secret)) = remote {
+    if let Some((remote_bucket, _remote_secret)) = remote {
         tracing::info!(bucket = %remote_bucket.alias, "deduplicate: upload phase starting");
-        let upload_summary = upload_result(
-            &remote_bucket.alias,
-            local_output,
-            (remote_bucket, remote_secret),
-            upload_concurrency,
-            &multi_progress,
-        )
-        .await?;
+        let upload_summary =
+            upload_result(remote_bucket, local_output, transfers, checkers, tpslimit).await?;
         log_upload_phase_complete(&upload_summary);
-        summary.uploaded = upload_summary.uploaded;
-        summary.unchanged = upload_summary.unchanged;
-        summary.upload_failed = upload_summary.upload_failed;
+        summary.uploaded = upload_summary.transferred as usize;
+        summary.upload_failed = upload_summary.errors as usize;
     }
 
     Ok(summary)
 }
 
-/// Uploads `local_output/result/` to `remote`, resuming via the existing
-/// `.staging/.uploaded` index (ADR-0019/ADR-0024) -- the shared upload tail
-/// both `run_deduplicate_job` and `run_upload_only` call, so there's one code
-/// path and one resume mechanism between a fresh run and a resumed
-/// `--upload-only` one (ADR-0089). `label` is purely descriptive (tracing/
-/// log context): both callers pass `remote`'s own alias, since `remote` is
-/// always the actual upload destination (ADR-0098 -- `run_deduplicate_job`
-/// previously passed the source bucket's alias here, mislabeling every
-/// upload-phase log line with the wrong bucket).
 /// Logs the upload phase's completion (ADR-0104), matching the shape of
 /// `run_deduplicate_job`'s other three phase-boundary lines (ADR-0099) --
 /// extracted into its own function so it's unit-testable without standing
 /// up a full `run_deduplicate_job`/mock-bucket fixture.
-fn log_upload_phase_complete(summary: &upload::UploadSummary) {
+fn log_upload_phase_complete(summary: &crate::core::rclone::RcloneLogSummary) {
     tracing::info!(
-        uploaded = summary.uploaded,
-        unchanged = summary.unchanged,
-        upload_failed = summary.upload_failed,
+        uploaded = summary.transferred,
+        upload_failed = summary.errors,
         "deduplicate: upload phase complete"
     );
 }
 
+/// Uploads `local_output/result/` to `remote` via one bulk `rclone copy`
+/// (ADR-0136) -- replaces the old per-file `minio` upload phase (`upload.rs`'s
+/// `pending_upload_tasks`/`run_upload_phase`/`UploadedIndex`) entirely.
+/// rclone's own size/modtime comparison is this job's "skip if unchanged"
+/// mechanism now, so there's no longer a distinct "unchanged" count the way
+/// `upload::UploadSummary` used to report -- `RcloneLogSummary.transferred`
+/// only counts files actually copied.
 async fn upload_result(
-    label: &str,
+    remote_bucket: &BucketConfig,
     local_output: &Path,
-    remote: (&BucketConfig, &str),
-    upload_concurrency: usize,
-    multi_progress: &MultiProgress,
-) -> Result<upload::UploadSummary, String> {
-    let staging_dir = local_output.join(".staging");
+    transfers: usize,
+    checkers: usize,
+    tpslimit: Option<usize>,
+) -> Result<crate::core::rclone::RcloneLogSummary, String> {
     let result_dir = local_output.join("result");
-    let (remote_bucket, remote_secret) = remote;
-
-    let (upload_tasks, uploaded_index) = upload::pending_upload_tasks(
-        "deduplicate",
-        label,
-        &staging_dir,
-        &result_dir,
-        &result_dir,
-        false,
-    )?;
-    let mut uploaded_indexes: HashMap<PathBuf, Arc<Mutex<UploadedIndex>>> = HashMap::new();
-    uploaded_indexes.insert(staging_dir.clone(), Arc::new(Mutex::new(uploaded_index)));
-    Ok(upload::run_upload_phase(
-        upload_tasks,
-        &uploaded_indexes,
-        remote_bucket,
-        remote_secret,
-        None,
-        upload_concurrency,
-        multi_progress,
-    )
-    .await)
+    let log_path = local_output.join(".staging").join("rclone-upload.jsonl");
+    (Copy {
+        source: result_dir.display().to_string(),
+        destination: remote_address(&remote_bucket.alias),
+        log_path,
+        transfers,
+        checkers,
+        tpslimit,
+        job: "deduplicate",
+        step: "upload",
+        upload_metrics: true,
+        ..Default::default()
+    })
+    .run()
+    .await
 }
 
 /// Resumes uploading an already-completed local deduplicate run, skipping the
@@ -783,18 +775,11 @@ async fn upload_result(
 pub(crate) async fn run_upload_only(
     local_output: &Path,
     remote: (&BucketConfig, &str),
-    upload_concurrency: usize,
-) -> Result<upload::UploadSummary, String> {
-    let multi_progress = MultiProgress::new();
-    let label = remote.0.alias.clone();
-    upload_result(
-        &label,
-        local_output,
-        remote,
-        upload_concurrency,
-        &multi_progress,
-    )
-    .await
+    transfers: usize,
+    checkers: usize,
+    tpslimit: Option<usize>,
+) -> Result<crate::core::rclone::RcloneLogSummary, String> {
+    upload_result(remote.0, local_output, transfers, checkers, tpslimit).await
 }
 
 #[cfg(test)]
@@ -855,14 +840,7 @@ mod tests {
             bucket_alias: "unused".to_string(),
         };
 
-        let (_root_key, outcome) = process_item(
-            &buckets,
-            item,
-            &raw_dir,
-            &counter,
-            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
-        )
-        .await;
+        let (_root_key, outcome) = process_item(&buckets, item, &raw_dir, &counter).await;
 
         assert!(matches!(
             outcome,
@@ -902,14 +880,7 @@ mod tests {
             bucket_alias: "unused".to_string(),
         };
 
-        let (_root_key, outcome) = process_item(
-            &buckets,
-            item,
-            &raw_dir,
-            &counter,
-            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
-        )
-        .await;
+        let (_root_key, outcome) = process_item(&buckets, item, &raw_dir, &counter).await;
 
         match outcome {
             ItemOutcome::ZipExpanded { members, .. } => {
@@ -941,14 +912,7 @@ mod tests {
             bucket_alias: "unused".to_string(),
         };
 
-        let (_root_key, outcome) = process_item(
-            &buckets,
-            item,
-            &raw_dir,
-            &counter,
-            &download::DownloadAnnounce::new(indicatif::ProgressBar::hidden()),
-        )
-        .await;
+        let (_root_key, outcome) = process_item(&buckets, item, &raw_dir, &counter).await;
 
         match outcome {
             ItemOutcome::ArchiveOpenFailed { key, .. } => assert_eq!(key, "some.zip"),
@@ -1004,10 +968,10 @@ mod tests {
 
     #[test]
     fn log_upload_phase_complete_logs_the_upload_summary_counts() {
-        let summary = upload::UploadSummary {
-            uploaded: 3,
-            unchanged: 2,
-            upload_failed: 1,
+        let summary = crate::core::rclone::RcloneLogSummary {
+            transferred: 3,
+            errors: 1,
+            ..Default::default()
         };
         let events = capture_events(|| log_upload_phase_complete(&summary));
         assert_eq!(events.len(), 1);
@@ -1017,7 +981,6 @@ mod tests {
             Some("deduplicate: upload phase complete")
         );
         assert_eq!(fields.get("uploaded").map(String::as_str), Some("3"));
-        assert_eq!(fields.get("unchanged").map(String::as_str), Some("2"));
         assert_eq!(fields.get("upload_failed").map(String::as_str), Some("1"));
     }
 }

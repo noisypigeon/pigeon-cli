@@ -10,7 +10,10 @@
 //! `SourceBucketInput` outright and returned `EncryptionKeyInput` to
 //! `email_sync::wizard` when `pull_transform`'s deletion left them with zero
 //! and one consumer respectively -- the same un-hoisting ADR-0094 did to
-//! `ConcurrencyInput`.
+//! `ConcurrencyInput`. `TransfersInput`/`CheckersInput`/`TpslimitInput`
+//! arrived the opposite way: originated in `rclone::wizard`, duplicated by
+//! `transform::wizard`, and hoisted here once `deduplicate` needed the
+//! identical prompts as the third consumer (ADR-0136).
 
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
@@ -200,6 +203,110 @@ impl WizardInput for UploadConcurrencyInput {
     }
 }
 
+/// Flat default for `TransfersInput` (ADR-0108) -- matches ADR-0106's
+/// tuned value, overridable rather than fixed.
+const TRANSFERS_DEFAULT: usize = 8;
+
+/// Resolves rclone's `--transfers` (concurrent file transfers). Falls back
+/// to the flat default rather than erroring non-interactively (ADR-0108,
+/// same `UploadConcurrencyInput` precedent). Originated in `rclone::wizard`
+/// (ADR-0108), duplicated by `transform::wizard` (ADR-0112) as the second
+/// consumer, hoisted here once `deduplicate` needed the identical prompt as
+/// the third (ADR-0136, this codebase's usual "duplicate until the third
+/// consumer" precedent).
+pub(crate) struct TransfersInput {
+    pub flag: Option<usize>,
+}
+
+impl WizardInput for TransfersInput {
+    type Value = usize;
+
+    fn flag_value(&self) -> Option<Result<usize, String>> {
+        self.flag.map(|value| Ok(value.max(1)))
+    }
+
+    fn prompt(&self) -> Result<usize, String> {
+        let value = Input::<usize>::new()
+            .with_prompt("rclone --transfers")
+            .default(TRANSFERS_DEFAULT)
+            .interact_text()
+            .map_err(|err| format!("failed to read transfers: {err}"))?;
+        Ok(value.max(1))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<usize, String> {
+        Ok(TRANSFERS_DEFAULT)
+    }
+}
+
+/// Flat default for `CheckersInput` (ADR-0106).
+const CHECKERS_DEFAULT: usize = 16;
+
+/// Resolves rclone's `--checkers` (concurrent list/compare operations).
+/// Same shape and hoisting history as `TransfersInput`.
+pub(crate) struct CheckersInput {
+    pub flag: Option<usize>,
+}
+
+impl WizardInput for CheckersInput {
+    type Value = usize;
+
+    fn flag_value(&self) -> Option<Result<usize, String>> {
+        self.flag.map(|value| Ok(value.max(1)))
+    }
+
+    fn prompt(&self) -> Result<usize, String> {
+        let value = Input::<usize>::new()
+            .with_prompt("rclone --checkers")
+            .default(CHECKERS_DEFAULT)
+            .interact_text()
+            .map_err(|err| format!("failed to read checkers: {err}"))?;
+        Ok(value.max(1))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<usize, String> {
+        Ok(CHECKERS_DEFAULT)
+    }
+}
+
+/// Resolves rclone's `--tpslimit` (transactions/sec ceiling across
+/// transfers and checkers combined). "No cap" is itself a legitimate,
+/// distinct value here (rclone's own behavior when the flag is omitted),
+/// not just "use a baked-in default" -- so this resolves to `Option<usize>`,
+/// and both the empty-prompt and non-interactive paths resolve to `None`
+/// (ADR-0108). Same hoisting history as `TransfersInput`.
+pub(crate) struct TpslimitInput {
+    pub flag: Option<usize>,
+}
+
+impl WizardInput for TpslimitInput {
+    type Value = Option<usize>;
+
+    fn flag_value(&self) -> Option<Result<Option<usize>, String>> {
+        self.flag.map(|value| Ok(Some(value)))
+    }
+
+    fn prompt(&self) -> Result<Option<usize>, String> {
+        let value = Input::<String>::new()
+            .with_prompt("rclone --tpslimit (blank = no cap)")
+            .allow_empty(true)
+            .interact_text()
+            .map_err(|err| format!("failed to read tpslimit: {err}"))?;
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        trimmed
+            .parse::<usize>()
+            .map(Some)
+            .map_err(|_| format!("'{trimmed}' is not a valid tpslimit"))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<Option<usize>, String> {
+        Ok(None)
+    }
+}
+
 /// The final "proceed?" gate, identical across every job: `--non-interactive`
 /// skips it outright; otherwise prompts on a TTY, and errors outside one
 /// (there's no sane way to read a yes/no answer from a pipe without an
@@ -287,5 +394,41 @@ mod tests {
             input.non_interactive_fallback(),
             Ok(UPLOAD_CONCURRENCY_DEFAULT)
         );
+    }
+
+    #[test]
+    fn transfers_input_flag_value_overrides_the_default() {
+        let input = TransfersInput { flag: Some(32) };
+        assert_eq!(input.flag_value(), Some(Ok(32)));
+    }
+
+    #[test]
+    fn transfers_input_falls_back_to_a_default_when_not_interactive() {
+        let input = TransfersInput { flag: None };
+        assert_eq!(input.non_interactive_fallback(), Ok(TRANSFERS_DEFAULT));
+    }
+
+    #[test]
+    fn checkers_input_flag_value_overrides_the_default() {
+        let input = CheckersInput { flag: Some(64) };
+        assert_eq!(input.flag_value(), Some(Ok(64)));
+    }
+
+    #[test]
+    fn checkers_input_falls_back_to_a_default_when_not_interactive() {
+        let input = CheckersInput { flag: None };
+        assert_eq!(input.non_interactive_fallback(), Ok(CHECKERS_DEFAULT));
+    }
+
+    #[test]
+    fn tpslimit_input_flag_value_overrides_the_default() {
+        let input = TpslimitInput { flag: Some(10) };
+        assert_eq!(input.flag_value(), Some(Ok(Some(10))));
+    }
+
+    #[test]
+    fn tpslimit_input_falls_back_to_no_cap_when_not_interactive() {
+        let input = TpslimitInput { flag: None };
+        assert_eq!(input.non_interactive_fallback(), Ok(None));
     }
 }

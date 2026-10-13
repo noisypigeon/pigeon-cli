@@ -1,15 +1,14 @@
 //! `pigeon job run rclone copy`/`rclone delete` (ADR-0101, restructured by
 //! ADR-0110): copies or recursively deletes data by shelling out to the
-//! external `rclone` binary. Unlike every other job, `--source-path`/
-//! `--destination-path` are raw `remote:path` strings passed straight
-//! through to `rclone`'s argv, never pigeon `BucketConfig`/keyring aliases
-//! -- the backing `rclone.conf` is provisioned by an external deployment
-//! process, entirely outside this crate's scope. This is also why this job
-//! can reach backends pigeon's own `minio`-backed jobs never could.
-//! `copy`'s `--transfers`/`--checkers`/`--tpslimit` are overridable
-//! per-destination (ADR-0108); every other rclone performance/retry flag
-//! stays fixed. `delete` (`rclone purge`) has no destination and no
-//! transfer-tuning flags at all.
+//! external `rclone` binary. `--source-bucket`/`--destination-bucket` are
+//! pigeon keyring `BucketConfig` aliases (ADR-0136, reversing ADR-0101's
+//! original "raw passthrough, never a bucket alias" design) -- `rclone` is
+//! always invoked against a config file pigeon itself generates from the
+//! keyring, never an externally-provisioned or user-general-purpose
+//! `rclone.conf`. `copy`'s `--transfers`/`--checkers`/`--tpslimit` are
+//! overridable per-destination (ADR-0108); every other rclone
+//! performance/retry flag stays fixed. `delete` (`rclone purge`) has no
+//! destination and no transfer-tuning flags at all.
 
 pub mod wizard;
 mod worker;

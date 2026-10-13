@@ -1,11 +1,7 @@
-use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::time::Duration;
+use std::path::PathBuf;
 
-use tokio::io::AsyncReadExt;
-
-use crate::commands::job::rclone_log::{self, RcloneLogTailer};
-use crate::commands::job::rclone_transfer;
+use crate::core::rclone::command::{Copy, Purge};
+use crate::core::rclone::{RcloneCommand as _, check_available};
 
 pub(crate) struct RcloneCopyPlan {
     pub source: String,
@@ -37,99 +33,48 @@ pub(crate) struct RcloneDeleteSummary {
     pub log_path: PathBuf,
 }
 
-/// How often the still-running rclone subprocess's JSON log is re-read for
-/// live metrics (ADR-0102) -- deliberately independent of rclone's own
-/// fixed `--stats 30s` interval (which governs how often a cumulative-totals
-/// line actually appears in the log), just frequent enough that a per-object
-/// error line surfaces as a `tracing::warn!` close to when it happened,
-/// rather than only once the whole subprocess exits.
-const LOG_POLL_INTERVAL: Duration = Duration::from_secs(10);
-
 /// Confirms `rclone` is on `PATH`, checked once up front in the wizard
 /// before any prompts (mirrors `transform::media::check_ffmpeg_available`)
 /// so a missing binary fails immediately, not partway through a
 /// long-running `rclone copy`/`rclone purge` subprocess.
 pub(crate) async fn check_rclone_available() -> Result<(), String> {
-    tokio::process::Command::new("rclone")
-        .arg("version")
-        .output()
+    check_available()
         .await
-        .map_err(|_| {
-            "'rclone' was not found on PATH -- required for 'pigeon job run rclone' to copy/delete data"
-                .to_string()
-        })?;
-    Ok(())
-}
-
-/// Emits this run's live metric deltas for one `poll()` of a `delete`
-/// tailer. Unlike `copy`'s metrics (now `rclone_transfer::run_rclone_copy`'s
-/// concern), never emits `pigeon_upload_bytes_total`/
-/// `pigeon_upload_outcomes_total` -- purge moves no bytes and isn't an
-/// "upload" in the sense those two metrics model.
-fn emit_delta_metrics_delete(delta: &rclone_log::TailDelta) {
-    rclone_transfer::log_collapsed_repeats("delete", delta);
-
-    if delta.is_empty() {
-        return;
-    }
-    if delta.deletes > 0 {
-        crate::observability::metrics::record_phase_count(
-            "rclone-delete",
-            "delete",
-            "deleted",
-            delta.deletes,
-            None,
-        );
-    }
-    if delta.errors > 0 {
-        crate::observability::metrics::record_phase_count(
-            "rclone-delete",
-            "delete",
-            "failed",
-            delta.errors,
-            None,
-        );
-    }
+        .map_err(|_| "'rclone' was not found on PATH -- required for 'pigeon job run rclone' to copy/delete data".to_string())
 }
 
 /// Runs `rclone copy <source> <destination>` with `transfers`/`checkers`/
-/// `tpslimit` resolved per-run (ADR-0108, overriding ADR-0106's prior
-/// fixed `8`/`16`/`10` values -- a Scaleway-backed transfer showed those
-/// fixed values too conservative for every destination) and every other
-/// performance/retry flag still fixed. A thin wrapper around
-/// `rclone_transfer::run_rclone_copy` (ADR-0112) -- the actual subprocess
-/// spawn, stderr drain, and live-JSON-log-polling loop now lives there,
-/// shared with `transform`'s own pull/push phases. Copy has no separate
-/// "local work" phase the way download/hash/placement jobs do (ADR-0093's
-/// gauge was designed for that split) -- its entire body of work *is* the
-/// transfer, so this sets `pigeon_job_macro_phase` to "uploading" for the
-/// whole call, unlike `transform`, which only flips it true once its own
-/// separate push phase starts.
+/// `tpslimit` resolved per-run (ADR-0108) and every other performance/retry
+/// flag still fixed, plus the sandboxed `--config` every `core::rclone`
+/// invocation gets (ADR-0136). Copy has no separate "local work" phase the
+/// way download/hash/placement jobs do (ADR-0093's gauge was designed for
+/// that split) -- its entire body of work *is* the transfer, so this sets
+/// `pigeon_job_macro_phase` to "uploading" for the whole call, unlike
+/// `transform`, which only flips it true once its own separate push phase
+/// starts.
 pub(crate) async fn run_copy_job(
     source: &str,
     destination: &str,
-    log_path: &Path,
+    log_path: &std::path::Path,
     transfers: usize,
     checkers: usize,
     tpslimit: Option<usize>,
 ) -> Result<RcloneCopySummary, String> {
     crate::observability::metrics::set_macro_phase("rclone-copy", true);
 
-    let log_summary = rclone_transfer::run_rclone_copy(
-        source,
-        destination,
-        None,
-        log_path,
+    let log_summary = Copy {
+        source: source.to_string(),
+        destination: destination.to_string(),
+        log_path: log_path.to_path_buf(),
         transfers,
         checkers,
         tpslimit,
-        "rclone-copy",
-        "transfer",
-        true,
-        None,
-        None,
-        None,
-    )
+        job: "rclone-copy",
+        step: "transfer",
+        upload_metrics: true,
+        ..Default::default()
+    }
+    .run()
     .await?;
 
     Ok(RcloneCopySummary {
@@ -148,124 +93,39 @@ pub(crate) async fn run_copy_job(
 /// content moves, so no transfer concurrency or rate concept applies.
 pub(crate) async fn run_delete_job(
     source: &str,
-    log_path: &Path,
+    log_path: &std::path::Path,
     checkers: usize,
 ) -> Result<RcloneDeleteSummary, String> {
-    tracing::info!(source, "rclone: purge starting");
-
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
-    }
-
-    let rclone_args: Vec<String> = [
-        "--checkers",
-        &checkers.to_string(),
-        "--fast-list",
-        "--retries",
-        "5",
-        "--low-level-retries",
-        "20",
-        "--stats",
-        "30s",
-        "--use-json-log",
-        "--log-level",
-        "INFO",
-        "--log-file",
-    ]
-    .iter()
-    .map(|s| s.to_string())
-    .collect();
-
-    let mut child = tokio::process::Command::new("rclone")
-        .arg("purge")
-        .arg(source)
-        .args(rclone_args)
-        .arg(log_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|err| format!("failed to run rclone: {err}"))?;
-
-    let mut stderr_pipe = child.stderr.take().expect("stderr was configured as piped");
-    let stderr_task = tokio::spawn(async move {
-        let mut buf = String::new();
-        let _ = stderr_pipe.read_to_string(&mut buf).await;
-        buf
-    });
-
     // Delete has no separate "local work" phase either -- same reasoning as
     // copy, just for enumeration+deletion instead of transfer.
     crate::observability::metrics::set_macro_phase("rclone-delete", true);
 
-    let mut tailer = RcloneLogTailer::new(log_path, "delete");
-    let mut wait_handle = tokio::spawn(async move { child.wait().await });
-    let mut poll_interval = tokio::time::interval(LOG_POLL_INTERVAL);
-    poll_interval.tick().await;
+    let log_summary = Purge {
+        source: source.to_string(),
+        log_path: log_path.to_path_buf(),
+        checkers,
+        job: "rclone-delete",
+        step: "delete",
+    }
+    .run()
+    .await?;
 
-    let exit_status = loop {
-        tokio::select! {
-            join_result = &mut wait_handle => {
-                let wait_result = join_result
-                    .map_err(|err| format!("rclone process join failed: {err}"))?;
-                break wait_result;
-            }
-            _ = poll_interval.tick() => {
-                emit_delta_metrics_delete(&tailer.poll());
-            }
-        }
-    };
-    let exit_status = exit_status.map_err(|err| format!("failed to run rclone: {err}"))?;
-
-    emit_delta_metrics_delete(&tailer.poll());
-    let log_summary = tailer.summary();
-
-    let exit_code = exit_status.code();
-    let stderr = stderr_task.await.unwrap_or_default();
-
-    tracing::info!(
-        deleted = log_summary.deletes,
-        errors = log_summary.errors,
-        exit_code,
-        "rclone: purge complete"
-    );
-
-    let summary = RcloneDeleteSummary {
+    Ok(RcloneDeleteSummary {
         deleted: log_summary.deletes,
         errors: log_summary.errors,
         log_path: log_path.to_path_buf(),
-    };
-
-    if !exit_status.success() {
-        return Err(format!(
-            "rclone purge exited with status {} ({} object(s) deleted, {} error(s)); see {} for details{}",
-            exit_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "unknown (terminated by signal)".to_string()),
-            summary.deleted,
-            summary.errors,
-            log_path.display(),
-            if stderr.trim().is_empty() {
-                String::new()
-            } else {
-                format!(" -- rclone stderr: {}", stderr.trim())
-            },
-        ));
-    }
-
-    Ok(summary)
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// `rclone copy` works against plain local filesystem paths with zero
-    /// `rclone.conf` needed, so this is a real end-to-end regression test,
-    /// not just a parsing/heuristic check. Skipped (not failed) if `rclone`
-    /// genuinely isn't on `PATH`, since this whole job already refuses to
-    /// run without it (`check_rclone_available`) -- this test would just be
-    /// redundant with that failure on a machine that can't run it anyway.
+    /// `rclone copy` works against plain local filesystem paths. Skipped
+    /// (not failed) if `rclone` genuinely isn't on `PATH`, since this whole
+    /// job already refuses to run without it (`check_rclone_available`) --
+    /// this test would just be redundant with that failure on a machine
+    /// that can't run it anyway.
     #[tokio::test]
     async fn copies_a_file_between_two_local_directories() {
         if check_rclone_available().await.is_err() {
@@ -327,11 +187,10 @@ mod tests {
         assert!(dest_dir.path().join("hello.txt").exists());
     }
 
-    /// Real end-to-end `rclone purge` against a local directory tree with
-    /// zero `rclone.conf` needed, mirroring the copy tests above. Confirms
-    /// purge actually removes both files and the directory structure
-    /// itself (unlike rclone's own `delete` subcommand, which leaves empty
-    /// directories behind).
+    /// Real end-to-end `rclone purge` against a local directory tree,
+    /// mirroring the copy tests above. Confirms purge actually removes
+    /// both files and the directory structure itself (unlike rclone's own
+    /// `delete` subcommand, which leaves empty directories behind).
     #[tokio::test]
     async fn purges_everything_under_a_local_directory() {
         if check_rclone_available().await.is_err() {

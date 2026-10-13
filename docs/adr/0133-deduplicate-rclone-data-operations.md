@@ -2,7 +2,7 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-12.
-- **Status**: Proposed.
+- **Status**: Accepted -- implemented as part of ADR-0136 (with the §1/§6 modifications that amendment records).
 
 ## Context
 
@@ -443,3 +443,29 @@ section, per the pattern ADR-0101 already carries.
   `--source-path` values, confirming `pigeon.jsonl` carries
   `phase="pull"`/`phase="push"` lines and that `source_bucket` label values
   are the raw source paths (§7).
+
+## Amendment (2026-10-12): implemented as part of ADR-0136 -- `--source-path`/`--destination-path` rename and `source_path` identity migration both dropped
+
+This ADR's mechanism (§2-§5: `Lsjson` for listing, `Copy` for pull with
+`on_copied`/`files_from`, bulk `Copy` for push, `--upload-only` kept,
+`--transfers`/`--checkers`/`--tpslimit` added, `--upload-concurrency`
+removed) is implemented exactly as described here, as part of ADR-0136.
+Two things this ADR proposed do **not** happen:
+
+- **§1's flag rename never lands.** `--source-bucket`/`--destination-bucket`
+  stay exactly as they are today -- still repeatable, still keyring
+  aliases, still validated against the keyring. ADR-0136 restores bucket
+  aliases as the addressing model for every rclone-backed job, so the
+  "raw passthrough, never a bucket alias" distinction this ADR's rename
+  existed to draw no longer applies.
+- **§6's `bucket_alias` → `source_path` identity migration never lands.**
+  Every `bucket_alias`-named field (`.staging/.processed`'s second column,
+  `ContentIndex`'s 4th field, `deduplicate-report.txt`'s trailing columns,
+  every in-memory compound key) keeps its existing name and shape. A
+  pre-ADR-0136 `--local-output` directory's checkpoint state keeps
+  resuming correctly -- there is no breaking state-format change here,
+  unlike this ADR's own §6 and Consequences, which assumed one.
+- §7's `source_bucket` metric-label exception is therefore moot: the label
+  already carries a keyring alias, the same bounded-cardinality value every
+  other job's `source_bucket` label already carries, so no exception to
+  ADR-0102/ADR-0130's raw-path-label rule is needed.

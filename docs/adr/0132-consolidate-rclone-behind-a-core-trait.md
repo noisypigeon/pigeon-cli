@@ -2,7 +2,7 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-12.
-- **Status**: Proposed.
+- **Status**: Accepted -- implemented as part of ADR-0136.
 
 ## Context
 
@@ -516,3 +516,17 @@ It also completes one piece of cleanup this ADR could not: with
 deleted, leaving the module holding only disk-space and hashing helpers --
 so it is renamed to `local.rs`. The `check_disk_space`/`sha256_hex` sharing
 rationale ADR-0131 recorded, and this ADR relied on, survives the rename.
+
+## Amendment (2026-10-12): implemented as part of ADR-0136, sandboxed to pigeon's own config; §10's `--report-path` dropped
+
+This ADR's trait/runner design (§1-§9) is implemented exactly as described
+here, as part of ADR-0136 -- the same change that reverses §10's
+`--report-bucket` → `--report-path` proposal before it ever lands.
+`--report-bucket` stays as-is on every job, including `rclone copy`/
+`delete`/`transform`, so those three keep a keyring dependency rather than
+becoming keyring-free: ADR-0136 generates a config file from the keyring
+for the data legs themselves now, which supersedes the motivation for
+making the report leg keyring-free in the first place. The shared runner
+additionally appends `--config <path>` (pointing at ADR-0136's own
+generated, never-externally-provisioned config) to every invocation's
+fixed flag baseline, unconditionally.

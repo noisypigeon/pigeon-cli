@@ -18,7 +18,7 @@ pub(crate) struct ResourceSampler {
 /// walking `Process::parent()` to a fixed point over the whole process table
 /// (ADR-0120) -- a job's actual CPU/memory/disk load mostly lives in the
 /// `ffmpeg`/`rclone` child processes it spawns via `tokio::process::Command`
-/// (`transform/media.rs`, `transform/push.rs`, `rclone_transfer.rs`, ...),
+/// (`transform/media.rs`, `core::rclone`, ...),
 /// invisible to a query scoped to the `pigeon` PID alone. No child-PID
 /// plumbing is threaded through each spawn site -- this stays entirely
 /// self-contained in the sampler, same "no manual bookkeeping at each call

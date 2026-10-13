@@ -539,10 +539,15 @@ fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--destination-bucket"))
         .stdout(predicate::str::contains("--concurrency"))
-        .stdout(predicate::str::contains("--upload-concurrency"))
+        .stdout(predicate::str::contains("--transfers"))
+        .stdout(predicate::str::contains("--checkers"))
+        .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
+        // ADR-0136: upload is now one bulk `rclone copy`, tuned by
+        // --transfers/--checkers/--tpslimit, not --upload-concurrency.
+        .stdout(predicate::str::contains("--upload-concurrency").not())
         // ADR-0082 §0/§1: deduplicate never offers encryption or file-type/
         // zip-expansion selection -- every file is always processed and
         // every zip is always expanded.
@@ -712,50 +717,50 @@ fn job_run_rclone_help_lists_copy_and_delete() {
 }
 
 #[test]
-fn job_run_rclone_copy_help_shows_source_path_destination_path_and_report_bucket_flags() {
+fn job_run_rclone_copy_help_shows_source_bucket_destination_bucket_and_report_bucket_flags() {
     pigeon()
         .args(["job", "run", "rclone", "copy", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--source-path"))
-        .stdout(predicate::str::contains("--destination-path"))
+        .stdout(predicate::str::contains("--source-bucket"))
+        .stdout(predicate::str::contains("--destination-bucket"))
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--transfers"))
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0101: this job's rclone performance/retry flags beyond
-        // transfers/checkers/tpslimit are fixed, not CLI flags, and it
-        // never resolves a pigeon bucket-config for source/destination.
-        .stdout(predicate::str::contains("--source-bucket").not())
+        // ADR-0136: this job's rclone performance/retry flags beyond
+        // transfers/checkers/tpslimit are fixed, not CLI flags.
+        .stdout(predicate::str::contains("--source-path").not())
         .stdout(predicate::str::contains("--concurrency").not())
         .stdout(predicate::str::contains("--encryption-key").not());
 }
 
 #[test]
-fn job_run_rclone_delete_help_shows_source_path_and_report_bucket_flags_but_not_destination_or_transfer_flags()
+fn job_run_rclone_delete_help_shows_source_bucket_and_report_bucket_flags_but_not_destination_or_transfer_flags()
  {
     pigeon()
         .args(["job", "run", "rclone", "delete", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--source-path"))
+        .stdout(predicate::str::contains("--source-bucket"))
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--non-interactive"))
         // ADR-0110: delete has no destination and no file-transfer tuning
         // -- `rclone purge` moves no file content.
-        .stdout(predicate::str::contains("--destination-path").not())
+        .stdout(predicate::str::contains("--destination-bucket").not())
         .stdout(predicate::str::contains("--transfers").not())
         .stdout(predicate::str::contains("--tpslimit").not());
 }
 
 #[test]
-fn job_run_rclone_copy_without_source_path_fails_fast_non_interactively() {
+fn job_run_rclone_copy_without_source_bucket_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "dest");
 
     pigeon_in(&config_dir)
         .args([
@@ -763,8 +768,8 @@ fn job_run_rclone_copy_without_source_path_fails_fast_non_interactively() {
             "run",
             "rclone",
             "copy",
-            "--destination-path",
-            "dest:",
+            "--destination-bucket",
+            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--non-interactive",
@@ -773,14 +778,15 @@ fn job_run_rclone_copy_without_source_path_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--source-path is required when not running interactively",
+            "--source-bucket is required when not running interactively",
         ));
 }
 
 #[test]
-fn job_run_rclone_copy_without_destination_path_fails_fast_non_interactively() {
+fn job_run_rclone_copy_without_destination_bucket_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "source");
 
     pigeon_in(&config_dir)
         .args([
@@ -788,8 +794,8 @@ fn job_run_rclone_copy_without_destination_path_fails_fast_non_interactively() {
             "run",
             "rclone",
             "copy",
-            "--source-path",
-            "source:media/",
+            "--source-bucket",
+            "source",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--non-interactive",
@@ -798,7 +804,7 @@ fn job_run_rclone_copy_without_destination_path_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--destination-path is required when not running interactively",
+            "--destination-bucket is required when not running interactively",
         ));
 }
 
@@ -815,10 +821,10 @@ fn job_run_rclone_copy_without_rclone_on_path_fails_fast_with_a_clear_error() {
             "run",
             "rclone",
             "copy",
-            "--source-path",
-            "source:media/",
-            "--destination-path",
-            "dest:",
+            "--source-bucket",
+            "source",
+            "--destination-bucket",
+            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--non-interactive",
@@ -830,7 +836,7 @@ fn job_run_rclone_copy_without_rclone_on_path_fails_fast_with_a_clear_error() {
 }
 
 #[test]
-fn job_run_rclone_delete_without_source_path_fails_fast_non_interactively() {
+fn job_run_rclone_delete_without_source_bucket_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
 
@@ -848,7 +854,7 @@ fn job_run_rclone_delete_without_source_path_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--source-path is required when not running interactively",
+            "--source-bucket is required when not running interactively",
         ));
 }
 
@@ -865,8 +871,8 @@ fn job_run_rclone_delete_without_rclone_on_path_fails_fast_with_a_clear_error() 
             "run",
             "rclone",
             "delete",
-            "--source-path",
-            "source:media/",
+            "--source-bucket",
+            "source",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--non-interactive",
@@ -887,25 +893,25 @@ fn job_run_help_lists_transform() {
 }
 
 #[test]
-fn job_run_transform_help_shows_input_file_type_source_path_destination_path_and_rclone_flags() {
+fn job_run_transform_help_shows_input_file_type_source_bucket_destination_bucket_and_rclone_flags()
+{
     pigeon()
         .args(["job", "run", "transform", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains("--input-file-type"))
-        .stdout(predicate::str::contains("--source-path"))
-        .stdout(predicate::str::contains("--destination-path"))
+        .stdout(predicate::str::contains("--source-bucket"))
+        .stdout(predicate::str::contains("--destination-bucket"))
         .stdout(predicate::str::contains("--local-output"))
         .stdout(predicate::str::contains("--concurrency"))
-        .stdout(predicate::str::contains("--transfers"))
-        .stdout(predicate::str::contains("--checkers"))
+        .stdout(predicate::str::contains("--download-transfers"))
+        .stdout(predicate::str::contains("--download-checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0112: raw rclone path strings, not pigeon bucket-config
-        // aliases, and no separate upload phase of the shape
-        // --upload-concurrency sizes.
-        .stdout(predicate::str::contains("--source-bucket").not())
+        // ADR-0136: bucket-config aliases, not raw rclone path strings, and
+        // no separate upload phase of the shape --upload-concurrency sizes.
+        .stdout(predicate::str::contains("--source-path").not())
         .stdout(predicate::str::contains("--encryption-key").not())
         .stdout(predicate::str::contains("--upload-concurrency").not());
 }
@@ -920,10 +926,10 @@ fn job_run_transform_without_input_file_type_fails_fast_non_interactively() {
             "job",
             "run",
             "transform",
-            "--source-path",
-            "source:png/",
-            "--destination-path",
-            "dest:jpg/",
+            "--source-bucket",
+            "source",
+            "--destination-bucket",
+            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -950,10 +956,10 @@ fn job_run_transform_with_invalid_input_file_type_fails_fast() {
             "transform",
             "--input-file-type",
             "gif",
-            "--source-path",
-            "source:png/",
-            "--destination-path",
-            "dest:jpg/",
+            "--source-bucket",
+            "source",
+            "--destination-bucket",
+            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -967,9 +973,10 @@ fn job_run_transform_with_invalid_input_file_type_fails_fast() {
 }
 
 #[test]
-fn job_run_transform_without_source_path_fails_fast_non_interactively() {
+fn job_run_transform_without_source_bucket_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "dest");
 
     pigeon_in(&config_dir)
         .args([
@@ -978,8 +985,8 @@ fn job_run_transform_without_source_path_fails_fast_non_interactively() {
             "transform",
             "--input-file-type",
             "png",
-            "--destination-path",
-            "dest:jpg/",
+            "--destination-bucket",
+            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -990,14 +997,15 @@ fn job_run_transform_without_source_path_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--source-path is required when not running interactively",
+            "--source-bucket is required when not running interactively",
         ));
 }
 
 #[test]
-fn job_run_transform_without_destination_path_fails_fast_non_interactively() {
+fn job_run_transform_without_destination_bucket_fails_fast_non_interactively() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "source");
 
     pigeon_in(&config_dir)
         .args([
@@ -1006,8 +1014,8 @@ fn job_run_transform_without_destination_path_fails_fast_non_interactively() {
             "transform",
             "--input-file-type",
             "png",
-            "--source-path",
-            "source:png/",
+            "--source-bucket",
+            "source",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",
@@ -1018,7 +1026,7 @@ fn job_run_transform_without_destination_path_fails_fast_non_interactively() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--destination-path is required when not running interactively",
+            "--destination-bucket is required when not running interactively",
         ));
 }
 
@@ -1036,10 +1044,10 @@ fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_er
             "transform",
             "--input-file-type",
             "png",
-            "--source-path",
-            "source:png/",
-            "--destination-path",
-            "dest:jpg/",
+            "--source-bucket",
+            "source",
+            "--destination-bucket",
+            "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
             "--concurrency",

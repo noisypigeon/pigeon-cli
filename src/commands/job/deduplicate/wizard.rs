@@ -5,7 +5,8 @@ use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
-    ConfirmInput, CpuConcurrencyInput, UploadConcurrencyInput, UploadTargetInput,
+    CheckersInput, ConfirmInput, CpuConcurrencyInput, TpslimitInput, TransfersInput,
+    UploadTargetInput,
 };
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::store::Store;
@@ -187,7 +188,9 @@ pub fn dispatch(
     local_output: Option<PathBuf>,
     destination_bucket: Option<String>,
     concurrency: Option<usize>,
-    upload_concurrency: Option<usize>,
+    transfers: Option<usize>,
+    checkers: Option<usize>,
+    tpslimit: Option<usize>,
     upload_only: bool,
     report_bucket: Option<String>,
     job_name: &'static str,
@@ -205,7 +208,9 @@ pub fn dispatch(
         local_output,
         destination_bucket,
         concurrency,
-        upload_concurrency,
+        transfers,
+        checkers,
+        tpslimit,
         upload_only,
         report_bucket,
         job_name,
@@ -219,7 +224,9 @@ async fn dispatch_async(
     local_output: Option<PathBuf>,
     destination_bucket: Option<String>,
     concurrency: Option<usize>,
-    upload_concurrency: Option<usize>,
+    transfers: Option<usize>,
+    checkers: Option<usize>,
+    tpslimit: Option<usize>,
     upload_only: bool,
     report_bucket: Option<String>,
     job_name: &'static str,
@@ -243,7 +250,9 @@ async fn dispatch_async(
         return dispatch_upload_only(
             local_output,
             destination_bucket,
-            upload_concurrency,
+            transfers,
+            checkers,
+            tpslimit,
             report_bucket,
             job_name,
             non_interactive,
@@ -274,11 +283,26 @@ async fn dispatch_async(
         Ok(path) => path,
         Err(err) => return fail(err),
     };
+    let transfers = match (TransfersInput { flag: transfers }).resolve(non_interactive) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let checkers = match (CheckersInput { flag: checkers }).resolve(non_interactive) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let tpslimit = match (TpslimitInput { flag: tpslimit }).resolve(non_interactive) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
 
     let mut job = DeduplicateJob {
         source_buckets,
         local_output,
         remote: None,
+        transfers,
+        checkers,
+        tpslimit,
     };
     let plan = match job.gather().await {
         Ok(plan) => plan,
@@ -318,14 +342,6 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let upload_concurrency = match (UploadConcurrencyInput {
-        flag: upload_concurrency,
-    })
-    .resolve(non_interactive)
-    {
-        Ok(value) => value,
-        Err(err) => return fail(err),
-    };
     let (report_bucket_config, report_secret) =
         match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
@@ -354,10 +370,10 @@ async fn dispatch_async(
 
     let job_local_output = job.local_output.clone();
     let report_path = job_local_output.join("deduplicate-report.txt");
-    let exit_code = match job.run(plan, concurrency, upload_concurrency).await {
+    let exit_code = match job.run(plan, concurrency, 1).await {
         Ok(summary) => {
             let mut message = format!(
-                "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} AppleDouble object(s) skipped, {} uploaded, {} unchanged, {} upload failed.",
+                "Processed {} file(s), {} failed ({} download, {} archive, {} hash), {} duplicate(s) skipped, {} zip member(s) dropped (extraction cap), {} AppleDouble object(s) skipped, {} uploaded, {} upload failed.",
                 summary.processed,
                 summary.failed,
                 summary.failure_breakdown.download,
@@ -367,7 +383,6 @@ async fn dispatch_async(
                 summary.dropped_members,
                 summary.skipped_apple_double,
                 summary.uploaded,
-                summary.unchanged,
                 summary.upload_failed
             );
             if !summary.archive_failures.is_empty() {
@@ -428,7 +443,9 @@ fn upload_only_preflight_ok(local_output: &Path) -> bool {
 async fn dispatch_upload_only(
     local_output: Option<PathBuf>,
     destination_bucket: Option<String>,
-    upload_concurrency: Option<usize>,
+    transfers: Option<usize>,
+    checkers: Option<usize>,
+    tpslimit: Option<usize>,
     report_bucket: Option<String>,
     job_name: &'static str,
     non_interactive: bool,
@@ -468,11 +485,15 @@ async fn dispatch_upload_only(
         &remote_bucket_config.secret_key,
     );
 
-    let upload_concurrency = match (UploadConcurrencyInput {
-        flag: upload_concurrency,
-    })
-    .resolve(non_interactive)
-    {
+    let transfers = match (TransfersInput { flag: transfers }).resolve(non_interactive) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let checkers = match (CheckersInput { flag: checkers }).resolve(non_interactive) {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+    let tpslimit = match (TpslimitInput { flag: tpslimit }).resolve(non_interactive) {
         Ok(value) => value,
         Err(err) => return fail(err),
     };
@@ -501,17 +522,19 @@ async fn dispatch_upload_only(
     let (exit_code, report_path) = match worker::run_upload_only(
         &local_output,
         (&remote_bucket_config, &remote_secret),
-        upload_concurrency,
+        transfers,
+        checkers,
+        tpslimit,
     )
     .await
     {
         Ok(summary) => {
             let message = format!(
-                "Uploaded {} file(s), {} unchanged, {} upload failed.",
-                summary.uploaded, summary.unchanged, summary.upload_failed
+                "Uploaded {} file(s), {} upload failed.",
+                summary.transferred, summary.errors
             );
             report_upload::say(&transcript, message);
-            let exit_code = if summary.upload_failed > 0 {
+            let exit_code = if summary.errors > 0 {
                 FAILURE_EXIT_CODE
             } else {
                 0

@@ -224,15 +224,22 @@ pub enum JobType {
         #[arg(long)]
         concurrency: Option<usize>,
 
-        /// Maximum number of files to upload concurrently, independent of
-        /// `--concurrency` (which sizes download/hash work) -- the upload
-        /// phase is network-round-trip-bound, not CPU-bound, so it benefits
-        /// from its own, separately-tuned concurrency (ADR-0091).
-        /// Interactively prompted when omitted and stdin is a terminal;
-        /// defaults to 16 otherwise. With `--upload-only`, this is the only
+        /// rclone --transfers for the upload phase, now one bulk `rclone
+        /// copy` rather than a per-file task queue (ADR-0136). Defaults to
+        /// 8 when omitted. With `--upload-only`, this is the only transfer
         /// concurrency flag that has any effect.
         #[arg(long)]
-        upload_concurrency: Option<usize>,
+        transfers: Option<usize>,
+
+        /// rclone --checkers for the upload phase. Defaults to 16 when
+        /// omitted.
+        #[arg(long)]
+        checkers: Option<usize>,
+
+        /// rclone --tpslimit for the upload phase. Unset by default -- no
+        /// rate cap.
+        #[arg(long)]
+        tpslimit: Option<usize>,
 
         /// Resumes uploading an already-completed local deduplicate run instead
         /// of starting a new one: skips the bucket listing/download/hash/
@@ -265,32 +272,32 @@ pub enum JobType {
     },
 
     /// Shells out to the external `rclone` binary for copy/delete
-    /// operations against raw rclone `remote:path` strings. Pigeon manages
-    /// no rclone credentials/config -- `rclone.conf` is provisioned by an
-    /// external process, outside this crate's scope (ADR-0101, restructured
-    /// by ADR-0110). See subcommands for the available actions. Requires
-    /// `rclone` on `PATH`.
+    /// operations against pigeon keyring `BucketConfig` aliases. `rclone`
+    /// is always invoked against a config file pigeon itself generates
+    /// from the keyring (ADR-0136, reversing ADR-0101/ADR-0110's original
+    /// raw-passthrough design) -- never an externally-provisioned or
+    /// user-general-purpose `rclone.conf`. See subcommands for the
+    /// available actions. Requires `rclone` on `PATH`.
     Rclone(RcloneArgs),
 
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
     /// maximum-quality `.jpg`, or video files (`mov`/`m4v`/`mp4`, ADR-0122)
     /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
-    /// pull `--source-path` into a local staging tree, transcoding/copying
+    /// pull `--source-bucket` into a local staging tree, transcoding/copying
     /// each file locally and pushing it individually via `rclone copyto`
     /// the moment it's ready, rather than waiting for the whole batch.
-    /// `--source-path`/`--destination-path` are raw rclone `remote:path`
-    /// strings, same semantics as the `rclone` job's own flags of the same
-    /// name -- never pigeon `BucketConfig`/keyring aliases. Deduplication
-    /// is never involved -- every output file's name is derived
-    /// deterministically and is unique by construction; duplicate source
-    /// content is deliberately retained at separate destination names. A
-    /// single file's transcode or push failure (e.g. a HEIC file the local
-    /// `ffmpeg` build can't decode, retried before giving up) is recorded
-    /// and reported but never stops any other file from being processed
-    /// and pushed; every file that does succeed stays checkpointed for a
-    /// resumed rerun. Requires both `rclone` and `ffmpeg`/`ffprobe` on
-    /// `PATH`.
+    /// `--source-bucket`/`--destination-bucket` are pigeon keyring
+    /// `BucketConfig` aliases (ADR-0136), same semantics as the `rclone`
+    /// job's own flags of the same name. Deduplication is never involved --
+    /// every output file's name is derived deterministically and is unique
+    /// by construction; duplicate source content is deliberately retained
+    /// at separate destination names. A single file's transcode or push
+    /// failure (e.g. a HEIC file the local `ffmpeg` build can't decode,
+    /// retried before giving up) is recorded and reported but never stops
+    /// any other file from being processed and pushed; every file that does
+    /// succeed stays checkpointed for a resumed rerun. Requires both
+    /// `rclone` and `ffmpeg`/`ffprobe` on `PATH`.
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
         /// `mov`, `m4v`, or `mp4`. Interactively selected when omitted and
@@ -306,16 +313,17 @@ pub enum JobType {
         #[arg(long)]
         video_quality: Option<String>,
 
-        /// rclone source, e.g. `source:png/`. Interactively prompted when
-        /// omitted and stdin is a terminal; required otherwise.
-        #[arg(long)]
-        source_path: Option<String>,
-
-        /// rclone destination, e.g. `destination:jpg/`. Interactively
-        /// prompted when omitted and stdin is a terminal; required
+        /// Alias of a configured bucket-config to pull from. Interactively
+        /// selected when omitted and stdin is a terminal; required
         /// otherwise.
         #[arg(long)]
-        destination_path: Option<String>,
+        source_bucket: Option<String>,
+
+        /// Alias of a configured bucket-config to push to. Interactively
+        /// selected when omitted and stdin is a terminal; required
+        /// otherwise.
+        #[arg(long)]
+        destination_bucket: Option<String>,
 
         /// Local directory this run stages pulled source files, transcoded
         /// results, and bookkeeping under. Defaults to a directory under
@@ -387,24 +395,24 @@ pub struct RcloneArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum RcloneAction {
-    /// Copies data from a configurable source to a configurable
-    /// destination by shelling out to `rclone copy`. `--source-path`/
-    /// `--destination-path` are raw `remote:path` strings passed straight
-    /// through to `rclone copy`'s argv, never pigeon `BucketConfig`/keyring
-    /// aliases (ADR-0101). `--transfers`/`--checkers`/`--tpslimit` are
+    /// Copies data from one configured bucket-config to another by
+    /// shelling out to `rclone copy`, against a config file pigeon itself
+    /// generates from the keyring (ADR-0136, reversing ADR-0101's original
+    /// raw-passthrough design). `--transfers`/`--checkers`/`--tpslimit` are
     /// overridable per-destination (ADR-0108); every other rclone
     /// performance/retry flag stays fixed.
     Copy {
-        /// rclone source, e.g. `source:media/`. Interactively prompted
-        /// when omitted and stdin is a terminal; required otherwise.
-        #[arg(long)]
-        source_path: Option<String>,
-
-        /// rclone destination, e.g. `destination:`. Interactively
-        /// prompted when omitted and stdin is a terminal; required
+        /// Alias of a configured bucket-config to pull from. Interactively
+        /// selected when omitted and stdin is a terminal; required
         /// otherwise.
         #[arg(long)]
-        destination_path: Option<String>,
+        source_bucket: Option<String>,
+
+        /// Alias of a configured bucket-config to push to. Interactively
+        /// selected when omitted and stdin is a terminal; required
+        /// otherwise.
+        #[arg(long)]
+        destination_bucket: Option<String>,
 
         /// Local directory this run's rclone log (also serving as this
         /// job's report) and transcript are written under. Defaults to a
@@ -448,18 +456,18 @@ pub enum RcloneAction {
         non_interactive: bool,
     },
 
-    /// Recursively and permanently deletes everything under a configurable
-    /// source path by shelling out to `rclone purge` (ADR-0110).
+    /// Recursively and permanently deletes everything in a configured
+    /// bucket-config by shelling out to `rclone purge` (ADR-0110).
     /// Irreversible -- there is no `--dry-run` and no undo beyond the
     /// existing `--non-interactive`/interactive confirmation. Unlike
     /// `copy`, there is no destination and no per-file transfer-rate
     /// tuning, since purge transfers no file content.
     Delete {
-        /// rclone source to recursively and permanently delete, e.g.
-        /// `source:media/`. Interactively prompted when omitted and stdin
-        /// is a terminal; required otherwise.
+        /// Alias of a configured bucket-config to recursively and
+        /// permanently delete the contents of. Interactively selected when
+        /// omitted and stdin is a terminal; required otherwise.
         #[arg(long)]
-        source_path: Option<String>,
+        source_bucket: Option<String>,
 
         /// Local directory this run's rclone log (also serving as this
         /// job's report) and transcript are written under. Defaults to a

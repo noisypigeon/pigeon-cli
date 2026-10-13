@@ -32,7 +32,7 @@ pub(crate) const MAX_ZIP_DEPTH: u32 = 10;
 /// legitimately compressible archive of plain text rarely clears 10-20:1.
 /// 100x is deliberately generous headroom while still catching a
 /// pathological nested-zip bomb. `worker.rs`'s live disk-space check
-/// (`download::check_disk_space`, ADR-0076) remains the real-time backstop
+/// (`local::check_disk_space`, ADR-0076) remains the real-time backstop
 /// this guard doesn't need to duplicate.
 const EXTRACTION_RATIO_LIMIT: u64 = 100;
 

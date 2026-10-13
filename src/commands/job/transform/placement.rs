@@ -14,7 +14,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::commands::job::download;
+use crate::commands::job::local;
 use crate::core::data::sanitize_filename;
 
 /// How many hex characters (of the full SHA-256 digest) to keep in a
@@ -47,7 +47,7 @@ pub(crate) fn compute_destination_name(
             .unwrap_or("file"),
     );
     let digest =
-        download::sha256_hex(format!("{source_path}\u{1}{original_relative_path}").as_bytes());
+        local::sha256_hex(format!("{source_path}\u{1}{original_relative_path}").as_bytes());
     format!("{stem}-{}.{output_extension}", &digest[..NAME_HASH_HEX_LEN])
 }
 
