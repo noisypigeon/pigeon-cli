@@ -48,7 +48,11 @@
 //! -- so steady-state local disk usage during a run is bounded by the
 //! in-flight window (`--concurrency`/`--transfers` wide), not by the total
 //! size of the source/destination trees. A file that fails is deliberately
-//! left in place on disk for diagnosis.
+//! left in place on disk for diagnosis -- with one exception (ADR-0143): a
+//! file rejected because this run was given the wrong `--input-file-type`
+//! for it is deleted too, since it is undamaged and still present at
+//! `--source`, so retaining it only lets a fully-misdirected run
+//! accumulate the whole source tree locally.
 
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
@@ -81,6 +85,28 @@ const TRANSCODE_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 /// completions (in completion order, not dispatch order); see
 /// `run_transform_job`'s circuit-breaker state and doc comment (ADR-0121).
 const CIRCUIT_BREAKER_SAMPLE_SIZE: usize = 20;
+
+/// How many of those `CIRCUIT_BREAKER_SAMPLE_SIZE` completions must be
+/// non-retryable transcode failures to trip the breaker (ADR-0143).
+///
+/// ADR-0121 required unanimity, which made the breaker disarmable by a
+/// single interleaved success -- and since `circuit_breaker_samples` only
+/// ever counts up to the sample size, that disarming was *permanent*. A
+/// mixed source, which is the common shape of a run pointed at the wrong
+/// `--input-file-type`, could therefore grind through every remaining file.
+/// 18 of 20 is still decisive rather than marginal: ADR-0130 already
+/// narrowed what counts here to transcode-stage *and* non-retryable, so
+/// this is 18 same-class deterministic failures, not 18 assorted errors.
+const CIRCUIT_BREAKER_TRIP_THRESHOLD: usize = 18;
+
+/// Whether the circuit breaker should trip, given how many completions have
+/// been sampled and how many of those matched (ADR-0143). Extracted as a
+/// pure function so the threshold is unit-testable without depending on
+/// concurrent completion ordering -- the same move ADR-0137 made with
+/// `default_bucket_index`.
+fn circuit_breaker_should_trip(samples: usize, matches: usize) -> bool {
+    samples == CIRCUIT_BREAKER_SAMPLE_SIZE && matches >= CIRCUIT_BREAKER_TRIP_THRESHOLD
+}
 
 /// Mirrors `core::retry::retry_with_backoff`'s shape (linear backoff,
 /// `tracing::warn!` per attempt, `tracing::error!` on exhaustion) but adds
@@ -410,6 +436,19 @@ async fn process_one(
             1,
             None,
         );
+        // ADR-0143: a wrong-`--input-file-type` failure is the one class
+        // where ADR-0124's retain-the-failed-file-for-diagnosis rule buys
+        // nothing -- the file is undamaged, still present at `--source`
+        // (where a rerun pulls it from anyway), and the error already says
+        // exactly what is wrong. Keeping it would let a fully-misdirected
+        // run accumulate the entire source tree locally. Deleting it is
+        // non-destructive and bounds that. Every *other* failure class
+        // still keeps its local copy.
+        if let Err(err) = &transcode_result
+            && media::is_wrong_input_kind_error(err)
+        {
+            remove_local_copy(&pending_file.absolute_path);
+        }
         transcode_result.map_err(|err| (FailureStage::Transcode, err))?;
 
         placement::place_one(
@@ -462,21 +501,25 @@ async fn process_one(
     Ok(final_path)
 }
 
-/// Best-effort local cleanup once a file is confirmed durably pushed
-/// (ADR-0124). `transform` has no `--upload-only`/local-state-dependent
+/// Best-effort local cleanup. Two call contexts: once a file is confirmed
+/// durably pushed (ADR-0124), and -- since ADR-0143 -- when a file failed
+/// because this run was given the wrong `--input-file-type` for it, where
+/// the local copy has no diagnostic value.
+///
+/// `transform` has no `--upload-only`/local-state-dependent
 /// resume mechanism to preserve by keeping these files around -- unlike
 /// `deduplicate`, which deliberately retains its own `result/` tree for
 /// exactly that purpose -- every phase here is already
 /// independently rerun-safe via the remote destination listing, not local
 /// state. A removal failure (e.g. a permissions issue) is logged and
 /// otherwise ignored: it must never turn an already-successful push into a
-/// failed `Outcome`.
+/// failed `Outcome`, nor change which error a failed file reports.
 fn remove_local_copy(path: &Path) {
     if let Err(err) = std::fs::remove_file(path) {
         tracing::warn!(
             path = %path.display(),
             error = %err,
-            "transform: failed to remove local file after successful push"
+            "transform: failed to remove local file"
         );
     }
 }
@@ -930,9 +973,10 @@ pub(crate) async fn run_transform_job(
                         circuit_breaker_matches += 1;
                         circuit_breaker_example.get_or_insert_with(|| err.clone());
                     }
-                    if circuit_breaker_samples == CIRCUIT_BREAKER_SAMPLE_SIZE
-                        && circuit_breaker_matches == CIRCUIT_BREAKER_SAMPLE_SIZE
-                    {
+                    if circuit_breaker_should_trip(
+                        circuit_breaker_samples,
+                        circuit_breaker_matches,
+                    ) {
                         circuit_breaker_tripped = true;
                         // ADR-0129: deadlock guard -- if pull is paused, resume it so
                         // backlog can drain (the circuit breaker stops dispatch anyway).
@@ -1039,14 +1083,16 @@ pub(crate) async fn run_transform_job(
             .as_deref()
             .unwrap_or("<no example captured>");
         return Err(format!(
-            "transform circuit breaker tripped: all {CIRCUIT_BREAKER_SAMPLE_SIZE} of the first \
-             {CIRCUIT_BREAKER_SAMPLE_SIZE} completed files failed transcoding with the same \
-             deterministic error signature. This looks like a systemic environment/capability \
-             gap (e.g. the ffmpeg build on this job's host lacking support for this input's \
-             format or a feature it uses), not isolated bad source files -- the run is being \
-             aborted instead of grinding through every remaining file with a \
-             guaranteed-identical failure. Check the deployed ffmpeg version and its \
-             decoder/demuxer support for this input type before rerunning. Example error: {example}"
+            "transform circuit breaker tripped: at least {CIRCUIT_BREAKER_TRIP_THRESHOLD} of the \
+             first {CIRCUIT_BREAKER_SAMPLE_SIZE} completed files failed transcoding with the same \
+             deterministic error signature. That is a systemic problem, not isolated bad source \
+             files, so the run is being aborted instead of grinding through every remaining file \
+             with a guaranteed-identical failure. The two usual causes: (1) the wrong \
+             --input-file-type for what this source actually holds -- e.g. a mp4-audio run \
+             pointed at real video, or vice versa (ADR-0143); or (2) an environment/capability \
+             gap, the ffmpeg build on this job's host lacking support for this input's format or \
+             a feature it uses. The example error below distinguishes them. Example error: \
+             {example}"
         ));
     }
 
@@ -1214,6 +1260,36 @@ mod tests {
     use super::*;
 
     const TEST_RETRIES: usize = 3;
+
+    /// ADR-0143: the breaker trips on a strong majority, not unanimity.
+    /// Unit-tested through the extracted pure function because the real
+    /// loop's `matches` count depends on concurrent completion ordering,
+    /// which a test can't pin deterministically.
+    #[test]
+    fn circuit_breaker_trips_on_a_strong_majority_not_only_unanimity() {
+        // Unanimous still trips, as it always did (ADR-0121).
+        assert!(circuit_breaker_should_trip(
+            CIRCUIT_BREAKER_SAMPLE_SIZE,
+            CIRCUIT_BREAKER_SAMPLE_SIZE
+        ));
+        // The new case: a few interleaved successes no longer disarm it.
+        assert!(circuit_breaker_should_trip(
+            CIRCUIT_BREAKER_SAMPLE_SIZE,
+            CIRCUIT_BREAKER_TRIP_THRESHOLD
+        ));
+        // One below the threshold must not trip -- this is what keeps
+        // ADR-0116's "one bad apple doesn't abort the run" guarantee.
+        assert!(!circuit_breaker_should_trip(
+            CIRCUIT_BREAKER_SAMPLE_SIZE,
+            CIRCUIT_BREAKER_TRIP_THRESHOLD - 1
+        ));
+        // Never trips before the full sample is in, however bad it looks.
+        assert!(!circuit_breaker_should_trip(
+            CIRCUIT_BREAKER_SAMPLE_SIZE - 1,
+            CIRCUIT_BREAKER_SAMPLE_SIZE - 1
+        ));
+        assert!(!circuit_breaker_should_trip(0, 0));
+    }
 
     #[tokio::test]
     async fn retry_transcode_unless_fatal_does_not_retry_a_non_retryable_error() {
@@ -2253,5 +2329,99 @@ mod tests {
             "expected a .opus output, got {}",
             pushed[0]
         );
+    }
+
+    /// ADR-0143: a `mp4-audio` run pointed at real video -- the exact
+    /// mistake ADR-0142's guard exists to catch, which an omitted
+    /// `--source` prefix makes easy (`source:mp4/` is the default address
+    /// for *both* kinds). Every file must fail at the transcode stage,
+    /// nothing may be pushed, and crucially the local source copies must
+    /// be *deleted*: retaining them is what let a misdirected run
+    /// accumulate the whole source tree on local disk.
+    ///
+    /// Deliberately 3 files, well under `CIRCUIT_BREAKER_SAMPLE_SIZE`, so
+    /// the breaker cannot abort the run and confound what is being
+    /// asserted here.
+    #[tokio::test]
+    async fn an_mp4_audio_run_over_real_video_deletes_each_rejected_local_source_copy() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+
+        for i in 0..3 {
+            let generated = tokio::process::Command::new("ffmpeg")
+                .args([
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc=duration=1:size=64x48:rate=5",
+                    "-c:v",
+                    "libx264",
+                    "-f",
+                    "mp4",
+                ])
+                .arg(source_for_pull.join(format!("video-{i}.mp4")))
+                .output()
+                .await;
+            if !generated.map(|out| out.status.success()).unwrap_or(false) {
+                eprintln!("skipping: this ffmpeg build can't generate a video fixture");
+                return;
+            }
+        }
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Mp4Audio,
+            download_transfers: 3,
+            download_checkers: 4,
+            video_quality: VideoQuality::Medium,
+            tpslimit: None,
+            max_pending_downloads: 100,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 3, 3)
+            .await
+            .expect("3 failures are below the circuit-breaker sample size, so no whole-run abort");
+
+        assert!(summary.failed);
+        assert_eq!(summary.pushed, 0);
+        assert_eq!(summary.failures.transcode, 3);
+        assert_eq!(summary.outcomes.len(), 3);
+        for outcome in &summary.outcomes {
+            assert_eq!(outcome.stage, Some(FailureStage::Transcode));
+            assert!(
+                media::is_wrong_input_kind_error(&outcome.detail),
+                "expected a wrong-input-kind error, got: {}",
+                outcome.detail
+            );
+        }
+
+        // Nothing reached the destination -- no video was converted to
+        // audio-only, which is the whole point of ADR-0142's guard.
+        assert!(std::fs::read_dir(&destination).unwrap().next().is_none());
+
+        // ADR-0143: and no local source copy was retained.
+        for i in 0..3 {
+            let retained = source_dir(&local_output).join(format!("video-{i}.mp4"));
+            assert!(
+                !retained.exists(),
+                "{} should have been deleted -- it is undamaged and still at --source",
+                retained.display()
+            );
+        }
     }
 }

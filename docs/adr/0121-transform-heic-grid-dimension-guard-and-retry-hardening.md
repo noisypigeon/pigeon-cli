@@ -86,3 +86,23 @@ With Decision §1 in place, this breaker should rarely if ever trip for the grid
 - `mise run ci` clean (fmt-check + lint + test), including new/updated tests for `is_non_retryable_transcode_error`, the area-based dimension comparison, `retry_transcode_unless_fatal`, and the circuit breaker's trip/no-trip behavior.
 - Manually confirmed during this ADR's own investigation: `probe_dimensions`'s new stream-group-aware logic and the area-based comparison, run against the real `LG - 504.HEIC` file with real ffmpeg 9.0.2, correctly accept what is now a correct transcode.
 - Manual (post-implementation): run `pigeon job run transform --input-file-type=heic ...` against a local directory of ≥20 fixture-style corrupt files and confirm a fast (seconds, not minutes) `Err` exit with a clear diagnostic message.
+
+## Amendment (2026-10-12): the circuit breaker trips on a majority, not unanimity (ADR-0143)
+
+This ADR's breaker required **all** `CIRCUIT_BREAKER_SAMPLE_SIZE` (20) of
+the first 20 completions to be non-retryable transcode failures. ADR-0143
+found that unanimity made it disarmable by a single interleaved success --
+and permanently so, since `circuit_breaker_samples` only ever counts up to
+the sample size, after which the trip condition is never re-evaluated. A
+*mixed* source, which is the common shape of a run given the wrong
+`--input-file-type`, could therefore pass the sample without tripping and
+then grind through every remaining file.
+
+The threshold becomes `CIRCUIT_BREAKER_TRIP_THRESHOLD` (18 of 20), with the
+decision extracted into a pure `circuit_breaker_should_trip` function so it
+is unit-testable independently of concurrent completion ordering. The
+sample size is unchanged, as is ADR-0130's narrowing of what counts (the
+failure must be transcode-stage *and* non-retryable), so this remains 18
+same-class deterministic failures rather than 18 assorted errors. The abort
+message also stops attributing the cause solely to the host's `ffmpeg`
+build and now names a wrong `--input-file-type` as the other likely cause.

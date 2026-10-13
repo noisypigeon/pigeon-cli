@@ -252,6 +252,36 @@ async fn probe_video_diagnostics(path: &Path) -> String {
     }
 }
 
+/// `transcode_video`'s audio-only rejection (ADR-0141), and
+/// `transcode_audio`'s mirror-image video rejection (ADR-0142).
+///
+/// Named consts rather than inline literals (ADR-0143) because three
+/// separate places have to agree on each substring: the `format!` that
+/// produces it, `NON_RETRYABLE_SIGNATURES`, and
+/// `is_wrong_input_kind_error`. Unlike every other entry in that signature
+/// list, these two match **pigeon's own** message text rather than
+/// `ffmpeg`'s stderr, so they are not version-fragile -- but only as long
+/// as producer and matcher cannot drift apart, which is what these consts
+/// guarantee.
+const NO_VIDEO_STREAM_SIGNATURE: &str = "has no video stream";
+const UNEXPECTED_VIDEO_STREAM_SIGNATURE: &str = "is not an audio-only recording";
+
+/// Whether `err` means the operator pointed this run at the wrong
+/// `--input-file-type` for this file -- the file itself is intact
+/// (ADR-0143).
+///
+/// Deliberately a separate predicate from
+/// `is_non_retryable_transcode_error`, which answers a different question
+/// (does retrying help?). Both are true for these two signatures, but they
+/// are not interchangeable: this one licenses deleting the local source
+/// copy, which is only safe because such a file is undamaged and still
+/// present at `--source`.
+pub(crate) fn is_wrong_input_kind_error(err: &str) -> bool {
+    [NO_VIDEO_STREAM_SIGNATURE, UNEXPECTED_VIDEO_STREAM_SIGNATURE]
+        .iter()
+        .any(|signature| err.contains(signature))
+}
+
 /// Whether `path` contains at least one video stream, used by
 /// `transcode_video` to reject an audio-only input before `ffmpeg` runs
 /// (ADR-0141). Unlike `probe_dimensions`/`probe_duration_seconds`, an
@@ -355,7 +385,7 @@ pub(crate) async fn transcode_video(
 ) -> Result<(), String> {
     if !has_video_stream(input).await {
         return Err(format!(
-            "{} has no video stream (likely an audio-only recording saved with a video \
+            "{} {NO_VIDEO_STREAM_SIGNATURE} (likely an audio-only recording saved with a video \
              extension); see ADR-0142 for an audio-preserving input type",
             input.display()
         ));
@@ -474,8 +504,8 @@ const OPUS_BITRATE: &str = "48k";
 pub(crate) async fn transcode_audio(input: &Path, output: &Path) -> Result<(), String> {
     if has_video_stream(input).await {
         return Err(format!(
-            "{} has a video stream, so it is not an audio-only recording; refusing to discard \
-             video (use --input-file-type mp4 to transcode it as video)",
+            "{} has a video stream, so it {UNEXPECTED_VIDEO_STREAM_SIGNATURE}; refusing to \
+             discard video (use --input-file-type mp4 to transcode it as video)",
             input.display()
         ));
     }
@@ -540,8 +570,8 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         "could not find codec parameters",
         "refusing an output that isn't full-size",
         "Unknown encoder",
-        "has no video stream",
-        "is not an audio-only recording",
+        NO_VIDEO_STREAM_SIGNATURE,
+        UNEXPECTED_VIDEO_STREAM_SIGNATURE,
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -1148,6 +1178,55 @@ mod tests {
     #[test]
     fn is_non_retryable_transcode_error_is_false_for_an_empty_string() {
         assert!(!is_non_retryable_transcode_error(""));
+    }
+
+    /// ADR-0143: the predicate that licenses deleting a failed file's local
+    /// source copy must match exactly the two wrong-input-kind guards and
+    /// nothing else -- a corrupt file is non-retryable too, but its local
+    /// copy is still wanted for diagnosis (ADR-0124).
+    #[test]
+    fn is_wrong_input_kind_error_matches_both_guards_and_nothing_else() {
+        assert!(is_wrong_input_kind_error(
+            "/x.mp4 has no video stream (likely an audio-only recording saved with a video \
+             extension); see ADR-0142 for an audio-preserving input type"
+        ));
+        assert!(is_wrong_input_kind_error(
+            "/x.mp4 has a video stream, so it is not an audio-only recording; refusing to \
+             discard video (use --input-file-type mp4 to transcode it as video)"
+        ));
+
+        // Every other failure class, including other non-retryable ones.
+        assert!(!is_wrong_input_kind_error(
+            "ffmpeg failed to transcode /x.mp4: Invalid data found when processing input"
+        ));
+        assert!(!is_wrong_input_kind_error(
+            "ffmpeg failed to transcode /x.mp4: moov atom not found"
+        ));
+        assert!(!is_wrong_input_kind_error(
+            "ffmpeg failed to transcode /x.mp4: Unknown encoder 'libx265'"
+        ));
+        assert!(!is_wrong_input_kind_error(
+            "failed to run ffmpeg: Resource temporarily unavailable (os error 11)"
+        ));
+        assert!(!is_wrong_input_kind_error(""));
+    }
+
+    /// Both guards' real messages must be classified non-retryable as well
+    /// -- built here by calling the real producers' format strings' const
+    /// substrings, so this fails if a const and its `format!` drift apart.
+    #[test]
+    fn both_wrong_input_kind_signatures_are_also_non_retryable() {
+        for signature in [NO_VIDEO_STREAM_SIGNATURE, UNEXPECTED_VIDEO_STREAM_SIGNATURE] {
+            let message = format!("/x.mp4 {signature} ...");
+            assert!(
+                is_non_retryable_transcode_error(&message),
+                "{signature} must be non-retryable"
+            );
+            assert!(
+                is_wrong_input_kind_error(&message),
+                "{signature} must be a wrong-input-kind error"
+            );
+        }
     }
 
     /// Confirms the plain (no stream group) probe path is unaffected by the
