@@ -33,6 +33,12 @@ pub struct Cli {
     /// Disables the local Prometheus metrics endpoint entirely (ADR-0092).
     #[arg(long, global = true)]
     pub no_metrics: bool,
+
+    /// Overrides the keyring file's location. Defaults to
+    /// $PIGEON_CONFIG_DIR/keyring.toml, or the OS-conventional config
+    /// directory for `pigeon` if that isn't set either (ADR-0145).
+    #[arg(long, global = true)]
+    pub keyring_path: Option<PathBuf>,
 }
 
 #[derive(Subcommand, Debug)]

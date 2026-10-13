@@ -375,3 +375,21 @@ two bucket-configs may name the same bucket on different endpoints. §3's
 (pigeon-managed buckets only, regenerated per run, never merged with an
 existing file), and the `0600` permissions are all unchanged -- only the
 generated file's shape.
+
+## Amendment (2026-10-13): `deduplicate` never actually called the generator (ADR-0145)
+
+§2 specifies the generator is "called once at the start of every
+rclone-backed job's wizard dispatch", and §4 moves `deduplicate`'s three
+data legs onto `core::rclone` -- but `deduplicate/wizard.rs` was never given
+the call. It ran against whatever a previous `transform`/`rclone copy|delete`
+run left at `rclone_config_path()`, or nothing at all on a host where
+neither had run, so this ADR's "regenerated fresh from the current keyring
+state every time, so a `pigeon keyring modify bucket` takes effect on the
+very next job run" guarantee did not hold for it. ADR-0145 hoists the
+preflight into one `shared_wizard::prepare_rclone` and gives `deduplicate`
+its fourth call site, along with the `check_available()` check it also
+lacked -- completing §1's "the five duplicate `check_rclone_available`
+copies collapse into `core::rclone::check_available()`", which left two
+wrappers behind. ADR-0145 also makes the generated file's *location*
+operator-controlled: it still sits beside `keyring.toml` exactly as §2
+specifies, but that keyring can now be named with `--keyring-path`.

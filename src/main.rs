@@ -5,6 +5,12 @@ use pigeon::observability;
 
 fn main() {
     let cli = Cli::parse();
+    if let Some(path) = cli.keyring_path.clone() {
+        // Recorded before `dispatch` so every later resolution -- each job
+        // wizard's `Store::resolve_path`, and `core::rclone`'s own
+        // `rclone_config_path` deep inside `execute` -- sees it (ADR-0145).
+        commands::keyring::store::set_keyring_path_override(path);
+    }
     let _guard = match observability::init(cli.log_level.as_deref(), cli.log_file.as_deref()) {
         Ok(guard) => guard,
         Err(err) => {

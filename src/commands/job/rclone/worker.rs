@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
+use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::{Copy, Purge};
-use crate::core::rclone::{RcloneCommand as _, check_available};
 
 pub(crate) struct RcloneCopyPlan {
     pub source: String,
@@ -31,16 +31,6 @@ pub(crate) struct RcloneDeleteSummary {
     pub deleted: u64,
     pub errors: u64,
     pub log_path: PathBuf,
-}
-
-/// Confirms `rclone` is on `PATH`, checked once up front in the wizard
-/// before any prompts (mirrors `transform::media::check_ffmpeg_available`)
-/// so a missing binary fails immediately, not partway through a
-/// long-running `rclone copy`/`rclone purge` subprocess.
-pub(crate) async fn check_rclone_available() -> Result<(), String> {
-    check_available()
-        .await
-        .map_err(|_| "'rclone' was not found on PATH -- required for 'pigeon job run rclone' to copy/delete data".to_string())
 }
 
 /// Runs `rclone copy <source> <destination>` with `transfers`/`checkers`/
@@ -120,15 +110,16 @@ pub(crate) async fn run_delete_job(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::rclone::check_available;
 
     /// `rclone copy` works against plain local filesystem paths. Skipped
     /// (not failed) if `rclone` genuinely isn't on `PATH`, since this whole
-    /// job already refuses to run without it (`check_rclone_available`) --
+    /// job already refuses to run without it (`shared_wizard::prepare_rclone`) --
     /// this test would just be redundant with that failure on a machine
     /// that can't run it anyway.
     #[tokio::test]
     async fn copies_a_file_between_two_local_directories() {
-        if check_rclone_available().await.is_err() {
+        if check_available().await.is_err() {
             eprintln!("skipping: rclone not found on PATH");
             return;
         }
@@ -160,7 +151,7 @@ mod tests {
     /// opt back into per-destination.
     #[tokio::test]
     async fn copies_a_file_with_a_tpslimit_set() {
-        if check_rclone_available().await.is_err() {
+        if check_available().await.is_err() {
             eprintln!("skipping: rclone not found on PATH");
             return;
         }
@@ -193,7 +184,7 @@ mod tests {
     /// `delete` subcommand, which leaves empty directories behind).
     #[tokio::test]
     async fn purges_everything_under_a_local_directory() {
-        if check_rclone_available().await.is_err() {
+        if check_available().await.is_err() {
             eprintln!("skipping: rclone not found on PATH");
             return;
         }

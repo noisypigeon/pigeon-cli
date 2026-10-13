@@ -124,3 +124,14 @@ permissions. The one keychain service name this ADR established
 (`"pigeon"`) and the alias-uniqueness guarantee it built to make that
 service name safe to share across kinds are both superseded — there is no
 keychain service left.
+
+## Amendment (2026-10-13): `--keyring-path` overrides this ADR's resolution (ADR-0145)
+
+ADR-0145 adds a root-level `--keyring-path` global flag taking precedence
+over the `PIGEON_CONFIG_DIR` env var this ADR unified, making the precedence
+flag > env var > OS config dir. The flag names the keyring *file*; the env
+var still names its *directory*, so neither replaces the other. This ADR's
+`Store::default_path` is renamed `Store::resolve_path`, since with two
+overrides ahead of the default the old name described only its last branch.
+Globally-unique aliases, the single `keyring.toml`, and every other decision
+here are unchanged.

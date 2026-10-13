@@ -7,7 +7,7 @@ use crate::commands::job::email_sync::wizard::print_manifest_summary;
 use crate::commands::job::email_sync::{DEFAULT_MAX_CONNECTIONS_PER_IDENTITY, IdentityContext};
 use crate::commands::job::report_upload;
 use crate::commands::job::shared_wizard::{
-    ConfirmInput, UploadConcurrencyInput, UploadTargetInput,
+    ConfirmInput, UploadConcurrencyInput, UploadTargetInput, load_keyring,
 };
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
@@ -233,11 +233,7 @@ async fn dispatch_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    let keyring_store_path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let keyring_store = match Store::load(&keyring_store_path) {
+    let keyring_store = match load_keyring() {
         Ok(store) => store,
         Err(err) => return fail(err),
     };

@@ -16,6 +16,31 @@ pub const CONFIG_DIR_ENV_VAR: &str = "PIGEON_CONFIG_DIR";
 
 const KEYRING_FILE_NAME: &str = "keyring.toml";
 
+/// An explicit `--keyring-path` (ADR-0145), recorded once from `main` before
+/// any command dispatch and taking precedence over `CONFIG_DIR_ENV_VAR`.
+///
+/// A process-global rather than a parameter threaded down from the CLI
+/// because `core::rclone::config::rclone_config_path` derives the generated
+/// `rclone.conf`'s directory from this path deep inside
+/// `core::rclone::execute`, which has no access to any wizard's arguments --
+/// threading it there would mean changing `RcloneCommand::run`'s signature
+/// and every `Copy`/`CopyTo`/`Lsjson`/`Purge` call site. Same reason
+/// `observability`'s `LOG_FILE_PATH` is a `OnceLock` (ADR-0073).
+static KEYRING_PATH_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+/// Records `--keyring-path`. Called once from `main`, before `dispatch`.
+pub fn set_keyring_path_override(path: PathBuf) {
+    let _ = KEYRING_PATH_OVERRIDE.set(path);
+}
+
+/// The explicitly-passed `--keyring-path`, if there was one. Distinguishes
+/// "the operator named this file" from "pigeon derived it", which is what
+/// lets a job refuse a named file that doesn't exist rather than silently
+/// loading an empty store (ADR-0145 §4).
+pub fn keyring_path_override() -> Option<&'static Path> {
+    KEYRING_PATH_OVERRIDE.get().map(PathBuf::as_path)
+}
+
 /// One configured secret: either an authenticated email identity or a
 /// bucket-config, tagged so both can live in one `keyring.toml` (ADR-0022).
 /// Wraps the existing `Identity`/`BucketConfig` structs unchanged rather
@@ -84,16 +109,39 @@ pub struct Store {
     entries: Vec<Entry>,
 }
 
+/// `Store::resolve_path`'s precedence, as a pure function of its two
+/// overrides. Extracted so the ordering is unit-testable: the real
+/// `--keyring-path` lives in a `OnceLock` that can only be set once per
+/// process, so an in-process test could otherwise only ever exercise one
+/// branch (ADR-0143's `circuit_breaker_should_trip` precedent).
+fn resolve_path_from(
+    override_path: Option<&Path>,
+    config_dir: Option<String>,
+) -> Result<PathBuf, String> {
+    if let Some(path) = override_path {
+        return Ok(path.to_path_buf());
+    }
+    if let Some(dir) = config_dir {
+        return Ok(PathBuf::from(dir).join(KEYRING_FILE_NAME));
+    }
+    let project_dirs = directories::ProjectDirs::from("", "", "pigeon")
+        .ok_or("could not determine the config directory for this platform")?;
+    Ok(project_dirs.config_dir().join(KEYRING_FILE_NAME))
+}
+
 impl Store {
-    /// The keyring metadata file's path: `$PIGEON_CONFIG_DIR/keyring.toml`
-    /// if set, otherwise the OS-conventional config directory for `pigeon`.
-    pub fn default_path() -> Result<PathBuf, String> {
-        if let Ok(dir) = std::env::var(CONFIG_DIR_ENV_VAR) {
-            return Ok(PathBuf::from(dir).join(KEYRING_FILE_NAME));
-        }
-        let project_dirs = directories::ProjectDirs::from("", "", "pigeon")
-            .ok_or("could not determine the config directory for this platform")?;
-        Ok(project_dirs.config_dir().join(KEYRING_FILE_NAME))
+    /// The keyring file's path: `--keyring-path` if it was passed, otherwise
+    /// `$PIGEON_CONFIG_DIR/keyring.toml` if that's set, otherwise the
+    /// OS-conventional config directory for `pigeon` (ADR-0145).
+    ///
+    /// Named `resolve_path` rather than ADR-0022's `default_path`: with two
+    /// overrides ahead of the default, the old name named only the last
+    /// branch.
+    pub fn resolve_path() -> Result<PathBuf, String> {
+        resolve_path_from(
+            keyring_path_override(),
+            std::env::var(CONFIG_DIR_ENV_VAR).ok(),
+        )
     }
 
     /// Loads the store from `path`. A missing file is treated as an empty store.
@@ -286,6 +334,39 @@ impl Store {
 mod tests {
     use super::*;
     use crate::commands::keyring::email::provider::Provider;
+
+    #[test]
+    fn resolve_path_from_prefers_an_explicit_keyring_path_over_the_config_dir() {
+        let path = resolve_path_from(
+            Some(Path::new("/explicit/keyring.toml")),
+            Some("/from/env".to_string()),
+        )
+        .unwrap();
+        assert_eq!(path, PathBuf::from("/explicit/keyring.toml"));
+    }
+
+    #[test]
+    fn resolve_path_from_falls_back_to_the_config_dir_when_no_override_is_set() {
+        let path = resolve_path_from(None, Some("/from/env".to_string())).unwrap();
+        assert_eq!(path, PathBuf::from("/from/env/keyring.toml"));
+    }
+
+    #[test]
+    fn resolve_path_from_falls_back_to_the_os_config_dir_when_neither_is_set() {
+        // Only the file name is asserted: the directory half is whatever
+        // `directories` reports for this platform, which varies by OS.
+        let path = resolve_path_from(None, None).unwrap();
+        assert_eq!(path.file_name().unwrap(), "keyring.toml");
+        assert!(path.parent().is_some());
+    }
+
+    #[test]
+    fn resolve_path_from_uses_an_explicit_path_verbatim_without_appending_a_file_name() {
+        // `--keyring-path` names a *file*; `PIGEON_CONFIG_DIR` names a
+        // *directory*. Confirms the two are not conflated (ADR-0145 §1).
+        let path = resolve_path_from(Some(Path::new("/tmp/alt.toml")), None).unwrap();
+        assert_eq!(path, PathBuf::from("/tmp/alt.toml"));
+    }
 
     fn sample_identity(alias: &str) -> Identity {
         Identity {

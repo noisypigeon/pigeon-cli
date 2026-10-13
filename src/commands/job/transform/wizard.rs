@@ -10,11 +10,13 @@ use std::path::PathBuf;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 
 use crate::commands::job::report_upload;
-use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput, TpslimitInput};
+use crate::commands::job::shared_wizard::{
+    ConfirmInput, CpuConcurrencyInput, TpslimitInput, load_keyring, prepare_rclone,
+};
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
-use crate::core::rclone::config::{RemoteTarget, write_sandboxed_config};
+use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
 use super::format::{InputFileType, VideoQuality};
@@ -289,22 +291,6 @@ impl WizardInput for LocalOutputInput {
     }
 }
 
-/// Confirms `rclone` is on `PATH` -- same shape as `rclone::worker`'s own
-/// check, duplicated rather than reused since that function lives in a
-/// private sibling module this job has no access path to.
-async fn check_rclone_available() -> Result<(), String> {
-    tokio::process::Command::new("rclone")
-        .arg("version")
-        .output()
-        .await
-        .map_err(|_| {
-            "'rclone' was not found on PATH -- required for 'pigeon job run transform' \
-             to pull/push data"
-                .to_string()
-        })?;
-    Ok(())
-}
-
 /// Entry point for `pigeon job run transform` (ADR-0112, video input kinds
 /// added by ADR-0122, download/upload concurrency split and backpressure
 /// added by ADR-0129).
@@ -372,29 +358,18 @@ async fn dispatch_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    // Checked before any prompts, mirroring `rclone::worker`'s own
-    // preflight check -- fail immediately on a missing binary, not partway
-    // through a long-running pipeline.
-    if let Err(err) = check_rclone_available().await {
-        return fail(err);
-    }
+    // Checked before any prompts -- fail immediately on a missing binary,
+    // not partway through a long-running pipeline. `rclone`'s own
+    // equivalent check now lives in `prepare_rclone` below (ADR-0145 §5).
     if let Err(err) = media::check_ffmpeg_available().await {
         return fail(err);
     }
 
-    let keyring_store_path = match Store::default_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    let keyring_store = match Store::load(&keyring_store_path) {
+    let keyring_store = match load_keyring() {
         Ok(store) => store,
         Err(err) => return fail(err),
     };
-    let rclone_config_path = match crate::core::rclone::config::rclone_config_path() {
-        Ok(path) => path,
-        Err(err) => return fail(err),
-    };
-    if let Err(err) = write_sandboxed_config(&keyring_store, &rclone_config_path) {
+    if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
 

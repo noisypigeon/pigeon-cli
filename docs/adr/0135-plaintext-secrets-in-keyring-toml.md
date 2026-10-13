@@ -180,3 +180,13 @@ Short forward-pointing "Amendment" sections are added to ADR-0022, ADR-0026,
 and ADR-0085, each pointing at this ADR. ADR-0035 is already `Rejected` and
 historical; its investigation record stays accurate as-is and needs no
 amendment.
+
+## Amendment (2026-10-13): `keyring.toml` is relocatable per invocation (ADR-0145)
+
+ADR-0145 adds a `--keyring-path` global flag, so the file this ADR made the
+single source of truth for every secret can be named per invocation rather
+than only via `PIGEON_CONFIG_DIR`. Nothing about the file's contents,
+`0600` permissions, or `PIGEON_SECRET_<ALIAS>`'s precedence changes. Worth
+noting alongside this ADR's trust model: the generated `rclone.conf`
+(ADR-0136) is written beside the keyring and carries the same plaintext S3
+credentials, so relocating one relocates both.

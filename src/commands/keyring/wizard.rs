@@ -84,7 +84,7 @@ fn add_email(
     host: Option<String>,
     port: Option<u16>,
 ) -> i32 {
-    let path = match Store::default_path() {
+    let path = match Store::resolve_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -170,7 +170,7 @@ fn add_email(
 }
 
 fn add_bucket(alias: Option<String>) -> i32 {
-    let path = match Store::default_path() {
+    let path = match Store::resolve_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -264,7 +264,7 @@ fn add_bucket(alias: Option<String>) -> i32 {
 /// is its only storage (ADR-0135), exactly like every other secret this
 /// wizard collects.
 fn add_encryption_key(alias: Option<String>) -> i32 {
-    let path = match Store::default_path() {
+    let path = match Store::resolve_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -316,7 +316,7 @@ fn add_encryption_key(alias: Option<String>) -> i32 {
 /// existing shape exactly; the email branch is new, since no identity-edit
 /// capability existed anywhere before this.
 pub fn modify(alias: Option<String>) -> i32 {
-    let path = match Store::default_path() {
+    let path = match Store::resolve_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -550,7 +550,7 @@ fn modify_encryption_key(
 /// line doesn't waive confirmation, matching `dataops bucket-config
 /// remove`'s existing behavior exactly.
 pub fn delete(alias: String) -> i32 {
-    let path = match Store::default_path() {
+    let path = match Store::resolve_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
@@ -583,7 +583,7 @@ pub fn delete(alias: String) -> i32 {
 
 /// `pigeon keyring list`: one table, both kinds together.
 pub fn list() -> i32 {
-    let path = match Store::default_path() {
+    let path = match Store::resolve_path() {
         Ok(path) => path,
         Err(err) => return fail(err),
     };
