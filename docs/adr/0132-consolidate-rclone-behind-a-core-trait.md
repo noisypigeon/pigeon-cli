@@ -530,3 +530,20 @@ making the report leg keyring-free in the first place. The shared runner
 additionally appends `--config <path>` (pointing at ADR-0136's own
 generated, never-externally-provisioned config) to every invocation's
 fixed flag baseline, unconditionally.
+
+## Amendment (2026-10-13): `CopyTo`'s retry budget was far too short (ADR-0144)
+
+The `retry()` hook this ADR gave `RcloneCommand` is unchanged, but the value
+`CopyTo` returned from it -- `Some((3, 2s))`, i.e. attempts at t=0/+2s/+6s
+under `core::retry::retry_with_backoff`'s linear schedule -- turned out to
+be a **six-second** budget. A real run met a 74-second DNS blackout on the
+destination endpoint and lost 275 pushes to it, each having burned all three
+attempts inside the first six seconds. A negative DNS answer is also
+negative-TTL cached, so retrying that fast is structurally guaranteed to
+reproduce the same failure.
+
+ADR-0144 raises it to `Some((4, Duration::from_secs(30)))` (about five
+minutes) and adds an `EndpointGate` so one outage costs the run one wait
+rather than one per file. `Lsjson`'s `(3, 2s)` is deliberately untouched:
+it runs once per run, and ADR-0140 wanted an unresolvable source to fail
+fast.

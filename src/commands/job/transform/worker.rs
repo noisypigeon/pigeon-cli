@@ -54,13 +54,14 @@
 //! `--source`, so retaining it only lets a fully-misdirected run
 //! accumulate the whole source tree locally.
 
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
@@ -106,6 +107,136 @@ const CIRCUIT_BREAKER_TRIP_THRESHOLD: usize = 18;
 /// `default_bucket_index`.
 fn circuit_breaker_should_trip(samples: usize, matches: usize) -> bool {
     samples == CIRCUIT_BREAKER_SAMPLE_SIZE && matches >= CIRCUIT_BREAKER_TRIP_THRESHOLD
+}
+
+/// How many times a single file will wait out a destination-endpoint outage
+/// before giving up on it (ADR-0144). Bounds the per-file cost of an outage
+/// that never ends; `EndpointGate`'s own backoff is what bounds the cost of
+/// one that does.
+const PUSH_ENDPOINT_RECOVERY_ROUNDS: usize = 4;
+
+/// Base backoff for one `EndpointGate` recovery round, scaled linearly by
+/// round number to match `core::retry::retry_with_backoff`'s schedule --
+/// 30s/60s/90s/120s, five minutes of patience across all four rounds, on
+/// top of `CopyTo`'s own five-minute per-attempt budget.
+const PUSH_ENDPOINT_RECOVERY_BACKOFF: Duration = Duration::from_secs(30);
+
+/// What a file should do after `EndpointGate::wait_for_recovery` returns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GateDecision {
+    /// The gate has reopened -- try this file's push again.
+    Retry,
+    /// The endpoint has stayed unreachable across every recovery round;
+    /// stop waiting and let this file fail.
+    GiveUp,
+}
+
+/// Serialises recovery from a destination-endpoint outage so one outage
+/// costs the run one wait, not one wait per in-flight file (ADR-0144).
+///
+/// Whichever task first observes an `is_endpoint_unreachable_error` wins an
+/// election and becomes *the prober*: it closes the gate, sleeps a backoff
+/// round, then reopens it. Every other task that fails the same way during
+/// that window parks on the gate instead of spawning its own doomed
+/// `rclone` subprocess, and retries only once the gate reopens. The actual
+/// "is it back?" test is the next real push -- there is deliberately no
+/// separate probe command, because the only listing primitive available
+/// (`Lsjson` on `--destination-path`) is a full-tree listing of a
+/// 38k-object prefix, far too expensive to use as a health check.
+///
+/// This is the push-leg analogue of ADR-0121/0143's transcode circuit
+/// breaker, with one deliberate difference: it **pauses and resumes**
+/// rather than aborting the run. A transient network fault is not the
+/// systemic ffmpeg-capability gap that breaker exists for, so the response
+/// to it is patience, not abandonment -- and only after
+/// `PUSH_ENDPOINT_RECOVERY_ROUNDS` fruitless rounds does it let files start
+/// failing.
+///
+/// Note that `rounds` is never reset. Once the endpoint has proven
+/// unreachable across every round, the gate stays latched open-and-giving-up
+/// for the rest of the run, so the remaining files fail immediately rather
+/// than each re-paying the full recovery budget. That re-payment is the real
+/// amplifier an outage longer than `CopyTo`'s retry budget would otherwise
+/// cause: the push semaphore already caps concurrent pushers at
+/// `--upload-concurrency`, so a *short* outage is absorbed by `CopyTo`'s
+/// retry alone, but a long one would otherwise cost every successive batch
+/// of `upload_concurrency` files the whole budget over again.
+struct EndpointGate {
+    /// `false` while a recovery round is in progress. Non-prober tasks park
+    /// on this rather than retrying.
+    open: watch::Sender<bool>,
+    /// Election: whoever wins `try_lock` is the prober for this round, and
+    /// holds it for the round's whole duration.
+    prober: tokio::sync::Mutex<()>,
+    /// How many recovery rounds have been run. Read without the election
+    /// lock by parked tasks, so it has to be atomic.
+    rounds: AtomicUsize,
+}
+
+impl EndpointGate {
+    fn new() -> Self {
+        Self {
+            open: watch::Sender::new(true),
+            prober: tokio::sync::Mutex::new(()),
+            rounds: AtomicUsize::new(0),
+        }
+    }
+
+    /// Called by a task whose push just failed with an endpoint-level
+    /// error. Returns once it is worth retrying, or `GiveUp` if the
+    /// endpoint has stayed down across every round.
+    async fn wait_for_recovery(&self, relative_path: &str, err: &str) -> GateDecision {
+        match self.prober.try_lock() {
+            Ok(_election) => {
+                // Close the gate before anything else -- a task that fails
+                // in the microseconds between the `try_lock` above and this
+                // send sees an open gate and retries once against a remote
+                // that is still down. Harmless (it just re-enters here and
+                // parks), but worth knowing it is possible.
+                let _ = self.open.send(false);
+
+                let round = self.rounds.fetch_add(1, Ordering::SeqCst) + 1;
+                if round > PUSH_ENDPOINT_RECOVERY_ROUNDS {
+                    let _ = self.open.send(true);
+                    return GateDecision::GiveUp;
+                }
+
+                tracing::warn!(
+                    pigeon_job = "transform",
+                    relative_path,
+                    round,
+                    rounds = PUSH_ENDPOINT_RECOVERY_ROUNDS,
+                    error = %err,
+                    "transform: destination endpoint unreachable; pausing the push leg"
+                );
+
+                let paused = Instant::now();
+                tokio::time::sleep(PUSH_ENDPOINT_RECOVERY_BACKOFF * round as u32).await;
+                let _ = self.open.send(true);
+
+                tracing::info!(
+                    pigeon_job = "transform",
+                    round,
+                    paused_ms = paused.elapsed().as_millis(),
+                    "transform: resuming the push leg"
+                );
+                GateDecision::Retry
+            }
+            Err(_) => {
+                let mut open = self.open.subscribe();
+                while !*open.borrow_and_update() {
+                    if open.changed().await.is_err() {
+                        break;
+                    }
+                }
+                if self.rounds.load(Ordering::SeqCst) > PUSH_ENDPOINT_RECOVERY_ROUNDS {
+                    GateDecision::GiveUp
+                } else {
+                    GateDecision::Retry
+                }
+            }
+        }
+    }
 }
 
 /// Mirrors `core::retry::retry_with_backoff`'s shape (linear backoff,
@@ -350,6 +481,7 @@ async fn process_one(
     scratch_dir: &Path,
     push_log_dir: &Path,
     push_semaphore: Arc<Semaphore>,
+    endpoint_gate: Arc<EndpointGate>,
 ) -> ProcessResult {
     let output_extension = input_file_type.output_extension();
     let destination_name = placement::compute_destination_name(
@@ -481,14 +613,35 @@ async fn process_one(
             format!("push semaphore closed unexpectedly: {err}"),
         )
     })?;
-    push::push_one(
-        &final_path,
-        destination_path,
-        &destination_filename,
-        push_log_dir,
-    )
-    .await
-    .map_err(|err| (FailureStage::Push, err))?;
+    // ADR-0144: an endpoint-level failure is shared by every concurrent
+    // push, so it is waited out once for the whole run via `endpoint_gate`
+    // rather than being re-paid per file. Anything else (a 403, a per-file
+    // read error) fails this file immediately, exactly as before -- parking
+    // on the gate for those would stall every other push behind a wait that
+    // could never help.
+    loop {
+        let Err(err) = push::push_one(
+            &final_path,
+            destination_path,
+            &destination_filename,
+            push_log_dir,
+        )
+        .await
+        else {
+            break;
+        };
+
+        if !crate::core::rclone::is_endpoint_unreachable_error(&err) {
+            return Err((FailureStage::Push, err));
+        }
+        if endpoint_gate
+            .wait_for_recovery(&pending_file.relative_path, &err)
+            .await
+            == GateDecision::GiveUp
+        {
+            return Err((FailureStage::Push, err));
+        }
+    }
 
     // This file's bytes are now durably present at `destination_path` --
     // the local source and result copies no longer serve any purpose
@@ -655,7 +808,66 @@ fn files_needing_pull(
         }
         selection.to_pull.push(relative_path);
     }
+    selection.case_collisions = case_insensitive_collisions(&selection.to_pull);
     selection
+}
+
+/// Source keys in `relative_paths` that differ from another key *only* by
+/// letter case, and so cannot both exist in the local pull tree on a
+/// case-insensitive volume (APFS's default, and HFS+ before it) -- ADR-0144.
+///
+/// Returns every member of every colliding group, not just the ones that
+/// lose: which member rclone keeps and which it discards is its own
+/// ordering decision, not something this job can predict or control.
+///
+/// Why these go undetected without this: rclone resolves the collision
+/// itself, logging `Duplicate object found in source - ignoring` at
+/// **`notice`** level and leaving its aggregate error count at zero, so
+/// ADR-0130's reconciliation correctly sees the file as undelivered while
+/// `pull_summary.errors` disagrees -- exactly the mismatch ADR-0130's own
+/// warning exists to surface. S3 keys are case-sensitive, so two such keys
+/// are entirely legitimate objects with potentially different content;
+/// rclone's "duplicate" judgment is purely name-based and never compares
+/// bytes.
+/// Why a file this run asked rclone for never entered the pipeline.
+///
+/// Extracted as a pure function (ADR-0144) for the same reason ADR-0143
+/// extracted `circuit_breaker_should_trip`: the branch is the interesting
+/// part, and it is untestable while buried in `run_transform_job`'s
+/// reconciliation loop.
+///
+/// The generic arm's wording is deliberately narrower than it used to be.
+/// For a case-collision it was actively *wrong* -- rclone does report such
+/// a file, at `notice` level as `Duplicate object found in source -
+/// ignoring`, which this job never reads -- and that wrongness sent the
+/// original ADR-0144 investigation down a false-positive path for a while.
+fn undelivered_detail(relative_path: &str, case_collisions: &HashSet<String>) -> String {
+    if case_collisions.contains(relative_path) {
+        "another source key differs from this one only by letter case, so rclone delivered at \
+         most one of them to the case-insensitive local volume and ignored this one; the two \
+         keys are distinct objects at the source"
+            .to_string()
+    } else {
+        "file was in this run's pull set but rclone never reported it as copied, so it never \
+         entered the transcode pipeline"
+            .to_string()
+    }
+}
+
+fn case_insensitive_collisions(relative_paths: &[String]) -> HashSet<String> {
+    let mut by_folded: HashMap<String, Vec<&String>> = HashMap::new();
+    for relative_path in relative_paths {
+        by_folded
+            .entry(relative_path.to_lowercase())
+            .or_default()
+            .push(relative_path);
+    }
+    by_folded
+        .into_values()
+        .filter(|group| group.len() > 1)
+        .flatten()
+        .cloned()
+        .collect()
 }
 
 /// What `files_needing_pull` decided, including the two counts it used to
@@ -666,6 +878,11 @@ struct PullSelection {
     to_pull: Vec<String>,
     skipped_already_done: u64,
     skipped_apple_double: u64,
+    /// Members of `to_pull` that collide with another member under
+    /// case-folding, so at most one of them can ever be delivered to a
+    /// case-insensitive local volume (ADR-0144). Not a failure in itself --
+    /// it is what makes the resulting `Pull` failure explicable.
+    case_collisions: HashSet<String>,
 }
 
 /// Writes `relative_paths` newline-delimited under `staging_dir`, for
@@ -794,6 +1011,7 @@ pub(crate) async fn run_transform_job(
     );
     let files_to_pull = selection.to_pull;
     let selection_skipped_already_done = selection.skipped_already_done;
+    let case_collisions = selection.case_collisions;
     // The initial on-disk scan above may have found its own AppleDouble
     // stubs; both choke points feed the same counter.
     skipped_apple_double += selection.skipped_apple_double;
@@ -807,11 +1025,36 @@ pub(crate) async fn run_transform_job(
         crate::commands::job::local::check_disk_space(&source_dir, 0)?;
     }
 
+    // ADR-0144: surfaced before the pull so the operator learns about it
+    // from the log rather than from an inexplicable `Pull` failure hours
+    // later. One line per colliding group, with every member named -- there
+    // is nothing this job can do about it automatically, so naming the keys
+    // is the whole remedy.
+    if !case_collisions.is_empty() {
+        let mut groups: HashMap<String, Vec<&String>> = HashMap::new();
+        for relative_path in &case_collisions {
+            groups
+                .entry(relative_path.to_lowercase())
+                .or_default()
+                .push(relative_path);
+        }
+        for (_, mut group) in groups {
+            group.sort();
+            tracing::warn!(
+                pigeon_job = "transform",
+                keys = ?group,
+                "transform: source keys differ only by letter case and cannot all be pulled to a \
+                 case-insensitive local volume; rclone will deliver at most one of them"
+            );
+        }
+    }
+
     tracing::info!(
         pigeon_job = "transform",
         files_to_pull = files_to_pull.len(),
-        skipped_already_done = selection.skipped_already_done,
+        skipped_already_done = selection_skipped_already_done,
         skipped_apple_double,
+        case_colliding_keys = case_collisions.len(),
         queued_from_local_scan = queue.len(),
         "transform: pull phase starting"
     );
@@ -873,6 +1116,7 @@ pub(crate) async fn run_transform_job(
     .max(1);
 
     let push_semaphore = Arc::new(Semaphore::new(upload_concurrency.max(1)));
+    let endpoint_gate = Arc::new(EndpointGate::new());
 
     // Backpressure: pause/resume pull based on backlog depth (ADR-0129).
     let high_water_mark = plan.max_pending_downloads;
@@ -923,6 +1167,7 @@ pub(crate) async fn run_transform_job(
             let scratch_dir = scratch_dir.clone();
             let push_log_dir = push_log_dir.clone();
             let push_semaphore = push_semaphore.clone();
+            let endpoint_gate = endpoint_gate.clone();
             let input_file_type = plan.input_file_type;
             let video_quality = plan.video_quality;
             in_flight.spawn(
@@ -938,6 +1183,7 @@ pub(crate) async fn run_transform_job(
                         &scratch_dir,
                         &push_log_dir,
                         push_semaphore,
+                        endpoint_gate,
                     )
                     .await;
                     (relative_path, outcome)
@@ -1119,9 +1365,7 @@ pub(crate) async fn run_transform_job(
             destination_filename: None,
             outcome: Outcome::Failed,
             stage: Some(FailureStage::Pull),
-            detail: "file was in this run's pull set but rclone never reported it as copied, \
-                     so it never entered the transcode pipeline"
-                .to_string(),
+            detail: undelivered_detail(relative_path, &case_collisions),
         });
     }
     if failures.pull > 0 {
@@ -1289,6 +1533,89 @@ mod tests {
             CIRCUIT_BREAKER_SAMPLE_SIZE - 1
         ));
         assert!(!circuit_breaker_should_trip(0, 0));
+    }
+
+    /// The whole point of the gate (ADR-0144): one outage costs the run one
+    /// recovery round, not one per in-flight file. Without this, the 275
+    /// files of the motivating run would each have paid the full recovery
+    /// budget over again.
+    ///
+    /// `start_paused` means the round's `sleep` is virtual, so this asserts
+    /// the election and the round accounting, not wall-clock patience.
+    #[tokio::test(start_paused = true)]
+    async fn endpoint_gate_charges_one_recovery_round_for_many_concurrent_failures() {
+        let gate = Arc::new(EndpointGate::new());
+        let mut waiters = JoinSet::new();
+        for index in 0..16 {
+            let gate = gate.clone();
+            waiters.spawn(async move {
+                gate.wait_for_recovery(
+                    &format!("file-{index}.jpg"),
+                    "dial tcp: lookup s3.example.invalid: no such host",
+                )
+                .await
+            });
+        }
+
+        let mut decisions = Vec::new();
+        while let Some(joined) = waiters.join_next().await {
+            decisions.push(joined.unwrap());
+        }
+
+        assert_eq!(decisions.len(), 16);
+        assert!(
+            decisions
+                .iter()
+                .all(|decision| *decision == GateDecision::Retry),
+            "every file should be told to retry once the gate reopens: {decisions:?}"
+        );
+        assert_eq!(
+            gate.rounds.load(Ordering::SeqCst),
+            1,
+            "16 files failing on one shared outage must elect one prober and burn one round"
+        );
+    }
+
+    /// An outage that never ends must not stall the run forever: after
+    /// `PUSH_ENDPOINT_RECOVERY_ROUNDS` fruitless rounds the gate latches,
+    /// so every remaining file fails immediately instead of re-paying the
+    /// budget (ADR-0144).
+    #[tokio::test(start_paused = true)]
+    async fn endpoint_gate_gives_up_and_stays_latched_once_the_budget_is_exhausted() {
+        let gate = EndpointGate::new();
+        for round in 1..=PUSH_ENDPOINT_RECOVERY_ROUNDS {
+            assert_eq!(
+                gate.wait_for_recovery("f.jpg", "no such host").await,
+                GateDecision::Retry,
+                "round {round} of {PUSH_ENDPOINT_RECOVERY_ROUNDS} should still be patient"
+            );
+        }
+        for _ in 0..3 {
+            assert_eq!(
+                gate.wait_for_recovery("f.jpg", "no such host").await,
+                GateDecision::GiveUp,
+                "the gate must stay latched, not re-arm for every later file"
+            );
+        }
+    }
+
+    /// A file that arrives *after* a latched gate must also give up
+    /// immediately rather than parking -- the waiter branch reads the same
+    /// exhausted round count the prober branch does.
+    #[tokio::test(start_paused = true)]
+    async fn endpoint_gate_waiters_give_up_when_the_budget_is_already_exhausted() {
+        let gate = Arc::new(EndpointGate::new());
+        gate.rounds
+            .store(PUSH_ENDPOINT_RECOVERY_ROUNDS + 1, Ordering::SeqCst);
+
+        // Hold the election so `wait_for_recovery` takes the waiter branch.
+        let _election = gate.prober.lock().await;
+        let waiter = {
+            let gate = gate.clone();
+            tokio::spawn(async move { gate.wait_for_recovery("late.jpg", "no such host").await })
+        };
+
+        assert_eq!(waiter.await.unwrap(), GateDecision::GiveUp);
     }
 
     #[tokio::test]
@@ -2059,6 +2386,121 @@ mod tests {
         assert_eq!(result.to_pull, vec!["b.png".to_string()]);
         assert_eq!(result.skipped_already_done, 1);
         assert_eq!(result.skipped_apple_double, 0);
+    }
+
+    /// The exact shape found in the ADR-0144 run: `IMG_0260.JPG` and
+    /// `IMG_0260.jpg` were the only two case-insensitive duplicates among
+    /// 38,232 source keys, and the lowercase one silently never arrived.
+    #[test]
+    fn case_insensitive_collisions_finds_the_real_extension_case_pair() {
+        let collisions = case_insensitive_collisions(&[
+            "IMG_0260.JPG".to_string(),
+            "IMG_0260.jpg".to_string(),
+            "IMG_1551.JPG".to_string(),
+            "IMG_1551.jpg".to_string(),
+            "IMG_0261.jpg".to_string(),
+        ]);
+
+        let mut found: Vec<&String> = collisions.iter().collect();
+        found.sort();
+        assert_eq!(
+            found,
+            vec![
+                "IMG_0260.JPG",
+                "IMG_0260.jpg",
+                "IMG_1551.JPG",
+                "IMG_1551.jpg"
+            ],
+            "both members of each colliding group are implicated, since which one \
+             rclone keeps is its own ordering decision"
+        );
+        assert!(
+            !collisions.contains("IMG_0261.jpg"),
+            "a key with no case-variant twin must never be flagged"
+        );
+    }
+
+    /// Stems collide too, not just extensions, and a collision is only ever
+    /// within the same directory.
+    #[test]
+    fn case_insensitive_collisions_covers_stems_and_respects_directories() {
+        let collisions = case_insensitive_collisions(&[
+            "photo.jpg".to_string(),
+            "PHOTO.jpg".to_string(),
+            "a/one.jpg".to_string(),
+            "b/ONE.jpg".to_string(),
+        ]);
+        assert!(collisions.contains("photo.jpg") && collisions.contains("PHOTO.jpg"));
+        assert!(
+            !collisions.contains("a/one.jpg") && !collisions.contains("b/ONE.jpg"),
+            "same basename in different directories maps to distinct local paths"
+        );
+    }
+
+    #[test]
+    fn case_insensitive_collisions_is_empty_for_an_all_distinct_pull_set() {
+        assert!(
+            case_insensitive_collisions(&[
+                "a.jpg".to_string(),
+                "b.jpg".to_string(),
+                "c/d.jpg".to_string(),
+            ])
+            .is_empty()
+        );
+    }
+
+    /// `files_needing_pull` must surface the collision alongside its other
+    /// counts rather than discarding it -- the whole point of ADR-0130's
+    /// `PullSelection`.
+    #[test]
+    fn files_needing_pull_reports_case_colliding_keys_without_dropping_them() {
+        let selection = files_needing_pull(
+            vec!["IMG_0260.JPG".to_string(), "IMG_0260.jpg".to_string()],
+            "source:jpg",
+            "jpg",
+            &HashSet::new(),
+        );
+
+        assert_eq!(
+            selection.to_pull.len(),
+            2,
+            "both keys are still asked for: rclone decides which it can deliver"
+        );
+        assert_eq!(selection.case_collisions.len(), 2);
+        assert_eq!(selection.skipped_already_done, 0);
+        assert_eq!(selection.skipped_apple_double, 0);
+    }
+
+    /// Case-colliding keys hash to *distinct* destination names, so this is
+    /// a missing-file problem at the source side only -- there is no
+    /// destination collision to worry about (ADR-0112's naming scheme is
+    /// case-sensitive).
+    #[test]
+    fn case_colliding_keys_still_map_to_distinct_destination_names() {
+        let upper = placement::compute_destination_name("source:jpg", "IMG_0260.JPG", "jpg");
+        let lower = placement::compute_destination_name("source:jpg", "IMG_0260.jpg", "jpg");
+        assert_ne!(upper, lower);
+        // Both keep the same stem; only the hash distinguishes them.
+        assert!(upper.starts_with("IMG_0260-") && lower.starts_with("IMG_0260-"));
+    }
+
+    /// ADR-0144: the two arms of the undelivered explanation must not be
+    /// swapped, because the generic one is a false statement for a
+    /// case-collision.
+    #[test]
+    fn undelivered_detail_explains_a_case_collision_differently_from_a_real_no_show() {
+        let collisions: HashSet<String> = ["IMG_0260.jpg".to_string()].into_iter().collect();
+
+        let collided = undelivered_detail("IMG_0260.jpg", &collisions);
+        assert!(collided.contains("differs from this one only by letter case"));
+        assert!(
+            !collided.contains("never reported it as copied"),
+            "rclone did report this file -- at notice level -- so this must not claim otherwise"
+        );
+
+        let no_show = undelivered_detail("IMG_9999.jpg", &collisions);
+        assert!(no_show.contains("never reported it as copied"));
+        assert!(!no_show.contains("letter case"));
     }
 
     /// ADR-0130: an AppleDouble stub matches rclone's `--include '*.<ext>'`

@@ -130,6 +130,41 @@ pub(crate) async fn check_available() -> Result<(), String> {
     Ok(())
 }
 
+/// Substrings in an rclone failure that mean the *destination endpoint as a
+/// whole* was unreachable, as opposed to anything being wrong with the one
+/// file being transferred (ADR-0144).
+///
+/// Deliberately a separate question from "does retrying help?" (the
+/// distinction ADR-0143 drew between `is_non_retryable_transcode_error` and
+/// `is_wrong_input_kind_error`): these errors *are* retryable, but they are
+/// also *shared* -- every concurrent transfer against the same remote fails
+/// identically -- which is what licenses handling them once for the whole
+/// run instead of once per file.
+///
+/// These match rclone/Go's own text, not pigeon's, so unlike ADR-0143's two
+/// guard consts they are genuinely version-fragile -- the same caution
+/// `Lsjson`'s `"directory not found"` check carries (issue #63). Reconfirm
+/// them against whatever rclone is actually deployed. The first entry is
+/// verbatim from the real run that motivated this ADR: a 74-second DNS
+/// blackout on the VPN tunnel carrying all of this host's DNS produced
+/// `dial tcp: lookup s3.fr-par.scw.cloud: no such host` for all 275
+/// concurrently-pushing files and nothing else.
+pub(crate) fn is_endpoint_unreachable_error(err: &str) -> bool {
+    const ENDPOINT_UNREACHABLE_SIGNATURES: &[&str] = &[
+        "no such host",
+        "dial tcp",
+        "connection refused",
+        "connection reset by peer",
+        "i/o timeout",
+        "no route to host",
+        "network is unreachable",
+        "TLS handshake timeout",
+    ];
+    ENDPOINT_UNREACHABLE_SIGNATURES
+        .iter()
+        .any(|signature| err.contains(signature))
+}
+
 async fn execute<C: RcloneCommand + ?Sized>(cmd: &C) -> Result<C::Output, String> {
     let mut argv = cmd.args();
     let streamed = matches!(cmd.observe(), Observation::Streamed(_));
@@ -378,5 +413,53 @@ fn log_collapsed_repeats(step: &'static str, delta: &TailDelta) {
             "rclone: {} more object failure(s) with the same cause since the last report",
             summary.repeated
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The verbatim rclone error from the ADR-0144 run -- 275 of 275 failed
+    /// pushes carried exactly this and nothing else.
+    #[test]
+    fn is_endpoint_unreachable_error_matches_the_real_dns_blackout_error() {
+        assert!(is_endpoint_unreachable_error(
+            "operation error S3: HeadObject, https response error StatusCode: 0, RequestID: , \
+             HostID: , request send failed, Head \
+             \"https://s3.fr-par.scw.cloud/pigeon-spc6f1-transform/jpg/a-abc123.jpg\": dial tcp: \
+             lookup s3.fr-par.scw.cloud: no such host"
+        ));
+    }
+
+    #[test]
+    fn is_endpoint_unreachable_error_matches_the_other_connectivity_signatures() {
+        for err in [
+            "dial tcp 10.0.0.1:443: connect: connection refused",
+            "read tcp 10.0.0.1:443: read: connection reset by peer",
+            "Get \"https://example.invalid/\": net/http: TLS handshake timeout",
+            "dial tcp: i/o timeout",
+            "connect: no route to host",
+            "connect: network is unreachable",
+        ] {
+            assert!(is_endpoint_unreachable_error(err), "{err}");
+        }
+    }
+
+    /// A per-file fault must never be mistaken for the endpoint being down:
+    /// that would park every other in-flight push behind a recovery wait
+    /// that can never succeed.
+    #[test]
+    fn is_endpoint_unreachable_error_rejects_per_file_and_auth_failures() {
+        for err in [
+            "operation error S3: PutObject, https response error StatusCode: 403, \
+             api error AccessDenied: Access Denied",
+            "operation error S3: PutObject, https response error StatusCode: 503, \
+             api error SlowDown: Please reduce your request rate",
+            "failed to open source object: open /tmp/x.jpg: no such file or directory",
+            "error listing: directory not found",
+        ] {
+            assert!(!is_endpoint_unreachable_error(err), "{err}");
+        }
     }
 }
