@@ -181,3 +181,27 @@ without silently rewriting it.
   explicit flag overrides inference even when a differently-named inferred
   alias is also configured; an explicit-but-unknown alias still errors via
   `Store::contains_alias` exactly as before.
+
+## Amendment (2026-10-12): the inference moves from the alias to the prefix (ADR-0138)
+
+ADR-0138 reverses this ADR's central mechanism the same day it landed.
+This ADR inferred the bucket *alias* from `--input-file-type` (§2), on the
+assumption that buckets are aliased per file type (`heic`, `jpg`) -- a
+convention the real deployment does not use: it addresses one `source` and
+one `destination` bucket holding per-extension *directories*. ADR-0138
+restores `alias:prefix/` addressing (reversing ADR-0136's removal of it)
+and relocates this ADR's intent -- don't retype what `--input-file-type`
+already knows -- to the prefix: `--source source` with `--input-file-type
+mp4` resolves to `source:mp4/`, while an explicit prefix wins verbatim.
+
+The alias half is no longer inferred at all, so `--source`/
+`--destination` are mandatory again on a non-interactive run, and §5's
+`default_alias` parameter on `Store::prompt_select_bucket` plus its
+`default_bucket_index` helper are deleted (zero consumers once the
+inference moves). What survives from this ADR: the
+`--source-bucket`/`--destination-bucket` → `--source`/`--destination`
+rename, and the 2-or-more-bucket-config `Select`-branch smoke test it
+added. Also noted there: this ADR's inference carried a latent collision
+for video kinds, since `output_extension()` returns `"mp4"` for every
+one of them, so an omitted pair would have resolved source and
+destination to the same alias.

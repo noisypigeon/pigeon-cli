@@ -287,11 +287,11 @@ pub enum JobType {
     /// pull `--source` into a local staging tree, transcoding/copying each
     /// file locally and pushing it individually via `rclone copyto` the
     /// moment it's ready, rather than waiting for the whole batch.
-    /// `--source`/`--destination` are pigeon keyring `BucketConfig` aliases
-    /// (ADR-0136), defaulting when omitted to a bucket-config named after
+    /// `--source`/`--destination` are pigeon keyring `BucketConfig`
+    /// aliases, optionally composed with a prefix within that bucket
+    /// (`alias:prefix/`, ADR-0138); an omitted prefix defaults to
     /// `--input-file-type`'s own extension (source) or output extension
-    /// (destination) -- a naming convention, not content inspection
-    /// (ADR-0137). Deduplication is never involved -- every output file's
+    /// (destination). Deduplication is never involved -- every output file's
     /// name is derived deterministically and is unique by construction;
     /// duplicate source content is deliberately retained at separate
     /// destination names. A single file's transcode or push failure (e.g.
@@ -315,21 +315,22 @@ pub enum JobType {
         #[arg(long)]
         video_quality: Option<String>,
 
-        /// Alias of a configured bucket-config to pull from. Defaults to a
-        /// bucket-config named after `--input-file-type`'s own extension
-        /// (e.g. `heic`) when omitted -- a documented naming convention,
-        /// not auto-detected content inspection (ADR-0137). Interactively
-        /// selected, defaulting to that inferred alias when configured,
-        /// when omitted and stdin is a terminal; falls back to the same
-        /// inferred alias non-interactively, erroring by name if it isn't
-        /// configured.
+        /// Where to pull from: a configured bucket-config alias, optionally
+        /// composed with a prefix inside it -- `media` is the whole bucket,
+        /// `media:mp4/` its `mp4/` directory (ADR-0138). An omitted prefix
+        /// defaults to `--input-file-type`'s own extension, so
+        /// `--source media --input-file-type mp4` means `media:mp4/`; an
+        /// explicit prefix is always used verbatim. Interactively selected
+        /// (bucket root, then the default prefix) when omitted and stdin is
+        /// a terminal; required otherwise.
         #[arg(long)]
         source: Option<String>,
 
-        /// Alias of a configured bucket-config to push to. Defaults to a
-        /// bucket-config named after `--input-file-type`'s output
-        /// extension (e.g. `jpg`) when omitted -- same convention and
-        /// fallback behavior as `--source` (ADR-0137).
+        /// Where to push to, same `alias[:prefix/]` form as `--source`
+        /// (ADR-0138). An omitted prefix defaults to `--input-file-type`'s
+        /// *output* extension (`jpg` for an image kind, `mp4` for a video
+        /// one), so one bucket can serve as both source and destination
+        /// when the prefixes differ.
         #[arg(long)]
         destination: Option<String>,
 
@@ -410,15 +411,19 @@ pub enum RcloneAction {
     /// overridable per-destination (ADR-0108); every other rclone
     /// performance/retry flag stays fixed.
     Copy {
-        /// Alias of a configured bucket-config to pull from. Interactively
+        /// Where to pull from: a configured bucket-config alias, optionally
+        /// composed with a prefix inside it -- `media` is the whole bucket,
+        /// `media:mp4/` its `mp4/` directory (ADR-0138). Unlike
+        /// `transform`, an omitted prefix stays the bucket root (this job
+        /// has no file-type concept to derive one from). Interactively
         /// selected when omitted and stdin is a terminal; required
         /// otherwise.
         #[arg(long)]
         source_bucket: Option<String>,
 
-        /// Alias of a configured bucket-config to push to. Interactively
-        /// selected when omitted and stdin is a terminal; required
-        /// otherwise.
+        /// Where to push to, same `alias[:prefix/]` form as
+        /// `--source-bucket` (ADR-0138). Interactively selected when
+        /// omitted and stdin is a terminal; required otherwise.
         #[arg(long)]
         destination_bucket: Option<String>,
 
@@ -471,9 +476,12 @@ pub enum RcloneAction {
     /// `copy`, there is no destination and no per-file transfer-rate
     /// tuning, since purge transfers no file content.
     Delete {
-        /// Alias of a configured bucket-config to recursively and
-        /// permanently delete the contents of. Interactively selected when
-        /// omitted and stdin is a terminal; required otherwise.
+        /// What to recursively and permanently delete the contents of: a
+        /// configured bucket-config alias, optionally composed with a
+        /// prefix to scope the purge to one directory inside it
+        /// (`media:mp4/`, ADR-0138). An omitted prefix purges the **whole
+        /// bucket**. Interactively selected when omitted and stdin is a
+        /// terminal; required otherwise.
         #[arg(long)]
         source_bucket: Option<String>,
 

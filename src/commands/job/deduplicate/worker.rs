@@ -23,7 +23,7 @@ use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::core::data::{ContentIndex, is_apple_double_basename};
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::{Copy, CopyTo};
-use crate::core::rclone::config::remote_address;
+use crate::core::rclone::config::RemoteTarget;
 
 use super::dedup::{self, DeduplicateDedup, HashedFile};
 use super::manifest::{self, DeduplicateTask, extension_of};
@@ -202,7 +202,10 @@ async fn process_item(
             // `next_scratch_path` already guarantees unique.
             let pull_log_path = raw_path.with_extension("pull.jsonl");
             let pull = (CopyTo {
-                source: format!("{}{key}", remote_address(&bucket_config.alias)),
+                source: format!(
+                    "{}{key}",
+                    RemoteTarget::bucket_root(&bucket_config.alias).address()
+                ),
                 destination: raw_path.display().to_string(),
                 log_path: pull_log_path,
                 job: "deduplicate",
@@ -754,7 +757,7 @@ async fn upload_result(
     let log_path = local_output.join(".staging").join("rclone-upload.jsonl");
     (Copy {
         source: result_dir.display().to_string(),
-        destination: remote_address(&remote_bucket.alias),
+        destination: RemoteTarget::bucket_root(&remote_bucket.alias).address(),
         log_path,
         transfers,
         checkers,

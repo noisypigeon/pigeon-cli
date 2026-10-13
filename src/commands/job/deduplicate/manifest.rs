@@ -14,7 +14,7 @@ use std::path::Path;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::Lsjson;
-use crate::core::rclone::config::remote_address;
+use crate::core::rclone::config::RemoteTarget;
 
 /// The portion of `key` after its last `!` zip-member separator -- zip
 /// expansion (`deduplicate::worker`) builds a synthetic,
@@ -149,7 +149,7 @@ pub(crate) async fn gather_pending(
 
     for (bucket_config, _secret) in source_buckets {
         let entries = (Lsjson {
-            path: remote_address(&bucket_config.alias),
+            path: RemoteTarget::bucket_root(&bucket_config.alias).address(),
             recursive: true,
             job: "deduplicate",
             ..Default::default()
