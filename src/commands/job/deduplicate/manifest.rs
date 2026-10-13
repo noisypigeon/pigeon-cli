@@ -11,8 +11,10 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
-use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
+use crate::core::rclone::RcloneCommand as _;
+use crate::core::rclone::command::Lsjson;
+use crate::core::rclone::config::remote_address;
 
 /// The portion of `key` after its last `!` zip-member separator -- zip
 /// expansion (`deduplicate::worker`) builds a synthetic,
@@ -125,14 +127,16 @@ pub(crate) fn append_checkpoint(
         .map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
 
-/// Lists every object across every `(bucket_config, secret)` pair in
-/// `source_buckets` (recursive, already paginated by `client::list_objects`
-/// per bucket), classifies each by its key's extension for the summary
-/// table (one combined, cross-bucket table -- not broken out per bucket,
-/// matching this job's "treat as one set" design, ADR-0109), and excludes
-/// anything the `staging_dir` checkpoint already marks done for that
-/// specific bucket -- both the returned task list and the summary table
-/// reflect only *pending* work.
+/// Lists every object across every bucket-config in `source_buckets`
+/// (recursive, metadata-only `rclone lsjson` against the sandboxed config,
+/// ADR-0136), classifies each by its key's extension for the summary table
+/// (one combined, cross-bucket table -- not broken out per bucket, matching
+/// this job's "treat as one set" design, ADR-0109), and excludes anything
+/// the `staging_dir` checkpoint already marks done for that specific bucket
+/// -- both the returned task list and the summary table reflect only
+/// *pending* work. The second tuple element (the resolved secret) is
+/// unused here -- rclone reads every bucket's secret from the sandboxed
+/// config file directly, not from this value.
 pub(crate) async fn gather_pending(
     source_buckets: &[(BucketConfig, String)],
     staging_dir: &Path,
@@ -143,19 +147,26 @@ pub(crate) async fn gather_pending(
     let mut by_extension: std::collections::BTreeMap<String, (usize, u64)> =
         std::collections::BTreeMap::new();
 
-    for (bucket_config, secret) in source_buckets {
-        let entries = client::list_objects(bucket_config, secret, "", true).await?;
+    for (bucket_config, _secret) in source_buckets {
+        let entries = (Lsjson {
+            path: remote_address(&bucket_config.alias),
+            recursive: true,
+            job: "deduplicate",
+            ..Default::default()
+        })
+        .run()
+        .await?;
         for entry in entries {
-            if entry.is_prefix || is_checkpointed(&done, &bucket_config.alias, &entry.key) {
+            if is_checkpointed(&done, &bucket_config.alias, &entry.path) {
                 continue;
             }
-            let extension = extension_of(&entry.key);
+            let extension = extension_of(&entry.path);
             let bucket = by_extension.entry(extension).or_insert((0, 0));
             bucket.0 += 1;
             bucket.1 += entry.size;
             tasks.push(DeduplicateTask {
                 bucket_alias: bucket_config.alias.clone(),
-                key: entry.key,
+                key: entry.path,
                 size: entry.size,
             });
         }

@@ -125,7 +125,7 @@ async fn run_async(
 /// `sync`/`sink` run (fetch, and -- per ADR-0013 -- transform/upload), so
 /// they read consistently in scrollback: `{prefix} {bar:40} {pos}/{len}
 /// {msg}`. The trailing `{msg}` (ADR-0099) renders empty unless a caller
-/// calls `set_message` (e.g. `download::DownloadAnnounce`) -- additive and
+/// calls `set_message` -- additive and
 /// safe for every other bar that never sets one. Registered on
 /// `multi_progress` so concurrent `sync` workers (ADR-0014) render as
 /// simultaneous lines rather than overwriting each other.

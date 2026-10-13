@@ -1,5 +1,5 @@
-//! CLI dispatch for `pigeon job run transform` (ADR-0112). `SourcePathInput`/
-//! `DestinationPathInput`/`TransfersInput`/`CheckersInput`/`TpslimitInput`
+//! CLI dispatch for `pigeon job run transform` (ADR-0112). `SourceBucketInput`/
+//! `DestinationBucketInput`/`TransfersInput`/`CheckersInput`/`TpslimitInput`
 //! are structurally identical to `rclone::wizard`'s own versions of the same
 //! prompts -- kept local rather than hoisted, since this is only the second
 //! consumer of that shape, per this codebase's "duplicate until the third
@@ -10,10 +10,11 @@ use std::path::PathBuf;
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 
 use crate::commands::job::report_upload;
-use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput};
+use crate::commands::job::shared_wizard::{ConfirmInput, CpuConcurrencyInput, TpslimitInput};
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail};
 use crate::core::job::Job;
+use crate::core::rclone::config::{remote_address, write_sandboxed_config};
 use crate::core::wizard::WizardInput;
 
 use super::format::{InputFileType, VideoQuality};
@@ -83,54 +84,71 @@ impl WizardInput for VideoQualityInput {
     }
 }
 
-/// Resolves the rclone source path, e.g. `source:png/`. A plain string, not
-/// a pigeon bucket-config alias -- this job never looks it up against the
-/// keyring (ADR-0101, reused by ADR-0112).
-struct SourcePathInput {
+/// Resolves `--source-bucket`, a pigeon keyring `BucketConfig` alias
+/// (ADR-0136, reversing ADR-0101/ADR-0112's original raw-passthrough
+/// design) -- `rclone` only ever sees a config file pigeon itself generates
+/// from this alias. Structurally identical to `rclone::wizard`'s own
+/// version of the same prompt -- kept local rather than hoisted, since this
+/// is only the second consumer of that shape, per this codebase's
+/// "duplicate until the third consumer" precedent.
+struct SourceBucketInput<'a> {
     flag: Option<String>,
+    store: &'a Store,
 }
 
-impl WizardInput for SourcePathInput {
+impl WizardInput for SourceBucketInput<'_> {
     type Value = String;
 
     fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(Ok)
+        self.flag.clone().map(|alias| {
+            if self.store.contains_alias(&alias) {
+                Ok(alias)
+            } else {
+                Err(format!("no bucket-config named '{alias}'"))
+            }
+        })
     }
 
     fn prompt(&self) -> Result<String, String> {
-        Input::<String>::new()
-            .with_prompt("rclone source path (e.g. 'source:png/')")
-            .interact_text()
-            .map_err(|err| format!("failed to read source path: {err}"))
+        match self.store.prompt_select_bucket() {
+            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
+            Err(message) => Err(message),
+        }
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--source-path is required when not running interactively".to_string())
+        Err("--source-bucket is required when not running interactively".to_string())
     }
 }
 
-/// Resolves the rclone destination path, e.g. `destination:jpg/`. Same
-/// shape as `SourcePathInput`.
-struct DestinationPathInput {
+/// Resolves `--destination-bucket`. Same shape as `SourceBucketInput`.
+struct DestinationBucketInput<'a> {
     flag: Option<String>,
+    store: &'a Store,
 }
 
-impl WizardInput for DestinationPathInput {
+impl WizardInput for DestinationBucketInput<'_> {
     type Value = String;
 
     fn flag_value(&self) -> Option<Result<String, String>> {
-        self.flag.clone().map(Ok)
+        self.flag.clone().map(|alias| {
+            if self.store.contains_alias(&alias) {
+                Ok(alias)
+            } else {
+                Err(format!("no bucket-config named '{alias}'"))
+            }
+        })
     }
 
     fn prompt(&self) -> Result<String, String> {
-        Input::<String>::new()
-            .with_prompt("rclone destination path (e.g. 'destination:jpg/')")
-            .interact_text()
-            .map_err(|err| format!("failed to read destination path: {err}"))
+        match self.store.prompt_select_bucket() {
+            Ok(bucket_config) => Ok(bucket_config.alias.clone()),
+            Err(message) => Err(message),
+        }
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--destination-path is required when not running interactively".to_string())
+        Err("--destination-bucket is required when not running interactively".to_string())
     }
 }
 
@@ -242,41 +260,6 @@ impl WizardInput for MaxPendingDownloadsInput {
     }
 }
 
-/// "No cap" is itself a legitimate, distinct value here, not just "use a
-/// baked-in default" -- same reasoning as `rclone::wizard`'s own
-/// `TpslimitInput`.
-struct TpslimitInput {
-    flag: Option<usize>,
-}
-
-impl WizardInput for TpslimitInput {
-    type Value = Option<usize>;
-
-    fn flag_value(&self) -> Option<Result<Option<usize>, String>> {
-        self.flag.map(|value| Ok(Some(value)))
-    }
-
-    fn prompt(&self) -> Result<Option<usize>, String> {
-        let value = Input::<String>::new()
-            .with_prompt("rclone --tpslimit (blank = no cap)")
-            .allow_empty(true)
-            .interact_text()
-            .map_err(|err| format!("failed to read tpslimit: {err}"))?;
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Ok(None);
-        }
-        trimmed
-            .parse::<usize>()
-            .map(Some)
-            .map_err(|_| format!("'{trimmed}' is not a valid tpslimit"))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<Option<usize>, String> {
-        Ok(None)
-    }
-}
-
 fn default_local_output() -> PathBuf {
     std::env::temp_dir().join("pigeon-job")
 }
@@ -330,8 +313,8 @@ async fn check_rclone_available() -> Result<(), String> {
 pub fn dispatch(
     input_file_type: Option<String>,
     video_quality: Option<String>,
-    source_path: Option<String>,
-    destination_path: Option<String>,
+    source_bucket: Option<String>,
+    destination_bucket: Option<String>,
     local_output: Option<PathBuf>,
     concurrency: Option<usize>,
     download_transfers: Option<usize>,
@@ -353,8 +336,8 @@ pub fn dispatch(
     runtime.block_on(dispatch_async(
         input_file_type,
         video_quality,
-        source_path,
-        destination_path,
+        source_bucket,
+        destination_bucket,
         local_output,
         concurrency,
         download_transfers,
@@ -372,8 +355,8 @@ pub fn dispatch(
 async fn dispatch_async(
     input_file_type: Option<String>,
     video_quality: Option<String>,
-    source_path: Option<String>,
-    destination_path: Option<String>,
+    source_bucket: Option<String>,
+    destination_bucket: Option<String>,
     local_output: Option<PathBuf>,
     concurrency: Option<usize>,
     download_transfers: Option<usize>,
@@ -408,6 +391,13 @@ async fn dispatch_async(
         Ok(store) => store,
         Err(err) => return fail(err),
     };
+    let rclone_config_path = match crate::core::rclone::config::rclone_config_path() {
+        Ok(path) => path,
+        Err(err) => return fail(err),
+    };
+    if let Err(err) = write_sandboxed_config(&keyring_store, &rclone_config_path) {
+        return fail(err);
+    }
 
     let input_file_type = match (InputFileTypeInput {
         flag: input_file_type,
@@ -431,16 +421,22 @@ async fn dispatch_async(
     } else {
         VideoQuality::Medium
     };
-    let source_path = match (SourcePathInput { flag: source_path }).resolve(non_interactive) {
-        Ok(value) => value,
-        Err(err) => return fail(err),
-    };
-    let destination_path = match (DestinationPathInput {
-        flag: destination_path,
+    let source_path = match (SourceBucketInput {
+        flag: source_bucket,
+        store: &keyring_store,
     })
     .resolve(non_interactive)
     {
-        Ok(value) => value,
+        Ok(alias) => remote_address(&alias),
+        Err(err) => return fail(err),
+    };
+    let destination_path = match (DestinationBucketInput {
+        flag: destination_bucket,
+        store: &keyring_store,
+    })
+    .resolve(non_interactive)
+    {
+        Ok(alias) => remote_address(&alias),
         Err(err) => return fail(err),
     };
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
@@ -673,20 +669,28 @@ mod tests {
     }
 
     #[test]
-    fn source_path_input_non_interactive_fallback_errors() {
-        let input = SourcePathInput { flag: None };
+    fn source_bucket_input_non_interactive_fallback_errors() {
+        let store = Store::default();
+        let input = SourceBucketInput {
+            flag: None,
+            store: &store,
+        };
         assert_eq!(
             input.non_interactive_fallback(),
-            Err("--source-path is required when not running interactively".to_string())
+            Err("--source-bucket is required when not running interactively".to_string())
         );
     }
 
     #[test]
-    fn destination_path_input_non_interactive_fallback_errors() {
-        let input = DestinationPathInput { flag: None };
+    fn destination_bucket_input_non_interactive_fallback_errors() {
+        let store = Store::default();
+        let input = DestinationBucketInput {
+            flag: None,
+            store: &store,
+        };
         assert_eq!(
             input.non_interactive_fallback(),
-            Err("--destination-path is required when not running interactively".to_string())
+            Err("--destination-bucket is required when not running interactively".to_string())
         );
     }
 
@@ -756,18 +760,6 @@ mod tests {
             concurrency: 4,
         };
         assert_eq!(input.flag_value(), Some(Ok(20)));
-    }
-
-    #[test]
-    fn tpslimit_input_flag_value_overrides_the_default() {
-        let input = TpslimitInput { flag: Some(10) };
-        assert_eq!(input.flag_value(), Some(Ok(Some(10))));
-    }
-
-    #[test]
-    fn tpslimit_input_falls_back_to_no_cap_when_not_interactive() {
-        let input = TpslimitInput { flag: None };
-        assert_eq!(input.non_interactive_fallback(), Ok(None));
     }
 
     #[test]
