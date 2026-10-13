@@ -84,16 +84,24 @@ impl WizardInput for VideoQualityInput {
     }
 }
 
-/// Resolves `--source-bucket`, a pigeon keyring `BucketConfig` alias
-/// (ADR-0136, reversing ADR-0101/ADR-0112's original raw-passthrough
-/// design) -- `rclone` only ever sees a config file pigeon itself generates
-/// from this alias. Structurally identical to `rclone::wizard`'s own
-/// version of the same prompt -- kept local rather than hoisted, since this
-/// is only the second consumer of that shape, per this codebase's
-/// "duplicate until the third consumer" precedent.
+/// Resolves `--source`, a pigeon keyring `BucketConfig` alias (ADR-0136,
+/// reversing ADR-0101/ADR-0112's original raw-passthrough design) --
+/// `rclone` only ever sees a config file pigeon itself generates from this
+/// alias. Structurally identical to `rclone::wizard`'s own version of the
+/// same prompt -- kept local rather than hoisted, since this is only the
+/// second consumer of that shape, per this codebase's "duplicate until the
+/// third consumer" precedent.
+///
+/// `default_alias` is `input_file_type.extension()` (ADR-0137) -- the
+/// bucket-config alias this job assumes holds `--input-file-type`'s raw
+/// input content, by naming convention only, never auto-detected. Only
+/// consulted when `--source` is omitted: `flag_value` never looks at it,
+/// so an explicit flag is always validated and used verbatim regardless of
+/// what the inferred default would have been.
 struct SourceBucketInput<'a> {
     flag: Option<String>,
     store: &'a Store,
+    default_alias: &'a str,
 }
 
 impl WizardInput for SourceBucketInput<'_> {
@@ -110,21 +118,31 @@ impl WizardInput for SourceBucketInput<'_> {
     }
 
     fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket() {
+        match self.store.prompt_select_bucket(Some(self.default_alias)) {
             Ok(bucket_config) => Ok(bucket_config.alias.clone()),
             Err(message) => Err(message),
         }
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--source-bucket is required when not running interactively".to_string())
+        if self.store.contains_alias(self.default_alias) {
+            Ok(self.default_alias.to_string())
+        } else {
+            Err(format!(
+                "--source is required when not running interactively (no bucket-config \
+                 named '{}' to default to, inferred from --input-file-type)",
+                self.default_alias
+            ))
+        }
     }
 }
 
-/// Resolves `--destination-bucket`. Same shape as `SourceBucketInput`.
+/// Resolves `--destination`. Same shape as `SourceBucketInput`;
+/// `default_alias` is `input_file_type.output_extension()` (ADR-0137).
 struct DestinationBucketInput<'a> {
     flag: Option<String>,
     store: &'a Store,
+    default_alias: &'a str,
 }
 
 impl WizardInput for DestinationBucketInput<'_> {
@@ -141,14 +159,22 @@ impl WizardInput for DestinationBucketInput<'_> {
     }
 
     fn prompt(&self) -> Result<String, String> {
-        match self.store.prompt_select_bucket() {
+        match self.store.prompt_select_bucket(Some(self.default_alias)) {
             Ok(bucket_config) => Ok(bucket_config.alias.clone()),
             Err(message) => Err(message),
         }
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--destination-bucket is required when not running interactively".to_string())
+        if self.store.contains_alias(self.default_alias) {
+            Ok(self.default_alias.to_string())
+        } else {
+            Err(format!(
+                "--destination is required when not running interactively (no bucket-config \
+                 named '{}' to default to, inferred from --input-file-type)",
+                self.default_alias
+            ))
+        }
     }
 }
 
@@ -313,8 +339,8 @@ async fn check_rclone_available() -> Result<(), String> {
 pub fn dispatch(
     input_file_type: Option<String>,
     video_quality: Option<String>,
-    source_bucket: Option<String>,
-    destination_bucket: Option<String>,
+    source: Option<String>,
+    destination: Option<String>,
     local_output: Option<PathBuf>,
     concurrency: Option<usize>,
     download_transfers: Option<usize>,
@@ -336,8 +362,8 @@ pub fn dispatch(
     runtime.block_on(dispatch_async(
         input_file_type,
         video_quality,
-        source_bucket,
-        destination_bucket,
+        source,
+        destination,
         local_output,
         concurrency,
         download_transfers,
@@ -355,8 +381,8 @@ pub fn dispatch(
 async fn dispatch_async(
     input_file_type: Option<String>,
     video_quality: Option<String>,
-    source_bucket: Option<String>,
-    destination_bucket: Option<String>,
+    source: Option<String>,
+    destination: Option<String>,
     local_output: Option<PathBuf>,
     concurrency: Option<usize>,
     download_transfers: Option<usize>,
@@ -422,8 +448,9 @@ async fn dispatch_async(
         VideoQuality::Medium
     };
     let source_path = match (SourceBucketInput {
-        flag: source_bucket,
+        flag: source,
         store: &keyring_store,
+        default_alias: input_file_type.extension(),
     })
     .resolve(non_interactive)
     {
@@ -431,8 +458,9 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     };
     let destination_path = match (DestinationBucketInput {
-        flag: destination_bucket,
+        flag: destination,
         store: &keyring_store,
+        default_alias: input_file_type.output_extension(),
     })
     .resolve(non_interactive)
     {
@@ -668,30 +696,101 @@ mod tests {
         assert_eq!(input.non_interactive_fallback(), Ok(VideoQuality::Medium));
     }
 
+    fn store_with_bucket(alias: &str) -> Store {
+        let mut store = Store::default();
+        store.push(crate::commands::keyring::store::Entry::Bucket(
+            crate::commands::keyring::bucket::store::BucketConfig {
+                alias: alias.to_string(),
+                endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
+                bucket: "my-bucket".to_string(),
+                access_key_id: "AKID".to_string(),
+                secret_key: "s3-secret-key".to_string(),
+                encryption_key_alias: None,
+            },
+        ));
+        store
+    }
+
     #[test]
-    fn source_bucket_input_non_interactive_fallback_errors() {
+    fn source_bucket_input_non_interactive_fallback_succeeds_when_the_inferred_alias_exists() {
+        let store = store_with_bucket("heic");
+        let input = SourceBucketInput {
+            flag: None,
+            store: &store,
+            default_alias: "heic",
+        };
+        assert_eq!(input.non_interactive_fallback(), Ok("heic".to_string()));
+    }
+
+    #[test]
+    fn source_bucket_input_non_interactive_fallback_errors_naming_the_inferred_alias_when_absent() {
         let store = Store::default();
         let input = SourceBucketInput {
             flag: None,
             store: &store,
+            default_alias: "heic",
         };
         assert_eq!(
             input.non_interactive_fallback(),
-            Err("--source-bucket is required when not running interactively".to_string())
+            Err(
+                "--source is required when not running interactively (no bucket-config named \
+                 'heic' to default to, inferred from --input-file-type)"
+                    .to_string()
+            )
         );
     }
 
     #[test]
-    fn destination_bucket_input_non_interactive_fallback_errors() {
+    fn source_bucket_input_flag_value_overrides_inference_even_when_it_differs_from_the_default() {
+        let store = store_with_bucket("my-custom-alias");
+        let input = SourceBucketInput {
+            flag: Some("my-custom-alias".to_string()),
+            store: &store,
+            default_alias: "heic",
+        };
+        assert_eq!(input.flag_value(), Some(Ok("my-custom-alias".to_string())));
+    }
+
+    #[test]
+    fn destination_bucket_input_non_interactive_fallback_succeeds_when_the_inferred_alias_exists() {
+        let store = store_with_bucket("jpg");
+        let input = DestinationBucketInput {
+            flag: None,
+            store: &store,
+            default_alias: "jpg",
+        };
+        assert_eq!(input.non_interactive_fallback(), Ok("jpg".to_string()));
+    }
+
+    #[test]
+    fn destination_bucket_input_non_interactive_fallback_errors_naming_the_inferred_alias_when_absent()
+     {
         let store = Store::default();
         let input = DestinationBucketInput {
             flag: None,
             store: &store,
+            default_alias: "jpg",
         };
         assert_eq!(
             input.non_interactive_fallback(),
-            Err("--destination-bucket is required when not running interactively".to_string())
+            Err(
+                "--destination is required when not running interactively (no bucket-config \
+                 named 'jpg' to default to, inferred from --input-file-type)"
+                    .to_string()
+            )
         );
+    }
+
+    #[test]
+    fn destination_bucket_input_flag_value_overrides_inference_even_when_it_differs_from_the_default()
+     {
+        let store = store_with_bucket("my-custom-alias");
+        let input = DestinationBucketInput {
+            flag: Some("my-custom-alias".to_string()),
+            store: &store,
+            default_alias: "jpg",
+        };
+        assert_eq!(input.flag_value(), Some(Ok("my-custom-alias".to_string())));
     }
 
     #[test]

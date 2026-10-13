@@ -117,8 +117,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                 JobType::Transform {
                     input_file_type,
                     video_quality,
-                    source_bucket,
-                    destination_bucket,
+                    source,
+                    destination,
                     local_output,
                     concurrency,
                     download_transfers,
@@ -131,8 +131,8 @@ pub fn dispatch(command: JobCommands) -> i32 {
                 } => transform::wizard::dispatch(
                     input_file_type,
                     video_quality,
-                    source_bucket,
-                    destination_bucket,
+                    source,
+                    destination,
                     local_output,
                     concurrency,
                     download_transfers,

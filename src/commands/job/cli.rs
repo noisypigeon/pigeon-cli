@@ -284,20 +284,22 @@ pub enum JobType {
     /// maximum-quality `.jpg`, or video files (`mov`/`m4v`/`mp4`, ADR-0122)
     /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
-    /// pull `--source-bucket` into a local staging tree, transcoding/copying
-    /// each file locally and pushing it individually via `rclone copyto`
-    /// the moment it's ready, rather than waiting for the whole batch.
-    /// `--source-bucket`/`--destination-bucket` are pigeon keyring
-    /// `BucketConfig` aliases (ADR-0136), same semantics as the `rclone`
-    /// job's own flags of the same name. Deduplication is never involved --
-    /// every output file's name is derived deterministically and is unique
-    /// by construction; duplicate source content is deliberately retained
-    /// at separate destination names. A single file's transcode or push
-    /// failure (e.g. a HEIC file the local `ffmpeg` build can't decode,
-    /// retried before giving up) is recorded and reported but never stops
-    /// any other file from being processed and pushed; every file that does
-    /// succeed stays checkpointed for a resumed rerun. Requires both
-    /// `rclone` and `ffmpeg`/`ffprobe` on `PATH`.
+    /// pull `--source` into a local staging tree, transcoding/copying each
+    /// file locally and pushing it individually via `rclone copyto` the
+    /// moment it's ready, rather than waiting for the whole batch.
+    /// `--source`/`--destination` are pigeon keyring `BucketConfig` aliases
+    /// (ADR-0136), defaulting when omitted to a bucket-config named after
+    /// `--input-file-type`'s own extension (source) or output extension
+    /// (destination) -- a naming convention, not content inspection
+    /// (ADR-0137). Deduplication is never involved -- every output file's
+    /// name is derived deterministically and is unique by construction;
+    /// duplicate source content is deliberately retained at separate
+    /// destination names. A single file's transcode or push failure (e.g.
+    /// a HEIC file the local `ffmpeg` build can't decode, retried before
+    /// giving up) is recorded and reported but never stops any other file
+    /// from being processed and pushed; every file that does succeed stays
+    /// checkpointed for a resumed rerun. Requires both `rclone` and
+    /// `ffmpeg`/`ffprobe` on `PATH`.
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
         /// `mov`, `m4v`, or `mp4`. Interactively selected when omitted and
@@ -313,17 +315,23 @@ pub enum JobType {
         #[arg(long)]
         video_quality: Option<String>,
 
-        /// Alias of a configured bucket-config to pull from. Interactively
-        /// selected when omitted and stdin is a terminal; required
-        /// otherwise.
+        /// Alias of a configured bucket-config to pull from. Defaults to a
+        /// bucket-config named after `--input-file-type`'s own extension
+        /// (e.g. `heic`) when omitted -- a documented naming convention,
+        /// not auto-detected content inspection (ADR-0137). Interactively
+        /// selected, defaulting to that inferred alias when configured,
+        /// when omitted and stdin is a terminal; falls back to the same
+        /// inferred alias non-interactively, erroring by name if it isn't
+        /// configured.
         #[arg(long)]
-        source_bucket: Option<String>,
+        source: Option<String>,
 
-        /// Alias of a configured bucket-config to push to. Interactively
-        /// selected when omitted and stdin is a terminal; required
-        /// otherwise.
+        /// Alias of a configured bucket-config to push to. Defaults to a
+        /// bucket-config named after `--input-file-type`'s output
+        /// extension (e.g. `jpg`) when omitted -- same convention and
+        /// fallback behavior as `--source` (ADR-0137).
         #[arg(long)]
-        destination_bucket: Option<String>,
+        destination: Option<String>,
 
         /// Local directory this run stages pulled source files, transcoded
         /// results, and bookkeeping under. Defaults to a directory under

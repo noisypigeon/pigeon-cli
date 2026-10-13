@@ -38,7 +38,7 @@ impl WizardInput for ReportBucketInput<'_> {
 
     fn prompt(&self) -> Result<String, String> {
         self.store
-            .prompt_select_bucket()
+            .prompt_select_bucket(None)
             .map(|bucket_config| bucket_config.alias.clone())
     }
 
@@ -76,7 +76,7 @@ impl WizardInput for UploadTargetInput<'_> {
         if !upload {
             return Ok(None);
         }
-        match self.store.prompt_select_bucket() {
+        match self.store.prompt_select_bucket(None) {
             Ok(bucket_config) => Ok(Some(bucket_config.alias.clone())),
             Err(message) => {
                 println!("{message}");
