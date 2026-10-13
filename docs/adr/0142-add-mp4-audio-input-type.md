@@ -197,3 +197,21 @@ repo's convention for amending a merged ADR without rewriting it.
   transcoded count and `.opus` objects at the destination; plus the
   safety case -- the same command pointed at a prefix of real video fails
   every file with the "has a video stream" message and pushes nothing.
+
+## Amendment (2026-10-12): the guard's blast radius is bounded (ADR-0143)
+
+§3's has-a-video-stream guard is correct -- no video is ever converted to
+audio-only, and nothing wrong is pushed -- but ADR-0143 found it was
+correct without being *bounded*. Tracing what happens to each rejected file
+showed that a misdirected run degrades messily rather than failing cleanly:
+every rejected file's local source copy was retained (ADR-0124's
+retain-on-failure rule), and the circuit breaker that should have aborted
+the run required unanimity across its first 20 completions, so a single
+early success among a mixed source disarmed it permanently. A
+`mp4-audio` run over the real 7289-file bucket would then fail ~6809 files
+while retaining all of them, ~80 GiB.
+
+ADR-0143 fixes both halves: a wrong-input-kind failure now deletes its
+local source copy (non-destructive -- the file is still at `--source`), and
+the breaker trips on 18 of 20 rather than 20 of 20. The guard itself, its
+message, and its non-retryable classification are unchanged.

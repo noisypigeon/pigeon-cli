@@ -150,3 +150,24 @@ the `rclone::Copy` implementor, and `list_source_relative_paths`' underlying
 `rclone lsjson` call merges with ADR-0120's destination listing into the
 shared `rclone::Lsjson` command. `--files-from-raw` (rather than plain
 `--files-from`) and the reasoning for it are untouched.
+
+## Amendment (2026-10-12): one narrow exception to retain-on-failure (ADR-0143)
+
+This ADR's local GC deletes a file's source and result copies only once
+`push::push_one` confirms it durably pushed, and deliberately leaves a
+*failed* file in place on disk for diagnosis. ADR-0143 carves out a single
+exception: a file rejected because the run was given the wrong
+`--input-file-type` for it (ADR-0141's audio-only guard, or ADR-0142's
+mirror-image video guard) has its local source copy deleted too.
+
+The reasoning is that for this one failure class the retained bytes have no
+diagnostic value -- the file is undamaged, the error message already states
+exactly what is wrong, and the file is still present at `--source`, which
+is where a rerun pulls it from anyway. Retaining it only let a fully
+misdirected run accumulate the entire source tree locally (~80 GiB for the
+bucket that prompted ADR-0142), eventually tripping this job's own 2 GiB
+`check_disk_space` floor and failing subsequent files for an unrelated
+reason that obscured the real one. Every other failure class keeps this
+ADR's behavior unchanged; the classification is `media::
+is_wrong_input_kind_error`, deliberately separate from
+`is_non_retryable_transcode_error`.
