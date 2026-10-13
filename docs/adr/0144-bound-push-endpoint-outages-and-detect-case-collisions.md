@@ -215,7 +215,7 @@ and a narrower generic one for a genuine no-show.
   per-file subdirectory, or case-disambiguating local names), which touches
   the local-tree layout that both ADR-0124's GC and the initial `source/`
   scan depend on — too much blast radius for 2 files in 38,232, when
-  detect-and-report already removes the mystery. Filed per ADR-0031.
+  detect-and-report already removes the mystery. Filed per ADR-0031. ([#83](https://github.com/noisypigeon/pigeon-cli/issues/83))
 - **Reading rclone's `notice`-level lines** into `RcloneLogSummary`. The
   up-front collision set answers the same question without new log-parsing
   surface, and is known before the pull even starts.
