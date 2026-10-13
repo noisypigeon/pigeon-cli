@@ -168,7 +168,7 @@ value changes anywhere, so dashboards are unaffected.
 
 ## Out of scope
 
-- Sub-path addressing for `deduplicate`'s `--source-bucket`/
+- Sub-path addressing for `deduplicate`'s `--source-bucket`/ ([#73](https://github.com/noisypigeon/pigeon-cli/issues/73))
   `--destination-bucket` -- its alias-keyed checkpoint identity (ADR-0109)
   would need rework first; filed per ADR-0031.
 - Any `BucketConfig` schema change to store a default prefix per bucket --
