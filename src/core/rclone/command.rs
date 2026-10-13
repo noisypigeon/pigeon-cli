@@ -407,8 +407,21 @@ impl RcloneCommand for CopyTo {
         Ok(())
     }
 
+    /// A destination-endpoint outage lasts far longer than a few seconds,
+    /// so this budget has to too (ADR-0144). The 6-second budget this
+    /// replaced -- `(3, 2s)`, i.e. attempts at t=0/+2s/+6s under
+    /// `retry_with_backoff`'s linear schedule -- was over 12x too short for
+    /// the real 74-second DNS blackout that motivated the change, and
+    /// worse, a negative DNS answer is *negative-TTL cached*, so retrying
+    /// within seconds is structurally guaranteed to reproduce it. `(4,
+    /// 30s)` gives t=0/+30s/+90s/+180s, about five minutes.
+    ///
+    /// `Lsjson`'s own `(3, 2s)` is deliberately left alone: it runs once
+    /// per run rather than once per file, and ADR-0140 specifically wanted
+    /// an unresolvable *source* to fail the run fast rather than pull zero
+    /// files and exit 0.
     fn retry(&self) -> Option<(usize, Duration)> {
-        Some((3, Duration::from_secs(2)))
+        Some((4, Duration::from_secs(30)))
     }
 }
 

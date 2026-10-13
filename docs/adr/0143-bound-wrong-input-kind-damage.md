@@ -231,3 +231,22 @@ repo's convention for amending a merged ADR without rewriting it.
 - Manual: an `mp4-audio` run against a prefix holding real video --
   confirm it aborts via the breaker with the new message, and that
   `source/` is not left holding the pulled videos.
+
+## Amendment (2026-10-13): a third predicate, same reasoning (ADR-0144)
+
+This ADR's §1 argued that "does retrying help?" and "is the local copy worth
+keeping?" are different questions deserving separate predicates, even where
+both are true of the same substrings. ADR-0144 extends that to a third:
+`core::rclone::is_endpoint_unreachable_error` answers "is this fault shared
+by every concurrent transfer?", which licenses handling it once per run
+instead of once per file.
+
+Unlike this ADR's two guard consts, those signatures match **rclone/Go's**
+own text rather than pigeon's, so they are genuinely version-fragile in the
+way this ADR noted its own consts are not.
+
+ADR-0124's retain-on-failure rule -- and this ADR's single narrow exception
+to it -- are unchanged: a push failure still retains both local copies, and
+the `bad.png`-is-retained assertion in
+`run_transform_job_does_not_trip_the_circuit_breaker_on_a_mostly_healthy_batch`
+stays unmodified.

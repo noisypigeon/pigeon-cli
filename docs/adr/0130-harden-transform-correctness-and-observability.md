@@ -237,3 +237,23 @@ one place rather than from whichever caller remembered to add them. The
 disk-space preflight this ADR added are unaffected. Separately, `transform`'s
 `--report-bucket` becomes `--report-path`, leaving this job with no keyring
 dependency at all.
+
+## Amendment (2026-10-13): the undelivered-file message was false for one class (ADR-0144)
+
+The per-file pull reconciliation this ADR introduced is correct, and caught
+two genuinely undelivered files in a real run. Its *message* was not: for a
+source key that differs from another only by letter case, "rclone never
+reported it as copied" is simply untrue -- rclone reports exactly that case
+as `Duplicate object found in source - ignoring` at **`notice`** level,
+which this job never reads, while leaving its aggregate error count at zero.
+
+That is also why this ADR's own `rclone_errors != failures.pull` cross-check
+fired on that run (`rclone_errors=0, undelivered_files=2`): the mismatch it
+exists to surface was real, and the surfacing worked.
+
+ADR-0144 detects such collisions up front, warns with every colliding key
+named before the pull starts, and moves the detail into a pure
+`undelivered_detail` function with an accurate message per class. The
+pull-phase `tracing::info!` line this ADR added gains a
+`case_colliding_keys` count. The reconciliation mechanism itself is
+unchanged.

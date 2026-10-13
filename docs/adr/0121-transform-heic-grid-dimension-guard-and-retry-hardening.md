@@ -106,3 +106,18 @@ failure must be transcode-stage *and* non-retryable), so this remains 18
 same-class deterministic failures rather than 18 assorted errors. The abort
 message also stops attributing the cause solely to the host's `ffmpeg`
 build and now names a wrong `--input-file-type` as the other likely cause.
+
+## Amendment (2026-10-13): a pause-and-resume analogue for the push leg (ADR-0144)
+
+This ADR's circuit breaker covers the transcode stage only, and its sole
+response to a systemic fault is to abort the run. ADR-0144 adds a sibling
+mechanism for the *push* leg -- `EndpointGate` -- for a fault class this
+breaker was never meant to cover: a destination endpoint that is
+unreachable for every concurrent file at once (a 74-second VPN DNS blackout,
+in the motivating run).
+
+The two are deliberately not unified. A transient network fault is not the
+systemic ffmpeg-capability gap this breaker exists for, so the gate
+**pauses and resumes** instead of aborting, and only latches into
+fail-immediately mode after four fruitless recovery rounds. This breaker's
+own trip condition, sample size and transcode-only scope are unchanged.
