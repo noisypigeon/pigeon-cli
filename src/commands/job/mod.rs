@@ -6,6 +6,7 @@ pub mod email_import;
 pub mod email_pull;
 pub mod email_sync;
 pub(crate) mod local;
+pub(crate) mod progress;
 pub mod rclone;
 pub(crate) mod report_upload;
 pub(crate) mod shared_wizard;

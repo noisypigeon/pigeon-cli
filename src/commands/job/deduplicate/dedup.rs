@@ -11,7 +11,7 @@ use indicatif::MultiProgress;
 
 use super::manifest::after_zip_separator;
 use crate::commands::job::archive;
-use crate::commands::job::email_sync::sink;
+use crate::commands::job::progress::new_progress_bar;
 use crate::core::data::{ContentIndex, Dedup, sanitize_filename, unique_path};
 
 pub(crate) const CONTENT_HASHES_FILE: &str = ".content-hashes";
@@ -105,7 +105,7 @@ pub(crate) fn place_and_report(
             .then_with(|| a.original_key.cmp(&b.original_key))
     });
 
-    let bar = sink::new_progress_bar("place".to_string(), files.len() as u64, multi_progress);
+    let bar = new_progress_bar("place".to_string(), files.len() as u64, multi_progress);
     let mut summary = PlacementSummary::default();
     let mut records = Vec::new();
     let mut finished_keys = Vec::with_capacity(files.len());

@@ -24,6 +24,7 @@ pub mod gate;
 pub mod manifest;
 pub mod pace;
 mod push;
+pub mod sink;
 pub mod wizard;
 mod worker;
 
@@ -35,7 +36,7 @@ use async_imap::types::NameAttribute;
 use futures::TryStreamExt;
 use indicatif::MultiProgress;
 
-use crate::commands::job::email_sync::sink;
+use crate::commands::job::progress::new_progress_bar;
 use crate::commands::keyring::email::identity::Identity;
 use crate::core::job::Job;
 use crate::core::rclone::config::RemoteTarget;
@@ -131,7 +132,7 @@ pub(crate) async fn gather_pending(
         ..Default::default()
     };
 
-    let bar = sink::new_progress_bar(
+    let bar = new_progress_bar(
         format!("{} scan", ctx.identity.alias),
         mailboxes.len() as u64,
         multi_progress,
@@ -298,18 +299,16 @@ mod tests {
         assert!(batches_from_pending(&[pending("INBOX", Vec::new())], 10).is_empty());
     }
 
-    /// The default connection cap is deliberately well below the sibling
-    /// jobs' 6 (ADR-0071), since throughput here comes from the pacer.
-    /// A `const` block so the comparison is checked at compile time --
-    /// clippy rejects a runtime assertion over two constants.
+    /// The default connection cap is deliberately conservative, since
+    /// throughput here comes from the pacer rather than from parallelism.
+    ///
+    /// This used to assert `DEFAULT_MAX_CONNECTIONS < email_sync`'s own
+    /// default of 6 (ADR-0071), which is how the "deliberately lower"
+    /// intent was pinned. ADR-0147 removed that job, so the comparison has
+    /// no referent and the value is pinned directly instead -- 6 recorded
+    /// here as the historical figure it was chosen against.
     #[test]
     fn default_max_connections_is_conservative() {
-        const {
-            assert!(DEFAULT_MAX_CONNECTIONS >= 1);
-            assert!(
-                DEFAULT_MAX_CONNECTIONS
-                    < crate::commands::job::email_sync::DEFAULT_MAX_CONNECTIONS_PER_IDENTITY
-            );
-        }
+        assert_eq!(DEFAULT_MAX_CONNECTIONS, 2);
     }
 }
