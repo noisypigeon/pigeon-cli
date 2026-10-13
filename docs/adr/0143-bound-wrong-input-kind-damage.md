@@ -162,13 +162,13 @@ both.
   a failed file (which has no destination object) is re-pulled on every
   rerun. Real, but fixing it needs the local-state mechanism ADR-0120
   deliberately rejected for this job, since it runs on ephemeral VMs where
-  local disk does not survive. Filed per ADR-0031.
+  local disk does not survive. Filed per ADR-0031. ([#80](https://github.com/noisypigeon/pigeon-cli/issues/80))
 - **Preserving `transform-report.txt` when the breaker aborts a run.**
   `run_transform_job` returns `Err` before its per-file `outcomes` are
   used, so the wizard's `Err` arm writes the generic
   `report_upload::write_summary_report` (the error string alone) instead —
   the operator gets the breaker message but not the list of which files
-  failed. Filed per ADR-0031.
+  failed. Filed per ADR-0031. ([#81](https://github.com/noisypigeon/pigeon-cli/issues/81))
 - Changing `CIRCUIT_BREAKER_SAMPLE_SIZE`, or the transcode retry/backoff
   policy.
 - Any source-side filter that would pre-select audio-only files: ADR-0142
