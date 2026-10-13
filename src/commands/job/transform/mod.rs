@@ -1,12 +1,14 @@
 //! `pigeon job run transform` (ADR-0112, pipeline reworked by ADR-0116, video
-//! input kinds added by ADR-0122): shells out to `rclone` to pull source
-//! files matching `--input-file-type` (`png`/`jpeg`/`heic`/`mov`/`m4v`/`mp4`)
+//! input kinds added by ADR-0122, `mp4-audio` by ADR-0142): shells out to
+//! `rclone` to pull source files matching `--input-file-type`
+//! (`png`/`jpeg`/`heic`/`mov`/`m4v`/`mp4`/`mp4-audio`)
 //! into a local staging tree, transcodes or copies them locally into a
 //! destination filename unique by construction (never collision-detected-
 //! and-fixed, and never deduplicated -- duplicate source content is
 //! deliberately retained at separate destination names) -- full-size,
 //! maximum-quality `.jpg` for image kinds, `.mp4` (H.265/HEVC at the chosen
-//! `--video-quality`) for video kinds -- then pushes each file individually
+//! `--video-quality`) for video kinds, Opus `.opus` for `mp4-audio` -- then
+//! pushes each file individually
 //! via `rclone copyto` the moment it's ready rather than waiting for the
 //! whole batch. See `worker`'s module doc comment for the per-file
 //! pipeline's full shape, `push`'s for the per-file push leg, and

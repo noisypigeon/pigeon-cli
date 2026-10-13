@@ -35,7 +35,7 @@ impl WizardInput for InputFileTypeInput {
     }
 
     fn prompt(&self) -> Result<InputFileType, String> {
-        let options = ["png", "jpeg", "heic", "mov", "m4v", "mp4"];
+        let options = ["png", "jpeg", "heic", "mov", "m4v", "mp4", "mp4-audio"];
         let selected = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Input file type")
             .items(options)

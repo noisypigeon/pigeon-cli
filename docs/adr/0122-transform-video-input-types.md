@@ -217,3 +217,17 @@ no `.jpg` files at all). ADR-0139 keeps this ADR's real constraint -- one
 input *kind* per run, so a `mov` run still never picks up `.mp4` -- while
 letting that kind match every spelling of itself. The video kinds this ADR
 added each keep exactly one spelling; only `Jpeg` has two.
+
+## Amendment (2026-10-12): a non-video kind joins the enum, and a third output extension (ADR-0142)
+
+This ADR added the first non-image input kinds to `InputFileType` and the
+second output extension (`.mp4` alongside ADR-0112's `.jpg`). ADR-0142 adds
+`Mp4Audio` (`--input-file-type mp4-audio`) and a third, `.opus`: an
+audio-only recording carrying an `.mp4` extension, transcoded to Opus
+rather than failed. It shares `Mp4`'s on-disk spelling (no extension
+distinguishes the two) but is deliberately **not** a video kind --
+`is_video()` returns `false`, which is both correct on its own terms and
+what suppresses the `--video-quality` prompt this ADR introduced. Its
+one-input-kind-per-run constraint (as restated by ADR-0139) is unaffected;
+`output_extension()`'s `if is_video()` two-way split becomes an exhaustive
+`match` so a future kind cannot silently inherit `jpg`.

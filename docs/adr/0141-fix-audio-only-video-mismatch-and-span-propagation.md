@@ -171,3 +171,15 @@ WARN/ERROR call sites.
   and no retry warnings, (b) `jq 'select(.spans[]?.command ==
   "job.transform")'` against `pigeon.jsonl` now finds that failure's
   `ERROR`/`WARN` lines, each carrying a `relative_path` field.
+
+## Amendment (2026-10-12): the audio-preserving path now exists (ADR-0142)
+
+This ADR's new failure message pointed at "ADR-0142 for an audio-preserving
+input type" before that ADR existed. It now does: `--input-file-type
+mp4-audio` transcodes an audio-only `.mp4` to Opus `.opus` rather than
+failing it, so the 480 files this ADR could only diagnose are processable.
+Nothing here changes -- a plain `mp4` run still fails such a file fast and
+non-retryably, which is the correct outcome for a run that asked for video;
+the two kinds' opposite treatment of the same file is the intended
+distinction. ADR-0142 reuses this ADR's `has_video_stream` helper inverted,
+as the guard that refuses to strip video off a file that has it.

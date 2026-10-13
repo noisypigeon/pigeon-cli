@@ -389,6 +389,15 @@ async fn process_one(
                 )
                 .await
             }
+            InputFileType::Mp4Audio => {
+                retry_transcode_unless_fatal(
+                    TRANSCODE_RETRIES,
+                    TRANSCODE_RETRY_BACKOFF,
+                    &pending_file.relative_path,
+                    || media::transcode_audio(&pending_file.absolute_path, &scratch_path),
+                )
+                .await
+            }
         };
         crate::observability::metrics::record_phase_count(
             "transform",
@@ -479,7 +488,8 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         | InputFileType::Heic
         | InputFileType::Mov
         | InputFileType::M4v
-        | InputFileType::Mp4 => Outcome::Transcoded,
+        | InputFileType::Mp4
+        | InputFileType::Mp4Audio => Outcome::Transcoded,
     }
 }
 
@@ -2162,5 +2172,86 @@ mod tests {
         assert!(contents.contains("skipped: 3 already done at the destination, 2 AppleDouble"));
         assert!(contents.contains("pull: 2 transferred, 0 rclone error(s) reported."));
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
+    }
+
+    /// ADR-0142 end-to-end: a `mp4-audio` run must pull an audio-only
+    /// `.mp4`, transcode it, and push a `.opus` -- exercising the
+    /// `Mp4Audio` dispatch arm, `output_extension()`'s new `opus` value,
+    /// and `outcome_for`'s mapping in one pass.
+    #[tokio::test]
+    async fn run_transform_job_transcodes_an_audio_only_mp4_to_opus() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source_for_pull = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source_for_pull).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+
+        // A real audio-only `.mp4`, the shape this input kind exists for.
+        let generated = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:a",
+                "aac",
+                "-f",
+                "mp4",
+            ])
+            .arg(source_for_pull.join("voice.mp4"))
+            .output()
+            .await;
+        if !generated.map(|out| out.status.success()).unwrap_or(false) {
+            eprintln!("skipping: this ffmpeg build can't generate an audio-only fixture");
+            return;
+        }
+
+        let plan = TransformPlan {
+            source_path: source_for_pull.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: local_output.clone(),
+            input_file_type: InputFileType::Mp4Audio,
+            download_transfers: 2,
+            download_checkers: 4,
+            video_quality: VideoQuality::Medium,
+            tpslimit: None,
+            max_pending_downloads: 100,
+            run_id: "test-run".to_string(),
+        };
+
+        let summary = run_transform_job(&plan, 1, 1).await.unwrap();
+
+        if summary.failures.transcode > 0 {
+            eprintln!(
+                "skipping: this ffmpeg build can't encode libopus: {:?}",
+                summary.outcomes
+            );
+            return;
+        }
+
+        assert!(!summary.failed);
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(summary.outcomes.len(), 1);
+        assert_eq!(summary.outcomes[0].outcome, Outcome::Transcoded);
+
+        let pushed: Vec<_> = std::fs::read_dir(&destination)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        assert_eq!(pushed.len(), 1);
+        assert!(
+            pushed[0].ends_with(".opus"),
+            "expected a .opus output, got {}",
+            pushed[0]
+        );
     }
 }

@@ -8,8 +8,8 @@
 
 /// Which input format this run transcodes. Image kinds (ADR-0112) always
 /// output full-size, maximum-quality `.jpg`; video kinds (ADR-0122) always
-/// output `.mp4` (H.265/HEVC) at the chosen `VideoQuality`. See
-/// `output_extension`.
+/// output `.mp4` (H.265/HEVC) at the chosen `VideoQuality`; `Mp4Audio`
+/// (ADR-0142) outputs `.opus`. See `output_extension`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputFileType {
     Png,
@@ -18,6 +18,11 @@ pub(crate) enum InputFileType {
     Mov,
     M4v,
     Mp4,
+    /// An audio-only recording carrying an `.mp4` extension (ADR-0142) --
+    /// a voice note, typically. Shares `Mp4`'s on-disk spelling because no
+    /// extension distinguishes the two; `media::transcode_audio`'s
+    /// has-a-video-stream guard is what makes selecting this kind safe.
+    Mp4Audio,
 }
 
 impl InputFileType {
@@ -42,13 +47,14 @@ impl InputFileType {
             InputFileType::Heic => &["heic"],
             InputFileType::Mov => &["mov"],
             InputFileType::M4v => &["m4v"],
-            InputFileType::Mp4 => &["mp4"],
+            InputFileType::Mp4 | InputFileType::Mp4Audio => &["mp4"],
         }
     }
 
-    /// The one spelling used for display and for a default bucket prefix
-    /// (ADR-0138's `--source`/`--destination` inference) -- never for
-    /// matching, which always considers every entry in `extensions()`.
+    /// The one spelling used for a default bucket prefix (ADR-0138's
+    /// `--source`/`--destination` inference) -- never for matching, which
+    /// always considers every entry in `extensions()`, and (since
+    /// ADR-0142) never for display either, which uses `name()`.
     ///
     /// For `Jpeg` this is `jpg`, not `jpeg` (ADR-0139): it agrees with
     /// `output_extension()`, which has always returned `jpg` for this
@@ -56,6 +62,27 @@ impl InputFileType {
     /// `destination:jpg/` example.
     pub(crate) fn canonical_extension(self) -> &'static str {
         self.extensions()[0]
+    }
+
+    /// This kind's `--input-file-type` spelling, used for display.
+    ///
+    /// Distinct from `canonical_extension()` since ADR-0142: the two
+    /// coincided for every kind until `Mp4Audio`, which is addressed by
+    /// the `mp4` prefix its files actually live under but must *display*
+    /// as `mp4-audio` -- otherwise the wizard's "Input file type" echo
+    /// would read `mp4` and be indistinguishable from a video run. Every
+    /// other kind's spelling here is its `canonical_extension()`,
+    /// preserving ADR-0139's decision that `Jpeg` displays as `jpg`.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            InputFileType::Mp4Audio => "mp4-audio",
+            InputFileType::Png
+            | InputFileType::Jpeg
+            | InputFileType::Heic
+            | InputFileType::Mov
+            | InputFileType::M4v
+            | InputFileType::Mp4 => self.canonical_extension(),
+        }
     }
 
     /// Whether `ext` (no leading dot, any case) is one of this kind's
@@ -77,8 +104,10 @@ impl InputFileType {
             "mov" => Ok(InputFileType::Mov),
             "m4v" => Ok(InputFileType::M4v),
             "mp4" => Ok(InputFileType::Mp4),
+            "mp4-audio" => Ok(InputFileType::Mp4Audio),
             other => Err(format!(
-                "unknown --input-file-type '{other}' (expected png, jpeg, heic, mov, m4v, or mp4)"
+                "unknown --input-file-type '{other}' (expected png, jpeg, heic, mov, m4v, mp4, \
+                 or mp4-audio)"
             )),
         }
     }
@@ -87,6 +116,11 @@ impl InputFileType {
     /// copy-through, unlike `Jpeg` -- so this job's one justified departure
     /// from "preserve what's already in the target format" is explicit here
     /// rather than implied by a `match` elsewhere.
+    ///
+    /// `Mp4Audio` is **not** a video kind (ADR-0142) despite its `.mp4`
+    /// input spelling: there is no video stream to recompress, and this
+    /// returning `false` is also what correctly suppresses the
+    /// `--video-quality` prompt for such a run.
     pub(crate) fn is_video(self) -> bool {
         matches!(
             self,
@@ -96,15 +130,24 @@ impl InputFileType {
 
     /// The fixed output extension for this input kind: `jpg` for every image
     /// kind (ADR-0112), `mp4` for every video kind (ADR-0122) regardless of
-    /// which video extension was the input.
+    /// which video extension was the input, `opus` for `Mp4Audio`
+    /// (ADR-0142).
+    ///
+    /// An exhaustive `match` rather than ADR-0112's original
+    /// `if is_video() { "mp4" } else { "jpg" }`, so a kind added later
+    /// cannot silently inherit `jpg` by falling through an `else`.
     pub(crate) fn output_extension(self) -> &'static str {
-        if self.is_video() { "mp4" } else { "jpg" }
+        match self {
+            InputFileType::Png | InputFileType::Jpeg | InputFileType::Heic => "jpg",
+            InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => "mp4",
+            InputFileType::Mp4Audio => "opus",
+        }
     }
 }
 
 impl std::fmt::Display for InputFileType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.canonical_extension())
+        f.write_str(self.name())
     }
 }
 
@@ -182,6 +225,14 @@ mod tests {
         assert_eq!(InputFileType::parse("M4V").unwrap(), InputFileType::M4v);
         assert_eq!(InputFileType::parse("mp4").unwrap(), InputFileType::Mp4);
         assert_eq!(InputFileType::parse("MP4").unwrap(), InputFileType::Mp4);
+        assert_eq!(
+            InputFileType::parse("mp4-audio").unwrap(),
+            InputFileType::Mp4Audio
+        );
+        assert_eq!(
+            InputFileType::parse("MP4-AUDIO").unwrap(),
+            InputFileType::Mp4Audio
+        );
     }
 
     #[test]
@@ -194,10 +245,17 @@ mod tests {
     fn parse_rejects_anything_else() {
         assert!(InputFileType::parse("gif").is_err());
         assert!(InputFileType::parse("").is_err());
+        // Neighbouring spellings of the ADR-0142 kind are not aliases.
+        assert!(InputFileType::parse("mp4audio").is_err());
+        assert!(InputFileType::parse("mp4_audio").is_err());
+        assert!(InputFileType::parse("audio").is_err());
+        assert!(InputFileType::parse("opus").is_err());
     }
 
     #[test]
     fn canonical_extension_and_display_agree() {
+        // Every kind but `Mp4Audio` (ADR-0142), whose display name and
+        // addressing prefix deliberately differ -- see `name()`.
         for kind in [
             InputFileType::Png,
             InputFileType::Jpeg,
@@ -208,6 +266,54 @@ mod tests {
         ] {
             assert_eq!(kind.canonical_extension(), kind.to_string());
         }
+    }
+
+    /// ADR-0142: `Mp4Audio` is addressed by the `mp4` prefix its files
+    /// actually live under, but must *display* as `mp4-audio` -- otherwise
+    /// the wizard's "Input file type" echo would be indistinguishable from
+    /// a video run's.
+    #[test]
+    fn mp4_audio_displays_as_its_flag_spelling_not_its_addressing_prefix() {
+        assert_eq!(InputFileType::Mp4Audio.to_string(), "mp4-audio");
+        assert_eq!(InputFileType::Mp4Audio.name(), "mp4-audio");
+        assert_eq!(InputFileType::Mp4Audio.canonical_extension(), "mp4");
+    }
+
+    /// Every kind's `name()` must round-trip back through `parse`, so the
+    /// displayed spelling is always a value the operator can actually pass
+    /// to `--input-file-type`.
+    #[test]
+    fn every_kinds_display_name_parses_back_to_itself() {
+        for kind in [
+            InputFileType::Png,
+            InputFileType::Jpeg,
+            InputFileType::Heic,
+            InputFileType::Mov,
+            InputFileType::M4v,
+            InputFileType::Mp4,
+            InputFileType::Mp4Audio,
+        ] {
+            assert_eq!(InputFileType::parse(kind.name()).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn mp4_audio_shares_mp4s_on_disk_spelling_but_outputs_opus() {
+        // No file extension distinguishes an audio-only `.mp4`, so this
+        // kind matches the same spelling as `Mp4`; `transcode_audio`'s
+        // has-a-video-stream guard is what makes selecting it safe.
+        assert_eq!(InputFileType::Mp4Audio.extensions(), &["mp4"]);
+        assert!(InputFileType::Mp4Audio.matches_extension("mp4"));
+        assert!(InputFileType::Mp4Audio.matches_extension("MP4"));
+        assert_eq!(InputFileType::Mp4Audio.output_extension(), "opus");
+    }
+
+    /// `Mp4Audio` must not be a video kind despite its `.mp4` input
+    /// spelling -- this is also what suppresses the `--video-quality`
+    /// prompt for such a run (`dispatch_async` gates it on `is_video()`).
+    #[test]
+    fn mp4_audio_is_not_a_video_kind() {
+        assert!(!InputFileType::Mp4Audio.is_video());
     }
 
     /// The ADR-0139 regression: a `.jpg` file must be matched by a `jpeg`
@@ -238,6 +344,7 @@ mod tests {
             InputFileType::Mov,
             InputFileType::M4v,
             InputFileType::Mp4,
+            InputFileType::Mp4Audio,
         ] {
             assert_eq!(
                 kind.extensions().len(),
@@ -268,6 +375,7 @@ mod tests {
         assert!(InputFileType::Mov.is_video());
         assert!(InputFileType::M4v.is_video());
         assert!(InputFileType::Mp4.is_video());
+        assert!(!InputFileType::Mp4Audio.is_video());
     }
 
     #[test]
@@ -278,6 +386,7 @@ mod tests {
         assert_eq!(InputFileType::Mov.output_extension(), "mp4");
         assert_eq!(InputFileType::M4v.output_extension(), "mp4");
         assert_eq!(InputFileType::Mp4.output_extension(), "mp4");
+        assert_eq!(InputFileType::Mp4Audio.output_extension(), "opus");
     }
 
     #[test]

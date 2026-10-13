@@ -1,5 +1,6 @@
 //! `ffmpeg`/`ffprobe`-backed png/heic -> jpg transcoding (ADR-0112 Decision
-//! §4), and the jpeg copy-through path that skips both entirely. Where the
+//! §4), mov/m4v/mp4 -> H.265 mp4 (ADR-0122), audio-only mp4 -> Opus
+//! (ADR-0142), and the jpeg copy-through path that skips both entirely. Where the
 //! since-removed `pull_transform::media` defaulted to `-q:v 3` (tuned for
 //! screenshots, not "no quality loss"), this always uses ffmpeg's highest
 //! JPEG quality
@@ -428,6 +429,101 @@ pub(crate) async fn transcode_video(
     Ok(())
 }
 
+/// Opus bitrate for `transcode_audio` (ADR-0142). 48k, not the
+/// speech-tuned 32k: this content is personal archival audio of *unknown*
+/// type -- some clips may be music rather than speech -- and 48k is the
+/// lowest rate that stays comfortably transparent for speech while
+/// remaining acceptable for general audio, still roughly 2.2x smaller than
+/// a typical 128k AAC source. Same archival-over-streaming reasoning as
+/// `VideoQuality::Medium`'s deliberately-better-than-conventional CRF.
+const OPUS_BITRATE: &str = "48k";
+
+/// Transcodes `input` (an audio-only `.mp4`, ADR-0142) to `output`
+/// (always `.opus`, Ogg-encapsulated Opus):
+/// ```text
+/// ffmpeg -y -loglevel error -i <input> -map 0:a:0 \
+///   -c:a libopus -b:a 48k -application audio -f opus <output>
+/// ```
+/// Opus is the best quality-per-bit codec available for this content class
+/// at these bitrates, and costs nothing for the intended future
+/// transcription work -- every transcription pipeline decodes to PCM
+/// first, so the stored codec is irrelevant to it beyond whether the audio
+/// survived intact. `-application audio` is libopus's general-purpose,
+/// higher-fidelity mode and is already its default; do **not** "optimize"
+/// it to `voip`, whose more aggressive telephony-tuned speech bandpass
+/// would discard content a transcription model might still use.
+/// `-f opus` forces the muxer explicitly, the same ADR-0115 lesson
+/// `transcode_to_jpg`/`transcode_video` already encode: `worker.rs` writes
+/// to a scratch path ending in `.scratch`, so ffmpeg can never be allowed
+/// to infer the container from the on-disk extension. `-map 0:a:0` pins
+/// the first audio stream rather than relying on ffmpeg's default stream
+/// selection, exactly as `transcode_video` pins `0:v:0`.
+///
+/// An input that still has a video stream is **refused**, not silently
+/// stripped -- the load-bearing safety guard, not a formality. Nothing
+/// filters a `mp4-audio` run's source down to audio-only files (no
+/// extension distinguishes them), and ADR-0138/0139's prefix inference
+/// means `--source source` with no explicit prefix resolves to
+/// `source:mp4/`: the same default address a plain `--input-file-type mp4`
+/// video run uses. Without this guard, one omitted prefix would quietly
+/// transcode a bucket of real video into audio-only files and push them.
+///
+/// Verified by the same duration guard `transcode_video` uses -- audio
+/// shares exactly that truncated/partial-encode failure mode. The
+/// pixel-area dimension guard is skipped: there are no dimensions.
+pub(crate) async fn transcode_audio(input: &Path, output: &Path) -> Result<(), String> {
+    if has_video_stream(input).await {
+        return Err(format!(
+            "{} has a video stream, so it is not an audio-only recording; refusing to discard \
+             video (use --input-file-type mp4 to transcode it as video)",
+            input.display()
+        ));
+    }
+
+    let result = tokio::process::Command::new("ffmpeg")
+        .args(["-y", "-loglevel", "error"])
+        .arg("-i")
+        .arg(input)
+        .args([
+            "-map",
+            "0:a:0",
+            "-c:a",
+            "libopus",
+            "-b:a",
+            OPUS_BITRATE,
+            "-application",
+            "audio",
+            "-f",
+            "opus",
+        ])
+        .arg(output)
+        .output()
+        .await
+        .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+
+    if !result.status.success() {
+        return Err(format!(
+            "ffmpeg failed to transcode {}: {}",
+            input.display(),
+            String::from_utf8_lossy(&result.stderr).trim()
+        ));
+    }
+
+    if let (Some(before), Some(after)) = (
+        probe_duration_seconds(input).await,
+        probe_duration_seconds(output).await,
+    ) && (before - after).abs() > DURATION_TOLERANCE_SECONDS
+    {
+        return Err(format!(
+            "transcoding {} changed duration from {before:.3}s to {after:.3}s (tolerance \
+             {DURATION_TOLERANCE_SECONDS}s); refusing a truncated or partial encode",
+            input.display()
+        ));
+    }
+
+    Ok(())
+}
+
 /// Matches `ffmpeg`/`ffprobe` failure signatures that are deterministic --
 /// re-running `transcode_to_jpg` against the exact same input reproduces the
 /// identical failure every time, so retrying buys nothing but doubles ffmpeg
@@ -445,6 +541,7 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         "refusing an output that isn't full-size",
         "Unknown encoder",
         "has no video stream",
+        "is not an audio-only recording",
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -898,6 +995,94 @@ mod tests {
             !output.exists(),
             "ffmpeg must not have run at all for an audio-only input"
         );
+    }
+
+    /// ADR-0142: an audio-only input transcodes to a real `.opus`, with its
+    /// duration preserved inside the shared tolerance. Also pins the
+    /// ADR-0115 muxer-inference lesson for this output format -- the
+    /// scratch path ends in `.scratch`, not `.opus`, so without `-f opus`
+    /// ffmpeg could not infer the container.
+    #[tokio::test]
+    async fn transcode_audio_produces_an_opus_preserving_duration_from_a_scratch_suffixed_path() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("voice.mp4");
+        if generate_audio_only_mp4(&input).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate an audio-only fixture");
+            return;
+        }
+
+        let output = dir.path().join("voice-abcdef0123456789.opus.scratch");
+        if let Err(err) = transcode_audio(&input, &output).await {
+            eprintln!("skipping: this ffmpeg build can't encode libopus: {err}");
+            return;
+        }
+
+        assert!(output.exists());
+        let before = probe_duration_seconds(&input).await.unwrap();
+        let after = probe_duration_seconds(&output).await.unwrap();
+        assert!(
+            (before - after).abs() <= DURATION_TOLERANCE_SECONDS,
+            "duration drifted: {before}s -> {after}s"
+        );
+    }
+
+    /// The load-bearing ADR-0142 safety guard: an input that still has a
+    /// video stream must be refused, never silently stripped of its video.
+    /// A `mp4-audio` run's source is not filtered down to audio-only files
+    /// (no extension distinguishes them), and ADR-0138/0139's prefix
+    /// inference resolves a bare `--source source` to `source:mp4/` -- the
+    /// same default address a video run uses.
+    #[tokio::test]
+    async fn transcode_audio_refuses_an_input_that_still_has_a_video_stream() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("real-video.mp4");
+        if generate_test_video(&input).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate a test fixture");
+            return;
+        }
+
+        let output = dir.path().join("out.opus");
+        let err = transcode_audio(&input, &output)
+            .await
+            .expect_err("a file with a video stream must not be transcoded to audio-only");
+
+        assert!(
+            err.contains("is not an audio-only recording"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            is_non_retryable_transcode_error(&err),
+            "this is deterministic and must never be retried: {err}"
+        );
+        assert!(
+            !output.exists(),
+            "ffmpeg must not have run at all for a video-bearing input"
+        );
+    }
+
+    #[tokio::test]
+    async fn transcode_audio_fails_fast_on_an_unreadable_input() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("not-audio.mp4");
+        std::fs::write(&input, b"this is not a real mp4 file").unwrap();
+        let output = dir.path().join("out.opus");
+
+        assert!(transcode_audio(&input, &output).await.is_err());
     }
 
     #[tokio::test]
