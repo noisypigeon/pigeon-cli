@@ -7,6 +7,9 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 - ADR-0136: sandboxes every `rclone` invocation to a config file pigeon itself generates from its own keyring (`src/core/rclone/config.rs`) -- never an externally-provisioned or user-general-purpose `rclone.conf` -- reversing ADR-0101/ADR-0132/ADR-0133's twice-reaffirmed "no `BucketConfig`-to-rclone translation" stance now that real usage is confirmed bucket-only. Implements ADR-0132's `RcloneCommand` trait consolidation (`Copy`/`Purge`/`Lsjson`/`CopyTo`, one shared runner replacing 6 hand-written invocations) and ADR-0133's `deduplicate`-off-`minio` migration together as the final shape: `rclone copy`/`delete`/`transform`'s `--source-path`/`--destination-path` revert to `--source-bucket`/`--destination-bucket` (ADR-0110's rename reversed), while `deduplicate` keeps its existing `--source-bucket`/`bucket_alias` identity and checkpoint shape entirely unchanged -- only its transfer mechanism moves (`--upload-concurrency` → `--transfers`/`--checkers`/`--tpslimit`). `download.rs`'s now-zero-consumer `download_with_retry`/`DownloadAnnounce` are deleted; the module is renamed `local.rs` ([#70](https://github.com/noisypigeon/pigeon-cli/pull/70)).
+
+## [0.4.17] - 2026-10-13
+
 - ADR-0135: retires the OS keychain entirely -- every secret (IMAP password, S3 secret key, encryption key) now lives in `keyring.toml` as a plaintext field, protected only by `0600` file permissions. Obsoletes rejected ADR-0035's unsolved macOS keychain-prompt problem and makes ADR-0085's Linux-keyutils workaround moot; `core::keyring::credentials` collapses to one infallible `resolve_secret` function still honoring `PIGEON_SECRET_<ALIAS>` (ADR-0087); the `keyring` crate is removed from `Cargo.toml`. No automated migration -- every existing entry needs re-adding via `pigeon keyring add` ([#69](https://github.com/noisypigeon/pigeon-cli/pull/69)).
 
 ## [0.4.16] - 2026-10-13
