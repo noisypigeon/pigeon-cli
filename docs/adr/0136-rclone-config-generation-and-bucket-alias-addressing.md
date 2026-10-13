@@ -357,3 +357,21 @@ half is still validated against `Store::contains_alias`. Applies to
 `transform` and `rclone copy`/`delete`; `deduplicate` keeps whole-bucket
 addressing, since §4's alias-keyed checkpoint identity would need rework
 first.
+
+## Amendment (2026-10-12): the generated config gains the alias→bucket indirection it rejected (ADR-0140)
+
+§2's single `[alias] type = s3` section per bucket-config had nowhere to put
+`BucketConfig::bucket` -- an `s3` section has no bucket field -- so the
+bucket name was dropped entirely: `alias:` addressed the *account* root and
+`alias:prefix/` a bucket literally named `prefix`. ADR-0140 restores the
+two-section `alias → bucket` indirection this ADR declined ("aliases are
+already globally unique, so there is no collision class to guard against"),
+which answered a collision question rather than the question of where the
+bucket name lives: one `[<alias>.s3] type = s3` backend plus an
+`[<alias>] type = alias remote = <alias>.s3:<bucket>`. The backend is keyed
+by alias rather than by bucket name as the terraform reference does, since
+two bucket-configs may name the same bucket on different endpoints. §3's
+`RemoteTarget`/`address()` surface, this ADR's sandboxing guarantees
+(pigeon-managed buckets only, regenerated per run, never merged with an
+existing file), and the `0600` permissions are all unchanged -- only the
+generated file's shape.

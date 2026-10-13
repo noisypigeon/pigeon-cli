@@ -139,3 +139,16 @@ entry count, and elapsed time, plus a `phase="list"` metric -- so a slow or
 hanging listing is no longer indistinguishable from a hung job. The
 `"directory not found"` stderr tolerance this ADR introduced is carried over
 byte-for-byte and remains as version-fragile as issue #63 records.
+
+## Amendment (2026-10-12): the `"directory not found"` tolerance becomes opt-in per listing (ADR-0140)
+
+This ADR's destination listing is right to treat a path that doesn't exist
+as empty -- a brand-new destination is the normal first run. ADR-0132 then
+re-homed that tolerance into the shared `Lsjson` command, where it applied
+to *every* listing, including the source trees ADR-0124 and ADR-0133 later
+added. ADR-0140 makes it an explicit `missing_ok` flag, set only here: a
+*source* rclone cannot resolve is a misconfigured address, and swallowing it
+produced a run indistinguishable from success (0 pulled, 0 failed, exit 0),
+which is how ADR-0140's own dropped bucket name stayed invisible through two
+runs. The stderr match itself is unchanged, and as version-fragile as issue
+#63 records.

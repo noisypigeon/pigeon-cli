@@ -151,6 +151,9 @@ pub(crate) async fn gather_pending(
         let entries = (Lsjson {
             path: RemoteTarget::bucket_root(&bucket_config.alias).address(),
             recursive: true,
+            // `missing_ok` stays `false` (ADR-0140): a source bucket rclone
+            // cannot resolve must fail the run, not silently contribute
+            // zero files to the manifest.
             job: "deduplicate",
             ..Default::default()
         })
