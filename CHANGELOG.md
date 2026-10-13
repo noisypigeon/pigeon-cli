@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.19] - 2026-10-13
+
 - ADR-0137: `transform`'s `--source-bucket`/`--destination-bucket` rename to `--source`/`--destination` and become optional, defaulting when omitted to a bucket-config named after `--input-file-type`'s own extension (source) or output extension (destination) -- a naming convention, not content inspection. An explicit flag always wins, validated against the keyring exactly as before. `Store::prompt_select_bucket` gains a `default_alias` hint so the interactive picker highlights the inferred alias; every other caller (`rclone copy`/`delete`, `deduplicate`) is unaffected. Amends ADR-0136 ([#71](https://github.com/noisypigeon/pigeon-cli/pull/71)).
 
 ## [0.4.18] - 2026-10-13
