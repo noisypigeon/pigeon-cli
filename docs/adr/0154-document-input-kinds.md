@@ -329,11 +329,11 @@ Filed per ADR-0031 where genuinely deferred rather than a permanent boundary:
 - **Pre-OS-X resource-fork `.textclipping` files.** The sample measured here is
   a data-fork property list; the older form stores a flattened pasteboard in a
   resource fork and needs a different reader. Refused clearly rather than
-  guessed at, and deferred until one is known to exist in the archive.
+  guessed at, and deferred until one is known to exist in the archive. ([#110](https://github.com/noisypigeon/pigeon-cli/issues/110))
 - **OCR of scanned or image-only PDFs.** A `pdf` input is copied through, so a
   scanned document stays an image of text. Extracting it is a different kind of
   work from format conversion and would need its own converter and its own
-  accuracy discussion.
+  accuracy discussion. ([#111](https://github.com/noisypigeon/pigeon-cli/issues/111))
 - **A `.pages` or `.key` saved as a package directory.** Older iWork formats are
   directories, which the source listing cannot see as one file -- identical in
   cause to [#94](https://github.com/noisypigeon/pigeon-cli/issues/94) for
