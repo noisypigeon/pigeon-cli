@@ -210,7 +210,7 @@ async fn dispatch_copy_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let (report_bucket_config, report_secret) =
+    let report_bucket_config =
         match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
@@ -282,7 +282,6 @@ async fn dispatch_copy_async(
     report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
         &report_bucket_config,
-        &report_secret,
         &run_prefix,
         &report_path,
         &transcript_path,
@@ -354,7 +353,7 @@ async fn dispatch_delete_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let (report_bucket_config, report_secret) =
+    let report_bucket_config =
         match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
@@ -425,7 +424,6 @@ async fn dispatch_delete_async(
     report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
         &report_bucket_config,
-        &report_secret,
         &run_prefix,
         &report_path,
         &transcript_path,

@@ -211,6 +211,10 @@ pub(crate) struct Lsjson {
     /// successful no-op (0 pulled, 0 failed, exit 0), which is exactly how
     /// ADR-0140's dropped bucket name stayed invisible through two runs.
     pub missing_ok: bool,
+    /// Reads this config instead of the keyring-derived one (ADR-0148 §3).
+    /// Only the `keyring add`/`modify bucket` probe sets it, to reach a
+    /// bucket that is not in the keyring yet.
+    pub config_path: Option<PathBuf>,
     pub job: &'static str,
 }
 
@@ -303,6 +307,10 @@ impl RcloneCommand for Lsjson {
 
     fn retry(&self) -> Option<(usize, Duration)> {
         Some((3, Duration::from_secs(2)))
+    }
+
+    fn config_path(&self) -> Option<&Path> {
+        self.config_path.as_deref()
     }
 }
 
@@ -440,6 +448,7 @@ mod tests {
             include_extensions: vec!["jpg".to_string(), "jpeg".to_string()],
             missing_ok: false,
             job: "transform",
+            ..Default::default()
         })
         .args();
 
@@ -473,6 +482,35 @@ mod tests {
         assert!(!args.contains(&"--ignore-case".to_string()));
         assert!(!args.contains(&"--recursive".to_string()));
         assert!(args.contains(&"--files-only".to_string()));
+    }
+
+    /// ADR-0148 §3: the probe's config override must reach
+    /// `config_path()`, which is what `execute` reads instead of the
+    /// keyring-derived path. Asserted on the trait method rather than on
+    /// argv, since `execute` assembles that and needs a subprocess.
+    #[test]
+    fn lsjson_exposes_a_config_override_and_defaults_to_none() {
+        let probe = Lsjson {
+            path: "candidate:".to_string(),
+            config_path: Some(PathBuf::from("/tmp/rclone-probe-1.conf")),
+            job: "keyring",
+            ..Default::default()
+        };
+        assert_eq!(
+            probe.config_path(),
+            Some(Path::new("/tmp/rclone-probe-1.conf"))
+        );
+
+        // Every ordinary listing keeps reading the one generated config.
+        let ordinary = Lsjson {
+            path: "source:jpg/".to_string(),
+            job: "transform",
+            ..Default::default()
+        };
+        assert_eq!(ordinary.config_path(), None);
+        assert_eq!(Copy::default().config_path(), None);
+        assert_eq!(CopyTo::default().config_path(), None);
+        assert_eq!(Purge::default().config_path(), None);
     }
 
     fn missing_directory_outcome() -> Outcome {

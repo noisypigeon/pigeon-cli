@@ -113,7 +113,7 @@ gap. See step 4 and the Known limitations section.
      really reading that much real data, it was being paged in and out
      under memory pressure.
    - **The scrape target (`up{...}`) going down, or `pigeon_job_phase_total`/
-     `pigeon_upload_attempts_total` samples stopping abruptly** well before
+     `pigeon_upload_bytes_total` samples stopping abruptly** well before
      any expected completion -> the process died at roughly that timestamp
      (cross-check against step 2's "no closing event" finding in the log).
    - **`pigeon_job_macro_phase`'s last value before samples stop** tells you

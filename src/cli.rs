@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use crate::commands::job::cli::JobArgs;
 use crate::commands::keyring::cli::KeyringArgs;
 
-/// Pigeon: authenticate, sink, and transform personal data from external services.
+/// Pigeon: imports, transcodes, and deduplicates personal data into S3-compatible remotes.
 #[derive(Parser, Debug)]
 #[command(name = "pigeon", version, about, long_about = None)]
 pub struct Cli {

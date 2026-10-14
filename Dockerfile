@@ -7,9 +7,11 @@
 FROM rust:1.92-slim-bookworm AS builder
 
 WORKDIR /build
-# async-native-tls/minio pull in native-tls -> openssl-sys on Linux, which
-# needs pkg-config + OpenSSL dev headers to build -- neither is in the base
-# rust image.
+# async-native-tls (IMAP) pulls in native-tls -> openssl-sys on Linux,
+# which needs pkg-config + OpenSSL dev headers to build -- neither is in
+# the base rust image. ADR-0148 removed `minio`, which used to be named
+# here too; this is still required for the IMAP half alone, so neither the
+# apt-get below nor the runtime libssl3 may be dropped with it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*

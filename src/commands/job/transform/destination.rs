@@ -69,6 +69,7 @@ pub(crate) async fn list_source_relative_paths(
         // resolve is a misconfigured address, not an empty source.
         missing_ok: false,
         job: "transform",
+        ..Default::default()
     })
     .run()
     .await?;

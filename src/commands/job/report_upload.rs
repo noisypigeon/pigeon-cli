@@ -12,10 +12,11 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::job::shared_wizard::ReportBucketInput;
-use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::store::Store;
-use crate::core::keyring::credentials;
+use crate::core::rclone::RcloneCommand as _;
+use crate::core::rclone::command::CopyTo;
+use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 use crate::observability::{self, transcript::Transcript};
 
@@ -26,15 +27,14 @@ pub(crate) fn resolve(
     flag: Option<String>,
     store: &Store,
     non_interactive: bool,
-) -> Result<(BucketConfig, String), String> {
+) -> Result<BucketConfig, String> {
     let alias = (ReportBucketInput { flag, store }).resolve(non_interactive)?;
     let bucket_config = store
         .bucket_configs()
         .find(|bucket_config| bucket_config.alias == alias)
         .ok_or_else(|| format!("no bucket-config named '{alias}'"))?
         .clone();
-    let secret = credentials::resolve_secret(&bucket_config.alias, &bucket_config.secret_key);
-    Ok((bucket_config, secret))
+    Ok(bucket_config)
 }
 
 /// A collision-resistant-enough per-run identifier, deliberately with no new
@@ -130,27 +130,32 @@ pub(crate) fn log_run_outcome(exit_code: i32) {
 /// failure here is `tracing::warn!`-logged but never changes the calling
 /// job's own exit code (ADR-0100) -- this is instrumentation about the run,
 /// not the run's primary deliverable.
+/// Takes no secret: since ADR-0148 these go through `rclone copyto`,
+/// which reads credentials from the generated config (and, since that
+/// ADR's §1, honours `PIGEON_SECRET_<ALIAS>` while doing so).
 pub(crate) async fn upload_run_artifacts(
     bucket_config: &BucketConfig,
-    secret: &str,
     prefix: &str,
     report_path: &Path,
     transcript_path: &Path,
 ) {
+    let destination = RemoteTarget::bucket_root(&bucket_config.alias).address();
+    let log_dir = report_path.parent().unwrap_or(Path::new("."));
+
     let uploads: [(&str, &Path); 2] = [
         ("report.txt", report_path),
         ("transcript.txt", transcript_path),
     ];
     for (name, path) in uploads {
-        upload_one(bucket_config, secret, &format!("{prefix}/{name}"), path).await;
+        upload_one(&destination, &format!("{prefix}/{name}"), path, log_dir).await;
     }
     match observability::log_file_path() {
         Ok(log_path) => {
             upload_one(
-                bucket_config,
-                secret,
+                &destination,
                 &format!("{prefix}/pigeon.jsonl"),
                 &log_path,
+                log_dir,
             )
             .await;
         }
@@ -160,10 +165,32 @@ pub(crate) async fn upload_run_artifacts(
     }
 }
 
-async fn upload_one(bucket_config: &BucketConfig, secret: &str, key: &str, path: &Path) {
-    if let Err(err) =
-        client::upload_if_changed(bucket_config, secret, key, path.to_path_buf()).await
-    {
+/// One artifact, via `rclone copyto`. `emit_upload_metrics` is deliberately
+/// `false`: these three files are instrumentation *about* a run, and
+/// counting them in `pigeon_upload_bytes_total` alongside the run's real
+/// payload would inflate every job's transferred-bytes series by a
+/// constant that has nothing to do with the data it moved.
+///
+/// Each gets its own rclone log, named after the flattened key -- many
+/// single-file `rclone` invocations cannot safely share one `--log-file`
+/// (ADR-0116), and these three run back to back.
+async fn upload_one(destination: &str, key: &str, path: &Path, log_dir: &Path) {
+    let flattened: String = key
+        .chars()
+        .map(|ch| if ch == '/' { '-' } else { ch })
+        .collect();
+    let result = (CopyTo {
+        source: path.display().to_string(),
+        destination: format!("{destination}{key}"),
+        log_path: log_dir.join(format!("artifact-{flattened}.jsonl")),
+        job: "report-upload",
+        step: "artifact",
+        emit_upload_metrics: false,
+        bytes: 0,
+    })
+    .run()
+    .await;
+    if let Err(err) = result {
         tracing::warn!(key, error = %err, "failed to upload run artifact");
     }
 }
