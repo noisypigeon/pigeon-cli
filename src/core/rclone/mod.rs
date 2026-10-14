@@ -102,6 +102,22 @@ pub(crate) trait RcloneCommand {
         None
     }
 
+    /// Overrides which config file this one invocation reads, instead of
+    /// the keyring-derived one `config::rclone_config_path` names
+    /// (ADR-0148 §3).
+    ///
+    /// Exists for exactly one case: probing a remote that is **not in the
+    /// keyring yet**, which is what `keyring add bucket`'s verify-before-
+    /// save does (ADR-0010). The generated config is a pure function of the
+    /// saved keyring (ADR-0136), so a candidate bucket cannot appear in it
+    /// without being saved first -- the ordering this breaks.
+    ///
+    /// Defaulted, like `retry`, so every ordinary invocation keeps reading
+    /// the one generated config and none of the other implementors change.
+    fn config_path(&self) -> Option<&Path> {
+        None
+    }
+
     /// Build argv, spawn, observe, emit tracing + metrics, then `finish`.
     async fn run(&self) -> Result<Self::Output, String>
     where
@@ -182,7 +198,10 @@ async fn execute<C: RcloneCommand + ?Sized>(cmd: &C) -> Result<C::Output, String
         argv.push(log_path.display().to_string());
     }
     argv.push("--config".to_string());
-    argv.push(config::rclone_config_path()?.display().to_string());
+    argv.push(match cmd.config_path() {
+        Some(path) => path.display().to_string(),
+        None => config::rclone_config_path()?.display().to_string(),
+    });
 
     let labels = cmd.labels();
     match cmd.observe() {

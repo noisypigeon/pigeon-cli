@@ -1,6 +1,5 @@
 use dialoguer::{Input, Select, theme::ColorfulTheme};
 
-use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::cli::AddKind;
 use crate::commands::keyring::email::identity::{self, Identity};
@@ -9,6 +8,9 @@ use crate::commands::keyring::email::provider::Provider;
 use crate::commands::keyring::store::{Entry, Store};
 use crate::commands::{FAILURE_EXIT_CODE, print_table};
 use crate::core::keyring::KeyringEntry as _;
+use crate::core::rclone::RcloneCommand as _;
+use crate::core::rclone::command::Lsjson;
+use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::{confirm, read_secret};
 
 fn fail(message: impl std::fmt::Display) -> i32 {
@@ -33,18 +35,107 @@ fn resolve_host_port(
     Ok((host, port))
 }
 
-/// Runs `bucket::client::bucket_exists` on its own short-lived async
-/// runtime -- `keyring::wizard`'s top-level functions stay synchronous
-/// (matching `imap_client::verify_login`'s own self-contained-runtime
-/// shape), since a single dispatch entry point needs to reach both this
-/// (async) and `verify_login` (which builds its own nested runtime and
-/// would panic if called from inside an already-running one).
-fn check_bucket_exists(bucket_config: &BucketConfig, secret: &str) -> Result<bool, String> {
+/// Verifies a candidate bucket-config is reachable before it is saved
+/// (ADR-0010), via `rclone lsjson` against a throwaway config holding only
+/// that candidate (ADR-0148 §3).
+///
+/// The ordering problem this solves: the generated `rclone.conf` is a pure
+/// function of the *saved* keyring (ADR-0136), but this runs before the
+/// candidate is saved. So an ephemeral one-entry `Store` is handed to the
+/// real `write_sandboxed_config` -- not a hand-rolled emitter -- so
+/// ADR-0140's two-section `alias` -> bucket shape cannot drift out of sync
+/// with the one jobs actually use.
+///
+/// The probe file lives beside `keyring.toml` rather than in the OS temp
+/// directory: it carries a secret access key, and that directory is the one
+/// location already trusted with those at `0600` (ADR-0135). It is named
+/// per-pid so two concurrent `keyring add`s cannot clobber each other, and
+/// removed on every path.
+///
+/// Returns `Ok(())` when the bucket listed. Unlike the `minio` `HeadBucket`
+/// this replaced, there is no absent-vs-unauthorised distinction to return:
+/// `lsjson` either succeeds or errors, and recovering the difference would
+/// mean matching rclone's stderr, which is issue #63's fragility. rclone's
+/// own message does name `NoSuchBucket` when that is the cause.
+///
+/// Runs on its own short-lived runtime so `keyring::wizard`'s top-level
+/// functions stay synchronous -- the same self-contained shape
+/// `imap_client::verify_login` uses, and necessary because one dispatch
+/// entry point reaches both.
+fn check_bucket_reachable(bucket_config: &BucketConfig) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|err| format!("failed to start async runtime: {err}"))?;
-    runtime.block_on(client::bucket_exists(bucket_config, secret))
+
+    runtime.block_on(async {
+        crate::core::rclone::check_available().await.map_err(|_| {
+            "'rclone' was not found on PATH -- required to verify a bucket-config".to_string()
+        })?;
+
+        let config_path = write_probe_config(bucket_config)?;
+
+        let result = (Lsjson {
+            path: RemoteTarget::bucket_root(&bucket_config.alias).address(),
+            // Deliberately not `missing_ok` (ADR-0140): a bucket rclone
+            // cannot resolve is the whole thing being checked for.
+            missing_ok: false,
+            config_path: Some(config_path.clone()),
+            job: "keyring",
+            ..Default::default()
+        })
+        .run()
+        .await;
+
+        let _ = std::fs::remove_file(&config_path);
+        result.map(|_| ())
+    })
+}
+
+/// Writes the throwaway one-entry config `check_bucket_reachable` probes
+/// against, returning its path.
+///
+/// Split out from the probe so the filesystem half is testable without
+/// invoking `rclone` -- which, with its `--retries 5
+/// --low-level-retries 20` plus `Lsjson`'s own `(3, 2s)`, would turn one
+/// refused connection into minutes of backoff (the test-cost constraint
+/// ADR-0145 recorded).
+fn write_probe_config(bucket_config: &BucketConfig) -> Result<std::path::PathBuf, String> {
+    let config_path = probe_config_path()?;
+    write_probe_config_at(bucket_config, &config_path)?;
+    Ok(config_path)
+}
+
+/// `write_probe_config`'s body with the destination passed in, so a test
+/// can exercise it against a tempdir without touching the process-global
+/// state `rclone_config_path` reads -- ADR-0145's `*_from`/`*_beside`
+/// precedent, and necessary rather than stylistic: `cargo test` runs these
+/// in parallel threads of one process, so two tests mutating
+/// `PIGEON_CONFIG_DIR` race each other.
+fn write_probe_config_at(
+    bucket_config: &BucketConfig,
+    config_path: &std::path::Path,
+) -> Result<(), String> {
+    let mut probe = Store::default();
+    probe.push(Entry::Bucket(bucket_config.clone()));
+    crate::core::rclone::config::write_sandboxed_config(&probe, config_path)
+}
+
+/// Where `write_probe_config` puts that file: beside the generated
+/// `rclone.conf`, suffixed with this process's id so two concurrent
+/// `keyring add`s cannot clobber each other.
+fn probe_config_path() -> Result<std::path::PathBuf, String> {
+    probe_config_path_beside(&crate::core::rclone::config::rclone_config_path()?)
+}
+
+/// `probe_config_path`'s pure half: the probe file's path given where the
+/// generated config lives. Same reason for the split as
+/// `write_probe_config_at`.
+fn probe_config_path_beside(generated: &std::path::Path) -> Result<std::path::PathBuf, String> {
+    let parent = generated
+        .parent()
+        .ok_or("could not determine the config directory")?;
+    Ok(parent.join(format!("rclone-probe-{}.conf", std::process::id())))
 }
 
 /// `pigeon keyring add [email|bucket]`: dispatches on the
@@ -223,10 +314,11 @@ fn add_bucket(alias: Option<String>) -> i32 {
         secret_key: secret_key.clone(),
     };
 
-    match check_bucket_exists(&candidate, &secret_key) {
-        Ok(true) => {}
-        Ok(false) => return fail(format!("bucket '{}' does not exist", candidate.bucket)),
-        Err(err) => return fail(format!("failed to verify bucket: {err}")),
+    if let Err(err) = check_bucket_reachable(&candidate) {
+        return fail(format!(
+            "failed to verify bucket '{}': {err}",
+            candidate.bucket
+        ));
     }
 
     store.push(Entry::Bucket(candidate));
@@ -407,10 +499,11 @@ fn modify_bucket(store: &mut Store, path: &std::path::Path, current: &BucketConf
         secret_key: secret_key.clone(),
     };
 
-    match check_bucket_exists(&candidate, &secret_key) {
-        Ok(true) => {}
-        Ok(false) => return fail(format!("bucket '{}' does not exist", candidate.bucket)),
-        Err(err) => return fail(format!("failed to verify bucket: {err}")),
+    if let Err(err) = check_bucket_reachable(&candidate) {
+        return fail(format!(
+            "failed to verify bucket '{}': {err}",
+            candidate.bucket
+        ));
     }
 
     store.remove(&current.alias);
@@ -498,5 +591,69 @@ fn resolve_existing_alias(store: &Store, alias: Option<String>) -> Result<String
         Some(alias) if store.contains_alias(&alias) => Ok(alias),
         Some(alias) => Err(format!("no entry named '{alias}'")),
         None => store.prompt_select().map(|entry| entry.alias().to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(alias: &str) -> BucketConfig {
+        BucketConfig {
+            alias: alias.to_string(),
+            endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
+            bucket: "my-bucket".to_string(),
+            access_key_id: "AKID".to_string(),
+            secret_key: "shh".to_string(),
+        }
+    }
+
+    /// ADR-0148 §3: the probe config must carry the candidate's own two
+    /// sections and nothing else, so a bucket that is not in the keyring
+    /// yet is still addressable as `alias:`.
+    #[test]
+    fn write_probe_config_writes_only_the_candidate() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rclone-probe-test.conf");
+
+        write_probe_config_at(&candidate("probe-only"), &path).unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.contains("[probe-only.s3]"), "{contents}");
+        // ADR-0140's alias -> bucket indirection, inherited from the real
+        // generator rather than re-emitted here -- which is the whole
+        // reason this reuses `write_sandboxed_config`.
+        assert!(
+            contents.contains("remote = probe-only.s3:my-bucket"),
+            "{contents}"
+        );
+        assert_eq!(
+            contents.matches("type = s3").count(),
+            1,
+            "only the candidate: {contents}"
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "carries a secret key (ADR-0135)");
+        }
+    }
+
+    /// Named per-pid and placed beside the generated config, not in the OS
+    /// temp directory -- it holds a secret access key, and the keyring's own
+    /// directory is the one already trusted with those at 0600.
+    #[test]
+    fn probe_config_path_sits_beside_the_generated_config_and_names_the_pid() {
+        let generated = std::path::Path::new("/etc/pigeon/rclone.conf");
+
+        let probe = probe_config_path_beside(generated).unwrap();
+
+        assert_eq!(probe.parent(), generated.parent());
+        assert_eq!(
+            probe.file_name().unwrap().to_str().unwrap(),
+            format!("rclone-probe-{}.conf", std::process::id())
+        );
     }
 }
