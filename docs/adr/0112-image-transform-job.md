@@ -365,3 +365,22 @@ and replaces the equality check in `manifest::gather_pending` -- a second,
 independent gate that dropped `.jpg` files already staged on local disk --
 with a membership test. The `.jpg` output naming this ADR specifies is
 unchanged.
+
+## Amendment (2026-10-13): one input may now produce several outputs (ADR-0149)
+
+Decision point 5's `compute_destination_name` is a pure function returning
+**one** filename, and Decision point 2's pipeline is built around that: one
+scratch path, one `place_one`, one push, one report row. ADR-0149 adds
+spreadsheet input kinds (`numbers`/`xlsx`/`xls`/`csv` -> `.csv`), where a
+workbook holding several sheets must yield several CSVs. It splits this
+function into a group key (`{stem}-{digest16}`, the hash input byte-for-byte
+unchanged) plus two name builders -- a plain `{group}.csv` for a single output,
+identical to what this ADR specifies, and `{group}-{nn}of{tt}-{slug}.csv` for a
+sheet of a multi-sheet workbook.
+
+Four of this ADR's properties survive deliberately: the destination stays flat
+(so `list_existing_filenames` needs no change), names stay unique by
+construction, `place_one` still hard-errors on a genuine collision, and the job
+still only ever copies -- never deletes -- at the destination. Image, video, and
+audio runs go through the unchanged single-output path and produce
+byte-identical names, so no already-written bucket needs remediation.

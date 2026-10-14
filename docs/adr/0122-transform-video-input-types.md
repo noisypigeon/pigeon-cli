@@ -231,3 +231,17 @@ what suppresses the `--video-quality` prompt this ADR introduced. Its
 one-input-kind-per-run constraint (as restated by ADR-0139) is unaffected;
 `output_extension()`'s `if is_video()` two-way split becomes an exhaustive
 `match` so a future kind cannot silently inherit `jpg`.
+
+## Amendment (2026-10-13): four spreadsheet kinds, and a fourth output extension (ADR-0149)
+
+ADR-0149 adds `numbers`, `xlsx`, `xls`, and `csv` to the `InputFileType` enum
+this ADR extended to video, all outputting `.csv` -- a fourth output extension
+alongside this ADR's `.mp4`, ADR-0112's `.jpg`, and ADR-0142's `.opus`. None is
+a video kind, so `--video-quality` is suppressed for all four by the
+`is_video()` gate this ADR introduced.
+
+The exhaustive `output_extension()` `match` ADR-0142 left behind is what forced
+each new kind to choose its extension explicitly rather than inherit one, which
+is the first time that change paid off. This ADR's one-input-kind-per-run
+constraint (as restated by ADR-0139) is unaffected; what ADR-0149 changes is the
+number of *outputs* per input file, not the number of input kinds per run.

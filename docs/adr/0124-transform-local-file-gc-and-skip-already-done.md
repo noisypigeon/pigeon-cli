@@ -171,3 +171,21 @@ reason that obscured the real one. Every other failure class keeps this
 ADR's behavior unchanged; the classification is `media::
 is_wrong_input_kind_error`, deliberately separate from
 `is_non_retryable_transcode_error`.
+
+## Amendment (2026-10-13): several results per source, and a group-keyed pull filter (ADR-0149)
+
+Both of this ADR's halves generalize for ADR-0149's spreadsheet kinds, where one
+input file produces several outputs.
+
+The **GC** keeps its rule -- delete once durably pushed, retain on failure -- but
+now spans a set: each result is deleted immediately after its own successful
+push, while the local source is deleted only once *every* sheet has pushed. A
+failure on any sheet retains the source for diagnosis, exactly as here.
+
+The **pre-pull skip** keeps the property this ADR's `files_from`/
+`--files-from-raw` mechanism rests on: the filter is still a pure forward
+function of `(source_path, relative_path)` needing no file content, so an
+already-done file is still never downloaded. A workbook's *sheet count* is not
+knowable without opening it, so the filter keys on a group prefix those names
+share and tests the group's completeness against a total embedded in the names,
+rather than testing one name for membership.

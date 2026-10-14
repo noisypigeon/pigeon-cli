@@ -152,3 +152,18 @@ produced a run indistinguishable from success (0 pulled, 0 failed, exit 0),
 which is how ADR-0140's own dropped bucket name stayed invisible through two
 runs. The stderr match itself is unchanged, and as version-fragile as issue
 #63 records.
+
+## Amendment (2026-10-13): "already done" becomes a group question (ADR-0149)
+
+This ADR made the destination listing the sole authority on whether a file is
+already done, replacing the local `.processed` checkpoint, with the test being
+single-name membership in `existing_destination_filenames`. ADR-0149's
+spreadsheet kinds map one input to *several* destination names, so that test
+becomes a group-completeness question: names carry their group's total
+(`-{nn}of{tt}-`), and a group counts as done only when its member count matches
+that total.
+
+The authority itself is unchanged -- still one listing of the destination, still
+no local checkpoint, still nothing that depends on local disk surviving a VM
+replacement. Only the predicate over that listing widens, and a single-output
+kind's predicate is exactly the membership test this ADR specified.
