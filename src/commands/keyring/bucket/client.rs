@@ -2,7 +2,6 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use bytes::Bytes;
 use futures::StreamExt;
 use minio::s3::MinioClient;
 use minio::s3::builders::ObjectContent;
@@ -11,7 +10,6 @@ use minio::s3::error::{Error as S3Error, S3ServerError};
 use minio::s3::http::BaseUrl;
 use minio::s3::minio_error_response::MinioErrorCode;
 use minio::s3::response_traits::HasEtagFromHeaders;
-use minio::s3::segmented_bytes::SegmentedBytes;
 use minio::s3::types::{S3Api, ToStream};
 
 use crate::commands::keyring::bucket::store::BucketConfig;
@@ -43,20 +41,6 @@ pub struct ObjectEntry {
 pub(crate) enum UploadOutcome {
     Uploaded,
     Unchanged,
-}
-
-/// The body to upload (ADR-0089): a plaintext file read straight off disk
-/// and streamed (never fully materialized in memory, no matter its size),
-/// or an already-encrypted in-memory buffer. `Bytes` exists because
-/// ADR-0025's AES-256-GCM-SIV encryption is whole-buffer and only ever
-/// sees email-sized files -- there's no plaintext-path equivalent to stream
-/// for an encrypted upload. Cloning either variant is cheap (a `PathBuf`
-/// copy, or a `Bytes` refcount bump), which is what lets a retry clone the
-/// body instead of re-reading or re-copying it.
-#[derive(Clone)]
-pub(crate) enum UploadBody {
-    Path(PathBuf),
-    Bytes(Bytes),
 }
 
 /// Hashes exactly `part_size` bytes read from `file` (its current position)
@@ -99,17 +83,18 @@ fn expected_etag_for_file(path: &Path) -> Result<(String, u64), String> {
     expected_etag_with_part_size(path, UPLOAD_PART_SIZE)
 }
 
-/// Whether `upload_if_changed` needs `body`'s full local hash before
+/// Whether `upload_if_changed` needs the file's full local hash before
 /// deciding whether to upload, or can skip straight to uploading (ADR-0091
-/// §1). Only a `Path` body's hash is expensive (a full streamed file read,
-/// on top of the read the PUT itself does) -- skipping it when there's no
-/// existing object to compare against (`existing_etag.is_none()`) is this
-/// fix's whole point. A `Bytes` body's hash is already free (`md5::compute`
-/// on a buffer that's in memory anyway for encryption), so it's always
-/// computed regardless -- skipping it would buy nothing and would need its
-/// own "hash unknown" case in the comparison below.
-fn needs_hash(existing_etag: &Option<String>, body: &UploadBody) -> bool {
-    matches!(body, UploadBody::Bytes(_)) || existing_etag.is_some()
+/// §1). Hashing is expensive (a full streamed read, on top of the read the
+/// PUT itself does), so skipping it when there is no existing object to
+/// compare against is this fix's whole point.
+///
+/// This used to take the body too, because an in-memory `Bytes` body's hash
+/// was free and so always worth computing. ADR-0147 removed that variant
+/// along with the encryption that was its only producer, leaving the
+/// existing-ETag check as the sole input.
+fn needs_hash(existing_etag: &Option<String>) -> bool {
+    existing_etag.is_some()
 }
 
 /// Just `path`'s size, via a metadata-only `stat` -- no file open, no read,
@@ -303,21 +288,21 @@ pub async fn download_object_to_file(
         })
 }
 
-/// Uploads `body` to `key` in `bucket_config`'s bucket, but only if it
+/// Uploads the file at `path` to `key` in `bucket_config`'s bucket, but
+/// only if it
 /// differs from what's already there. For a simple (non-multipart) PUT, an
 /// S3 ETag is the hex MD5 digest of the object's bytes; for a multipart
 /// upload, it's `hex(md5(concat(part digests)))-<part count>` -- so an
 /// existing object's ETag (fetched via a HEAD request, `stat_object`, no
-/// download needed) is compared directly against `body`'s locally
-/// recomputed equivalent (`expected_etag_for_file` for a `Path`, a direct
-/// `md5::compute` for an already-in-memory `Bytes`):
+/// download needed) is compared directly against the file's locally
+/// recomputed equivalent (`expected_etag_for_file`):
 /// - no existing object: upload, `Uploaded`.
 /// - existing object, matching hash: skip the PUT, `Unchanged`.
 /// - existing object, different hash: note that the key changed (the bucket's
 ///   versioning means nothing is destroyed, but pigeon says so rather than
 ///   silently overwriting a stable-looking key), then upload, `Uploaded`.
 ///
-/// A `Path` body is streamed the whole way through (ADR-0089): hashing runs
+/// The file is streamed the whole way through (ADR-0089): hashing runs
 /// in `tokio::task::spawn_blocking` (CPU-bound, same ADR-0088 precedent --
 /// shouldn't tie up a runtime worker thread for a multi-GB file), and the
 /// upload itself goes through `put_object_content`, which streams the file
@@ -334,7 +319,7 @@ pub(crate) async fn upload_if_changed(
     bucket_config: &BucketConfig,
     secret_key: &str,
     key: &str,
-    body: UploadBody,
+    path: PathBuf,
 ) -> Result<UploadOutcome, String> {
     let client = build_client(bucket_config, secret_key)?;
 
@@ -360,34 +345,27 @@ pub(crate) async fn upload_if_changed(
         }
     };
 
-    let compute_hash = needs_hash(&existing_etag, &body);
+    let compute_hash = needs_hash(&existing_etag);
 
-    let (local_hash, size): (Option<String>, u64) = match &body {
-        UploadBody::Path(path) => {
-            let path = path.clone();
-            if compute_hash {
-                let (hash, size) =
-                    tokio::task::spawn_blocking(move || expected_etag_for_file(&path))
-                        .await
-                        .map_err(|err| format!("hash task panicked: {err}"))??;
-                (Some(hash), size)
-            } else {
-                let size = tokio::task::spawn_blocking(move || file_size(&path))
-                    .await
-                    .map_err(|err| format!("size task panicked: {err}"))??;
-                (None, size)
-            }
+    let (local_hash, size): (Option<String>, u64) = {
+        let path = path.clone();
+        if compute_hash {
+            let (hash, size) = tokio::task::spawn_blocking(move || expected_etag_for_file(&path))
+                .await
+                .map_err(|err| format!("hash task panicked: {err}"))??;
+            (Some(hash), size)
+        } else {
+            let size = tokio::task::spawn_blocking(move || file_size(&path))
+                .await
+                .map_err(|err| format!("size task panicked: {err}"))??;
+            (None, size)
         }
-        UploadBody::Bytes(bytes) => (
-            Some(format!("{:x}", md5::compute(bytes.as_ref()))),
-            bytes.len() as u64,
-        ),
     };
 
     if let Some(existing) = existing_etag {
-        // `needs_hash` returns true whenever `existing_etag.is_some()`
-        // (regardless of body variant), so `local_hash` is always `Some`
-        // here -- this documents that invariant, not a real failure path.
+        // `needs_hash` returns true whenever `existing_etag.is_some()`, so
+        // `local_hash` is always `Some` here -- this documents that
+        // invariant, not a real failure path.
         let local_hash =
             local_hash.expect("existing_etag.is_some() implies needs_hash(...) was true");
         if existing == local_hash {
@@ -396,35 +374,21 @@ pub(crate) async fn upload_if_changed(
         println!("note: '{key}' changed since last upload, new version created");
     }
 
-    match body {
-        UploadBody::Path(path) => {
-            let content = ObjectContent::from(path.as_path());
-            let builder = client
-                .put_object_content(bucket_config.bucket.as_str(), key, content)
-                .map_err(|err| format!("invalid object key '{key}': {err}"))?;
-            // Only set an explicit part size when the file actually needs
-            // multipart -- see `expected_etag_for_file`'s doc comment for
-            // why passing it unconditionally (including for a zero-byte
-            // file) trips a `minio` 0.4.0 `InvalidPartCount` error.
-            let send_result = if size > UPLOAD_PART_SIZE {
-                builder.part_size(UPLOAD_PART_SIZE).build().send().await
-            } else {
-                builder.build().send().await
-            };
-            send_result
-                .map_err(|err| format!("failed to upload '{key}': {}", format_error(&err)))?;
-        }
-        UploadBody::Bytes(bytes) => {
-            let segmented = SegmentedBytes::from(bytes);
-            client
-                .put_object(bucket_config.bucket.as_str(), key, segmented)
-                .map_err(|err| format!("invalid object key '{key}': {err}"))?
-                .build()
-                .send()
-                .await
-                .map_err(|err| format!("failed to upload '{key}': {}", format_error(&err)))?;
-        }
-    }
+    let content = ObjectContent::from(path.as_path());
+    let builder = client
+        .put_object_content(bucket_config.bucket.as_str(), key, content)
+        .map_err(|err| format!("invalid object key '{key}': {err}"))?;
+    // Only set an explicit part size when the file actually needs
+    // multipart -- see `expected_etag_for_file`'s doc comment for why
+    // passing it unconditionally (including for a zero-byte file) trips a
+    // `minio` 0.4.0 `InvalidPartCount` error.
+    let send_result = if size > UPLOAD_PART_SIZE {
+        builder.part_size(UPLOAD_PART_SIZE).build().send().await
+    } else {
+        builder.build().send().await
+    };
+    send_result.map_err(|err| format!("failed to upload '{key}': {}", format_error(&err)))?;
+
     Ok(UploadOutcome::Uploaded)
 }
 
@@ -442,17 +406,9 @@ mod tests {
     }
 
     #[test]
-    fn needs_hash_skips_path_bodies_when_nothing_to_compare_against() {
-        let path_body = UploadBody::Path(PathBuf::from("/does/not/matter"));
-        assert!(!needs_hash(&None, &path_body));
-        assert!(needs_hash(&Some("etag".to_string()), &path_body));
-    }
-
-    #[test]
-    fn needs_hash_always_true_for_bytes_bodies() {
-        let bytes_body = UploadBody::Bytes(Bytes::from_static(b"x"));
-        assert!(needs_hash(&None, &bytes_body));
-        assert!(needs_hash(&Some("etag".to_string()), &bytes_body));
+    fn needs_hash_only_when_there_is_an_existing_etag_to_compare_against() {
+        assert!(!needs_hash(&None));
+        assert!(needs_hash(&Some("etag".to_string())));
     }
 
     #[test]

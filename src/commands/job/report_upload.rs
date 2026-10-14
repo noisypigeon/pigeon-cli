@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::commands::job::shared_wizard::ReportBucketInput;
-use crate::commands::keyring::bucket::client::{self, UploadBody};
+use crate::commands::keyring::bucket::client;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::store::Store;
 use crate::core::keyring::credentials;
@@ -161,13 +161,8 @@ pub(crate) async fn upload_run_artifacts(
 }
 
 async fn upload_one(bucket_config: &BucketConfig, secret: &str, key: &str, path: &Path) {
-    if let Err(err) = client::upload_if_changed(
-        bucket_config,
-        secret,
-        key,
-        UploadBody::Path(path.to_path_buf()),
-    )
-    .await
+    if let Err(err) =
+        client::upload_if_changed(bucket_config, secret, key, path.to_path_buf()).await
     {
         tracing::warn!(key, error = %err, "failed to upload run artifact");
     }

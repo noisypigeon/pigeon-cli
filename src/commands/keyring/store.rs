@@ -5,7 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::email::identity::Identity;
-use crate::commands::keyring::encryption_key::EncryptionKey;
 use crate::core::keyring::KeyringEntry as _;
 
 /// Both `email::identity`'s and `dataops::store`'s former stores read this
@@ -56,7 +55,6 @@ pub fn keyring_path_override() -> Option<&'static Path> {
 pub enum Entry {
     Email(Identity),
     Bucket(BucketConfig),
-    EncryptionKey(EncryptionKey),
 }
 
 impl crate::core::keyring::KeyringEntry for Entry {
@@ -64,7 +62,6 @@ impl crate::core::keyring::KeyringEntry for Entry {
         match self {
             Entry::Email(identity) => identity.alias(),
             Entry::Bucket(bucket_config) => bucket_config.alias(),
-            Entry::EncryptionKey(key) => key.alias(),
         }
     }
 
@@ -72,7 +69,6 @@ impl crate::core::keyring::KeyringEntry for Entry {
         match self {
             Entry::Email(identity) => identity.kind(),
             Entry::Bucket(bucket_config) => bucket_config.kind(),
-            Entry::EncryptionKey(key) => key.kind(),
         }
     }
 
@@ -80,7 +76,6 @@ impl crate::core::keyring::KeyringEntry for Entry {
         match self {
             Entry::Email(identity) => identity.detail(),
             Entry::Bucket(bucket_config) => bucket_config.detail(),
-            Entry::EncryptionKey(key) => key.detail(),
         }
     }
 }
@@ -93,6 +88,40 @@ impl Entry {
     fn label(&self) -> String {
         format!("[{}] {} - {}", self.kind(), self.alias(), self.detail())
     }
+}
+
+/// The entry kind ADR-0147 removed along with client-side encryption.
+/// Matched against a parse failure's text purely to add remediation, never
+/// to change what is accepted.
+const REMOVED_ENCRYPTION_KEY_KIND: &str = "encryption-key";
+
+/// Formats a `keyring.toml` parse failure, appending remediation when the
+/// cause is a leftover `kind = "encryption-key"` entry (ADR-0147 §2).
+///
+/// `Entry` is internally tagged, and serde rejects an *unknown variant tag*
+/// regardless of `deny_unknown_fields` -- so one stale entry fails
+/// `Store::load`, which every command calls, including the
+/// `pigeon keyring list`/`delete` an operator would reach for to remove it.
+/// Without this hint the raw error names neither the cause nor the fix,
+/// leaving no in-CLI path out.
+///
+/// Deliberately a better *message* rather than a `#[serde(other)]`
+/// catch-all variant: tolerating unknown kinds would self-heal here but
+/// would also silently swallow a genuinely malformed `kind`, reversing the
+/// fail-loudly posture ADR-0135 chose for the file that now holds every
+/// secret in plaintext. Same reasoning as ADR-0145's `load_keyring` guard,
+/// which answered a confusing failure with a clearer error, not tolerance.
+fn parse_error(path: &Path, error: &str) -> String {
+    let base = format!("failed to parse {}: {error}", path.display());
+    if error.contains(REMOVED_ENCRYPTION_KEY_KIND) {
+        return format!(
+            "{base}\n\nADR-0147 removed the '{REMOVED_ENCRYPTION_KEY_KIND}' entry kind along with \
+             client-side encryption. Delete the [[entries]] block with \
+             kind = \"{REMOVED_ENCRYPTION_KEY_KIND}\" from {} to continue.",
+            path.display()
+        );
+    }
+    base
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -153,8 +182,8 @@ impl Store {
             }
             Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
         };
-        let file: StoreFile = toml::from_str(&contents)
-            .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+        let file: StoreFile =
+            toml::from_str(&contents).map_err(|err| parse_error(path, &err.to_string()))?;
         Ok(Store {
             entries: file.entries,
         })
@@ -218,30 +247,21 @@ impl Store {
         self.entries.iter()
     }
 
-    /// Every configured email identity, ignoring the other kinds -- for
-    /// `job::wizard`'s identity resolution.
+    /// Every configured email identity, ignoring the other kind -- for
+    /// `job run email import`'s identity resolution.
     pub fn email_identities(&self) -> impl Iterator<Item = &Identity> {
         self.entries.iter().filter_map(|entry| match entry {
             Entry::Email(identity) => Some(identity),
-            Entry::Bucket(_) | Entry::EncryptionKey(_) => None,
+            Entry::Bucket(_) => None,
         })
     }
 
-    /// Every configured bucket-config, ignoring the other kinds -- for
-    /// `job::email_sync`'s upload-target lookup.
+    /// Every configured bucket-config, ignoring the other kind -- for
+    /// each job's destination and report-bucket lookup.
     pub fn bucket_configs(&self) -> impl Iterator<Item = &BucketConfig> {
         self.entries.iter().filter_map(|entry| match entry {
             Entry::Bucket(bucket_config) => Some(bucket_config),
-            Entry::Email(_) | Entry::EncryptionKey(_) => None,
-        })
-    }
-
-    /// Every configured encryption key, ignoring the other kinds -- for
-    /// `job::email_sync`'s `--encryption-key` resolution.
-    pub fn encryption_keys(&self) -> impl Iterator<Item = &EncryptionKey> {
-        self.entries.iter().filter_map(|entry| match entry {
-            Entry::EncryptionKey(key) => Some(key),
-            Entry::Email(_) | Entry::Bucket(_) => None,
+            Entry::Email(_) => None,
         })
     }
 
@@ -298,33 +318,6 @@ impl Store {
                     .interact()
                     .map_err(|err| format!("failed to read bucket-config selection: {err}"))?;
                 Ok(bucket_configs[selection])
-            }
-        }
-    }
-
-    /// Same as `prompt_select_bucket`, scoped to encryption keys only --
-    /// used by `job::email_sync::wizard::EncryptionKeyInput` when the
-    /// target bucket-config requires one.
-    pub fn prompt_select_encryption_key(&self) -> Result<&EncryptionKey, String> {
-        let keys: Vec<&EncryptionKey> = self.encryption_keys().collect();
-        match keys.as_slice() {
-            [] => Err(
-                "no encryption-keys configured; run 'pigeon keyring add encryption-key' first"
-                    .to_string(),
-            ),
-            [only] => Ok(only),
-            keys => {
-                let labels: Vec<String> = keys
-                    .iter()
-                    .map(|key| format!("{} (created {})", key.alias, key.created_at))
-                    .collect();
-                let selection = Select::with_theme(&ColorfulTheme::default())
-                    .with_prompt("Select an encryption key")
-                    .items(&labels)
-                    .default(0)
-                    .interact()
-                    .map_err(|err| format!("failed to read encryption-key selection: {err}"))?;
-                Ok(keys[selection])
             }
         }
     }
@@ -386,16 +379,7 @@ mod tests {
             endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
             bucket: "my-bucket".to_string(),
             access_key_id: "AKID".to_string(),
-            encryption_key_alias: None,
             secret_key: "s3-secret-key".to_string(),
-        }
-    }
-
-    fn sample_encryption_key(alias: &str) -> EncryptionKey {
-        EncryptionKey {
-            alias: alias.to_string(),
-            created_at: "2026-09-24T00:00:00Z".to_string(),
-            key_hex: "0".repeat(64),
         }
     }
 
@@ -407,17 +391,14 @@ mod tests {
         let mut store = Store::default();
         store.push(Entry::Email(sample_identity("willow")));
         store.push(Entry::Bucket(sample_bucket_config("backup")));
-        store.push(Entry::EncryptionKey(sample_encryption_key("primary")));
         store.save(&path).unwrap();
 
         let loaded = Store::load(&path).unwrap();
-        assert_eq!(loaded.iter().count(), 3);
+        assert_eq!(loaded.iter().count(), 2);
         assert!(loaded.contains_alias("willow"));
         assert!(loaded.contains_alias("backup"));
-        assert!(loaded.contains_alias("primary"));
         assert_eq!(loaded.email_identities().count(), 1);
         assert_eq!(loaded.bucket_configs().count(), 1);
-        assert_eq!(loaded.encryption_keys().count(), 1);
         assert_eq!(
             loaded.email_identities().next().unwrap().secret,
             "app-password"
@@ -426,10 +407,59 @@ mod tests {
             loaded.bucket_configs().next().unwrap().secret_key,
             "s3-secret-key"
         );
-        assert_eq!(
-            loaded.encryption_keys().next().unwrap().key_hex,
-            "0".repeat(64)
+    }
+
+    /// ADR-0147 §2: `Entry` is internally tagged, so serde rejects an
+    /// unknown variant tag outright -- and `Store::load` runs for every
+    /// command, including the `keyring list`/`delete` an operator would
+    /// reach for to remove the offending entry. The error therefore has to
+    /// name both the cause and the fix, or there is no in-CLI path out.
+    #[test]
+    fn load_explains_how_to_remove_a_leftover_encryption_key_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyring.toml");
+        std::fs::write(
+            &path,
+            "[[entries]]\nkind = \"encryption-key\"\nalias = \"primary\"\n\
+             created_at = \"2026-09-24T00:00:00Z\"\nkey_hex = \"0\"\n",
+        )
+        .unwrap();
+
+        let err = Store::load(&path).unwrap_err();
+
+        assert!(err.contains("encryption-key"), "unexpected error: {err}");
+        assert!(err.contains("ADR-0147"), "unexpected error: {err}");
+        assert!(
+            err.contains(&path.display().to_string()),
+            "the error must name the file to edit: {err}"
         );
+        assert!(
+            err.contains("[[entries]]"),
+            "the error must name the block to delete: {err}"
+        );
+    }
+
+    /// A stale `encryption_key_alias` on a *bucket* entry is a different
+    /// story from a stale entry *kind*: with no `deny_unknown_fields`
+    /// anywhere in the crate, serde ignores the unknown field, so this
+    /// needs no migration at all.
+    #[test]
+    fn load_ignores_a_stale_encryption_key_alias_on_a_bucket_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keyring.toml");
+        std::fs::write(
+            &path,
+            "[[entries]]\nkind = \"bucket\"\nalias = \"backup\"\n\
+             endpoint = \"https://example.com\"\nbucket = \"b\"\n\
+             access_key_id = \"AKID\"\nsecret_key = \"shh\"\n\
+             encryption_key_alias = \"primary\"\n",
+        )
+        .unwrap();
+
+        let loaded = Store::load(&path).unwrap();
+
+        assert_eq!(loaded.bucket_configs().count(), 1);
+        assert_eq!(loaded.bucket_configs().next().unwrap().alias, "backup");
     }
 
     #[test]
@@ -470,30 +500,6 @@ port = 993
 
         let mode = std::fs::metadata(&path).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
-    }
-
-    #[test]
-    fn bucket_config_encryption_key_alias_round_trips_through_toml() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("keyring.toml");
-
-        let mut bucket = sample_bucket_config("backup");
-        bucket.encryption_key_alias = Some("primary".to_string());
-
-        let mut store = Store::default();
-        store.push(Entry::Bucket(bucket));
-        store.save(&path).unwrap();
-
-        let loaded = Store::load(&path).unwrap();
-        let loaded_bucket = loaded.bucket_configs().next().unwrap();
-        assert_eq!(
-            loaded_bucket.encryption_key_alias,
-            Some("primary".to_string())
-        );
-        assert_eq!(
-            loaded_bucket.detail(),
-            "https://nyc3.digitaloceanspaces.com (my-bucket), encrypts with 'primary'"
-        );
     }
 
     #[test]
@@ -583,17 +589,6 @@ secret = "app-password"
     }
 
     #[test]
-    fn encryption_keys_ignores_other_kinds() {
-        let mut store = Store::default();
-        store.push(Entry::Email(sample_identity("willow")));
-        store.push(Entry::Bucket(sample_bucket_config("backup")));
-        store.push(Entry::EncryptionKey(sample_encryption_key("primary")));
-
-        let aliases: Vec<&str> = store.encryption_keys().map(|k| k.alias.as_str()).collect();
-        assert_eq!(aliases, vec!["primary"]);
-    }
-
-    #[test]
     fn find_returns_none_for_unknown_alias() {
         let store = Store::default();
         assert!(store.find("nope").is_none());
@@ -674,24 +669,5 @@ secret = "app-password"
         // ADR-0137 (which added it alongside a default-row hint ADR-0138
         // then removed): it remains the only coverage this branch has.
         assert!(store.prompt_select_bucket().is_err());
-    }
-
-    #[test]
-    fn prompt_select_encryption_key_ignores_other_kinds_when_auto_selecting() {
-        let mut store = Store::default();
-        store.push(Entry::Email(sample_identity("willow")));
-        store.push(Entry::Bucket(sample_bucket_config("backup")));
-        store.push(Entry::EncryptionKey(sample_encryption_key("primary")));
-        assert_eq!(
-            store.prompt_select_encryption_key().unwrap().alias,
-            "primary"
-        );
-    }
-
-    #[test]
-    fn prompt_select_encryption_key_errors_when_none_configured() {
-        let mut store = Store::default();
-        store.push(Entry::Email(sample_identity("willow")));
-        assert!(store.prompt_select_encryption_key().is_err());
     }
 }

@@ -3,14 +3,15 @@
 //! written generically up front -- `email_sync::wizard` originated
 //! `UploadTargetInput`; `decrypt_files::wizard` originated `ConfirmInput`.
 //! Each job keeps any wizard input that's genuinely its own (e.g.
-//! `email_sync`'s own `ConcurrencyInput`, which prints a message-count time
-//! estimate no other job has data for).
+//! `email_import`'s `MessagesPerMinuteInput`, which governs a pace no other
+//! job has a concept of).
 //!
 //! Membership here is earned and can be lost: ADR-0131 removed
 //! `SourceBucketInput` outright and returned `EncryptionKeyInput` to
 //! `email_sync::wizard` when `pull_transform`'s deletion left them with zero
 //! and one consumer respectively -- the same un-hoisting ADR-0094 did to
-//! `ConcurrencyInput`. `TransfersInput`/`CheckersInput`/`TpslimitInput`
+//! `ConcurrencyInput`, and ADR-0147 did again to `UploadConcurrencyInput`
+//! once the two email jobs that used it were removed. `TransfersInput`/`CheckersInput`/`TpslimitInput`
 //! arrived the opposite way: originated in `rclone::wizard`, duplicated by
 //! `transform::wizard`, and hoisted here once `deduplicate` needed the
 //! identical prompts as the third consumer (ADR-0136).
@@ -164,8 +165,8 @@ pub(crate) fn default_concurrency() -> usize {
 /// deliberate, modest oversubscription of a partly-I/O-bound pipeline
 /// without allowing a pathological value through -- a warning, not a hard
 /// error, so an existing non-interactive invocation never starts failing
-/// outright (same posture as `UploadConcurrencyInput`'s doc comment,
-/// ADR-0091 §3).
+/// outright (the same posture ADR-0091 §3 took for the upload-phase
+/// concurrency flag ADR-0147 removed).
 const CONCURRENCY_CLAMP_MULTIPLIER: usize = 2;
 
 pub(crate) struct CpuConcurrencyInput {
@@ -206,58 +207,13 @@ impl WizardInput for CpuConcurrencyInput {
     }
 }
 
-/// Flat default for `UploadConcurrencyInput` (ADR-0091 §3) -- deliberately
-/// *not* `default_concurrency()` (core count): the real production run
-/// showed the upload phase bottlenecked by per-file round-trip latency,
-/// not CPU (median 0.17s/file, p99 1.2s, only 8 uploads in flight,
-/// ~30 files/sec on small files) -- a cores-based default would be
-/// actively wrong here, the same reasoning ADR-0090 used to deliberately
-/// leave `sort`/`email-sync`/`email-pull`'s *primary* concurrency alone.
-const UPLOAD_CONCURRENCY_DEFAULT: usize = 16;
-
-/// Resolves the upload phase's own concurrency, independent of whatever
-/// `CpuConcurrencyInput` (or a job's own local `ConcurrencyInput`) resolves
-/// for a job's primary (download/hash/transform/fetch) work (ADR-0091 §3)
-/// -- the upload phase is network-RTT-bound, not CPU-bound, so tying it to
-/// core count or to a flat value tuned for IMAP is wrong in either
-/// direction. Unlike those non-interactive fallbacks (which error,
-/// requiring `--concurrency`), this falls back to
-/// `UPLOAD_CONCURRENCY_DEFAULT` rather than erroring: it's a new flag being
-/// added to commands that already run unattended in scripts/cron today,
-/// and requiring it non-interactively would break every existing
-/// non-interactive invocation that predates this flag.
-pub(crate) struct UploadConcurrencyInput {
-    pub flag: Option<usize>,
-}
-
-impl WizardInput for UploadConcurrencyInput {
-    type Value = usize;
-
-    fn flag_value(&self) -> Option<Result<usize, String>> {
-        self.flag.map(|value| Ok(value.max(1)))
-    }
-
-    fn prompt(&self) -> Result<usize, String> {
-        let value = Input::<usize>::new()
-            .with_prompt("Upload concurrency")
-            .default(UPLOAD_CONCURRENCY_DEFAULT)
-            .interact_text()
-            .map_err(|err| format!("failed to read upload concurrency: {err}"))?;
-        Ok(value.max(1))
-    }
-
-    fn non_interactive_fallback(&self) -> Result<usize, String> {
-        Ok(UPLOAD_CONCURRENCY_DEFAULT)
-    }
-}
-
 /// Flat default for `TransfersInput` (ADR-0108) -- matches ADR-0106's
 /// tuned value, overridable rather than fixed.
 const TRANSFERS_DEFAULT: usize = 8;
 
 /// Resolves rclone's `--transfers` (concurrent file transfers). Falls back
 /// to the flat default rather than erroring non-interactively (ADR-0108,
-/// same `UploadConcurrencyInput` precedent). Originated in `rclone::wizard`
+/// same fall-back-rather-than-error precedent). Originated in `rclone::wizard`
 /// (ADR-0108), duplicated by `transform::wizard` (ADR-0112) as the second
 /// consumer, hoisted here once `deduplicate` needed the identical prompt as
 /// the third (ADR-0136, this codebase's usual "duplicate until the third
@@ -427,21 +383,6 @@ mod tests {
             flag: Some(ceiling),
         };
         assert_eq!(input.flag_value(), Some(Ok(ceiling)));
-    }
-
-    #[test]
-    fn upload_concurrency_input_flag_value_overrides_the_default() {
-        let input = UploadConcurrencyInput { flag: Some(32) };
-        assert_eq!(input.flag_value(), Some(Ok(32)));
-    }
-
-    #[test]
-    fn upload_concurrency_input_falls_back_to_a_default_when_not_interactive() {
-        let input = UploadConcurrencyInput { flag: None };
-        assert_eq!(
-            input.non_interactive_fallback(),
-            Ok(UPLOAD_CONCURRENCY_DEFAULT)
-        );
     }
 
     #[test]

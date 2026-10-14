@@ -813,7 +813,6 @@ mod tests {
             endpoint: "http://127.0.0.1:1".to_string(),
             bucket: "unused".to_string(),
             access_key_id: "unused".to_string(),
-            encryption_key_alias: None,
             secret_key: "unused".to_string(),
         }
     }
