@@ -107,7 +107,7 @@ When an ADR's `## Out of scope` section has a genuinely-deferred item (not a per
 ## Commands
 
 - `mise run build` — build the `pigeon` binary.
-- `mise run pigeon -- <args>` — run the `pigeon` binary, e.g. `mise run pigeon -- email list`.
+- `mise run pigeon -- <args>` — run the `pigeon` binary, e.g. `mise run pigeon -- keyring list`.
 - `mise run test` — run the test suite.
 - `mise run fmt` / `mise run fmt-check` — format / check formatting.
 - `mise run lint` — clippy, warnings denied.

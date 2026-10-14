@@ -55,9 +55,11 @@ label_meta() {
     # it, so a rename is a GitHub-side migration, not a file edit (ADR-0147).
     area:email-sync) echo "1d76db|IMAP import pipeline (job run email import)" ;;
     area:dataops) echo "0e8a16|S3-compatible remote storage (bucket configs, upload)" ;;
-    area:keyring) echo "fbca04|Identities, bucket configs, and encryption keys in the OS keychain" ;;
+    area:keyring) echo "fbca04|Identities and bucket configs in keyring.toml" ;;
     area:job-orchestration) echo "d93f0b|pigeon job wizard, concurrency, and phase orchestration" ;;
-    area:security) echo "b60205|Encryption, key management, and related crypto" ;;
+    # ADR-0147 removed client-side encryption and ADR-0148 the last S3
+    # client, so this is now about secret handling rather than crypto.
+    area:security) echo "b60205|Secret handling, credential scope, and access control" ;;
     area:tooling) echo "c5def5|Dev-cycle, CI, release, and publishing tooling" ;;
     *) echo "ededed|" ;;
   esac
