@@ -18,7 +18,21 @@ use crate::core::data::collect_files;
 /// host OS -- this is also half of `placement`'s destination-name hash input
 /// (ADR-0112 Decision §5).
 pub(crate) struct PendingFile {
-    pub relative_path: String,
+    /// The file's key at `--source`, relative to the source prefix.
+    ///
+    /// This is the file's **identity**, not its location: it is half of
+    /// `placement::group_key`'s hash input, the ADR-0130 reconciliation
+    /// key, and what the report and tracing fields name. `absolute_path`
+    /// is the location, and ADR-0152 is where the two stop coinciding --
+    /// a source key that collides with another under case-folding is
+    /// pulled to a disambiguated local path, so its bytes live somewhere
+    /// its key does not describe.
+    ///
+    /// Named `relative_path` until ADR-0152, which was accurate while the
+    /// two were always the same string and actively misleading once they
+    /// were not.
+    pub source_key: String,
+    /// Where this file's bytes actually are on local disk.
     pub absolute_path: PathBuf,
 }
 
@@ -75,7 +89,7 @@ pub(crate) fn gather_pending(
             continue;
         }
         pending.push(PendingFile {
-            relative_path,
+            source_key: relative_path,
             absolute_path,
         });
     }
@@ -98,7 +112,7 @@ mod tests {
 
         let pending = gather_pending(&source_dir, InputFileType::Png).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].relative_path, "a.png");
+        assert_eq!(pending[0].source_key, "a.png");
     }
 
     #[test]
@@ -110,7 +124,7 @@ mod tests {
 
         let pending = gather_pending(&source_dir, InputFileType::Heic).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].relative_path, "screenshots/img.heic");
+        assert_eq!(pending[0].source_key, "screenshots/img.heic");
     }
 
     /// ADR-0139's second gate: a `.jpg` staged on local disk under a
@@ -128,7 +142,7 @@ mod tests {
         fs::write(source_dir.join("stray.png"), b"a different format").unwrap();
 
         let pending = gather_pending(&source_dir, InputFileType::Jpeg).unwrap();
-        let mut found: Vec<String> = pending.into_iter().map(|file| file.relative_path).collect();
+        let mut found: Vec<String> = pending.into_iter().map(|file| file.source_key).collect();
         found.sort();
         assert_eq!(found, vec!["a.jpg", "b.jpeg", "c.JPG"]);
     }
@@ -143,7 +157,7 @@ mod tests {
 
         let pending = gather_pending(&source_dir, InputFileType::Mp4).unwrap();
         assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].relative_path, "a.mp4");
+        assert_eq!(pending[0].source_key, "a.mp4");
     }
 
     #[test]

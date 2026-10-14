@@ -240,6 +240,16 @@ the user for the terminal output instead.
   carries `case_colliding_keys` and `rclone_duplicate_notices` either way;
   the latter counts rclone's own `notice`-level `Duplicate object found in
   source` lines -- the signal ADR-0144 traced but nothing read.
+
+  **Since ADR-0152 expect both to be quiet.** Case-colliding keys are now
+  pulled individually, so the bulk pull sees no duplicate
+  (`rclone_duplicate_notices` should be `0`) and a collision no longer
+  produces an undelivered file. Look instead for
+  `"transform: case-variant pull complete"` with `pulled`/`failed` counts,
+  and for the `"source keys differ only by letter case…"` line, which is now
+  **INFO** rather than WARN -- it describes what was done, not data about to
+  be lost. A non-zero `failed` there, or a `Pull`-stage failure whose detail
+  names a failed individual pull, is the real signal.
 - `deduplicate`: `download`, `archive` (zip expansion), `hash` (SHA-256
   content hashing), `place` (also `upload`). The fetch+hash phase is
   CPU-bound (ADR-0088) -- a slow `deduplicate` run with normal-looking

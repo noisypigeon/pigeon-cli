@@ -291,3 +291,30 @@ convention for amending a merged ADR without rewriting it.
 - Manual: rerun the motivating job against its existing `--local-output` to
   push the 275 retained files (all 275 `source/` and `result/` copies are
   intact, so no re-pull), under `caffeinate -is`.
+
+## Amendment (2026-10-14): both case variants are now pulled (ADR-0152)
+
+This ADR deferred the fix to [#83](https://github.com/noisypigeon/pigeon-cli/issues/83),
+reasoning that pulling both members of a colliding pair needed *"the
+local-path layout changes ADR-0124's GC and the initial `source/` scan both
+depend on."* ADR-0152 finds that the layout change is not needed, because
+`PendingFile` already separated identity (`relative_path`, this ADR's
+reconciliation key and `group_key`'s hash input) from location
+(`absolute_path`) -- nothing derived one from the other, so a colliding key
+can be pulled somewhere else and keep its key. The coupling lived in two
+lines.
+
+Two things this ADR introduced are therefore replaced. Its pre-pull warning
+said *"rclone will deliver at most one of them"*, which stops being true: it
+becomes an INFO stating that each key is pulled individually to its own path.
+And `undelivered_detail`'s collision arm -- correctly narrower than the
+generic one, which this ADR rightly called a false statement for this class --
+now describes a **failed per-key pull** and carries rclone's actual error,
+since that is the only way a colliding key can go undelivered.
+
+The detection itself (`case_insensitive_collisions`, every member of every
+colliding group, named in the log before the pull) is what made the fix
+cheap, and is unchanged. So is this ADR's verified observation that
+`compute_destination_name` hashes case-sensitively, so the variants never
+collide at the destination -- a property it proved and ADR-0152 finally
+exercises.

@@ -257,3 +257,19 @@ named before the pull starts, and moves the detail into a pure
 pull-phase `tracing::info!` line this ADR added gains a
 `case_colliding_keys` count. The reconciliation mechanism itself is
 unchanged.
+
+## Amendment (2026-10-14): a case collision no longer produces an undelivered file (ADR-0152)
+
+This ADR's pull reconciliation -- diffing the intended pull set against the
+dispatched set -- is unchanged and still correct. What changes is that one of
+its two known causes goes away: ADR-0152 pulls every case-colliding key
+individually, so such a key is no longer dropped by the bulk pull and no
+longer shows up as a `Pull` failure.
+
+The practical effect is that this ADR's `rclone_errors` vs.
+`undelivered_files` cross-check should go quiet for that class, and ADR-0151
+§6's "fully accounted for by case-colliding source keys" wording becomes a
+fallback rather than the common case. A colliding key can still fail -- its
+own `copyto` can fail like any other -- and then it is reported with rclone's
+actual error rather than with prose about duplicate handling that no longer
+applies.
