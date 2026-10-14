@@ -1,15 +1,16 @@
-/// Behavior shared by every job type this CLI can run. One implementor
-/// exists today: `commands::job::email_sync::EmailSyncJob`, introduced per
-/// explicit direction, understood as a consistency/extensibility choice
-/// rather than a response to a second job type actually existing -- ADR-0021
-/// deliberately scoped that out; ADR-0023 Consequences names this cost
-/// plainly. `commands::job::decrypt_files::DecryptFilesJob` (ADR-0028) was a
-/// second implementor for a time; ADR-0134 removed it.
+/// Behavior shared by every job type this CLI can run. Introduced per
+/// explicit direction as a consistency/extensibility choice rather than a
+/// response to a second job type actually existing (ADR-0021 deliberately
+/// scoped that out; ADR-0023's Consequences names the cost plainly) -- the
+/// genericity is now backed by every job type, each of which implements it.
+/// Deliberately count-free: the implementor list has been rewritten by
+/// ADR-0028, ADR-0134, and ADR-0147 in turn, so naming a number here only
+/// guarantees it goes stale again.
 ///
 /// `gather`/`run` use native async fn in traits (stable since Rust 1.75,
 /// no `async-trait` dependency needed) -- safe here because `Job` is only
-/// ever used as a concrete type parameter (`EmailSyncJob`), never boxed as
-/// `dyn Job`, so AFIT's dyn-compatibility limitation never applies.
+/// ever used as a concrete type parameter, never boxed as `dyn Job`, so
+/// AFIT's dyn-compatibility limitation never applies.
 pub(crate) trait Job {
     /// Whatever `gather` discovers, needed by `run` to actually do the
     /// work -- kept as an associated type rather than folded into `Self`

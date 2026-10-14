@@ -653,7 +653,6 @@ mod tests {
                 bucket: "my-bucket".to_string(),
                 access_key_id: "AKID".to_string(),
                 secret_key: "s3-secret-key".to_string(),
-                encryption_key_alias: None,
             },
         ));
         store

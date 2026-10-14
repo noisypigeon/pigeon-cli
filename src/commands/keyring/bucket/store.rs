@@ -19,11 +19,6 @@ pub struct BucketConfig {
     /// `crate::core::keyring::credentials::resolve_secret` for the one
     /// remaining override (ADR-0087's `PIGEON_SECRET_<ALIAS>`).
     pub secret_key: String,
-    /// Alias of the encryption key this bucket encrypts with by default
-    /// (ADR-0027). `None` means no default -- every job run gets asked
-    /// explicitly with no bucket-level nudge either way.
-    #[serde(default)]
-    pub encryption_key_alias: Option<String>,
 }
 
 impl crate::core::keyring::KeyringEntry for BucketConfig {
@@ -34,12 +29,6 @@ impl crate::core::keyring::KeyringEntry for BucketConfig {
         "bucket"
     }
     fn detail(&self) -> String {
-        match &self.encryption_key_alias {
-            Some(alias) => format!(
-                "{} ({}), encrypts with '{alias}'",
-                self.endpoint, self.bucket
-            ),
-            None => format!("{} ({})", self.endpoint, self.bucket),
-        }
+        format!("{} ({})", self.endpoint, self.bucket)
     }
 }

@@ -17,8 +17,8 @@ use indicatif::MultiProgress;
 use tracing::Instrument;
 
 use crate::commands::job::archive;
-use crate::commands::job::email_sync::sink;
 use crate::commands::job::local;
+use crate::commands::job::progress::new_progress_bar;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::core::data::{ContentIndex, is_apple_double_basename};
 use crate::core::rclone::RcloneCommand as _;
@@ -406,7 +406,7 @@ pub(crate) async fn run_deduplicate_job(
     let total = tasks.len() as u64;
     let _ = multi_progress.println(format!("Downloading and processing {total} object(s)..."));
     tracing::info!(total, "deduplicate: download/expand/hash phase starting");
-    let bar = sink::new_progress_bar("deduplicate".to_string(), total, &multi_progress);
+    let bar = new_progress_bar("deduplicate".to_string(), total, &multi_progress);
 
     let queue: Arc<Mutex<VecDeque<QueueItem>>> = Arc::new(Mutex::new(
         tasks
@@ -813,7 +813,6 @@ mod tests {
             endpoint: "http://127.0.0.1:1".to_string(),
             bucket: "unused".to_string(),
             access_key_id: "unused".to_string(),
-            encryption_key_alias: None,
             secret_key: "unused".to_string(),
         }
     }
@@ -924,7 +923,8 @@ mod tests {
     }
 
     /// Mirrors the `CapturedEvents`/`CaptureLayer` pattern already
-    /// established in `email_sync/transform.rs`'s test module (ADR-0080);
+    /// established in the since-removed `email_sync/transform.rs`'s test
+    /// module (ADR-0080);
     /// duplicated here per this codebase's "duplicate until the third
     /// consumer" precedent.
     #[derive(Clone, Default)]

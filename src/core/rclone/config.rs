@@ -241,7 +241,6 @@ mod tests {
             endpoint: "https://nyc3.digitaloceanspaces.com".to_string(),
             bucket: "my-bucket".to_string(),
             access_key_id: "AKID".to_string(),
-            encryption_key_alias: None,
             secret_key: "shh".to_string(),
         }
     }

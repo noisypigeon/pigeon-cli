@@ -10,7 +10,7 @@ use crate::commands::keyring::email::provider::Provider;
 /// field fails to parse loudly rather than silently loading an empty
 /// secret. Metadata persistence itself lives in
 /// `crate::commands::keyring::store` (ADR-0022) -- this struct is kept here
-/// since `commands::job::email_sync` is its main consumer.
+/// since `commands::job::email_import` is its main consumer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
     pub alias: String,
@@ -21,8 +21,8 @@ pub struct Identity {
     /// IMAP app/bridge password. See `crate::core::keyring::credentials::resolve_secret`
     /// for the one remaining override (ADR-0087's `PIGEON_SECRET_<ALIAS>`).
     pub secret: String,
-    /// Caps how many simultaneous IMAP connections `job run email-sync`
-    /// (`commands::job::email_sync::worker`) will open to this identity,
+    /// Caps how many simultaneous IMAP connections `job run email import`
+    /// (`commands::job::email_import::worker`) will open to this identity,
     /// overriding that job's `--max-connections-per-identity` default for
     /// this identity only (ADR-0080). `None` (the default for every
     /// existing `keyring.toml` entry, via `#[serde(default)]`) means "use

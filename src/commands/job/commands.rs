@@ -1,7 +1,7 @@
 use crate::commands::job::cli::{
     EmailAction, EmailArgs, JobCommands, JobType, RcloneAction, RcloneArgs,
 };
-use crate::commands::job::{deduplicate, email_import, email_pull, email_sync, rclone, transform};
+use crate::commands::job::{deduplicate, email_import, rclone, transform};
 use crate::core::observability::Observable as _;
 
 pub fn dispatch(command: JobCommands) -> i32 {
@@ -10,52 +10,6 @@ pub fn dispatch(command: JobCommands) -> i32 {
             let name = run_args.job_type.command_name();
             let job_name = run_args.job_type.job_name();
             crate::observability::run_instrumented(name, move || match run_args.job_type {
-                JobType::EmailSync {
-                    identities,
-                    local_output,
-                    remote_output,
-                    encryption_key,
-                    concurrency,
-                    upload_concurrency,
-                    max_connections_per_identity,
-                    upload_only,
-                    report_bucket,
-                    non_interactive,
-                } => email_sync::wizard::dispatch(
-                    identities,
-                    local_output,
-                    remote_output,
-                    encryption_key,
-                    concurrency,
-                    upload_concurrency,
-                    max_connections_per_identity,
-                    upload_only,
-                    report_bucket,
-                    job_name,
-                    non_interactive,
-                ),
-                JobType::EmailPull {
-                    identities,
-                    local_output,
-                    remote_output,
-                    concurrency,
-                    upload_concurrency,
-                    max_connections_per_identity,
-                    upload_only,
-                    report_bucket,
-                    non_interactive,
-                } => email_pull::wizard::dispatch(
-                    identities,
-                    local_output,
-                    remote_output,
-                    concurrency,
-                    upload_concurrency,
-                    max_connections_per_identity,
-                    upload_only,
-                    report_bucket,
-                    job_name,
-                    non_interactive,
-                ),
                 JobType::Email(EmailArgs { action }) => match action {
                     EmailAction::Import {
                         identities,

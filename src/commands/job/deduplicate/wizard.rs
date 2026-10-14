@@ -27,8 +27,8 @@ use super::worker;
 /// (ADR-0131) -- per this codebase's "duplicate until the third consumer"
 /// precedent (ADR-0082's own Out-of-scope section), one consumer never
 /// justified generalizing a shared type. Shaped after
-/// `email_sync::wizard::IdentitiesInput`, the
-/// closest existing "mandatory, no-safe-default, multi-value, alias-
+/// the since-removed `email_sync::wizard::IdentitiesInput`, at the time
+/// the closest existing "mandatory, no-safe-default, multi-value, alias-
 /// resolved" wizard input.
 struct SourceBucketsInput<'a> {
     flag: Vec<String>,

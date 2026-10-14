@@ -18,7 +18,6 @@ use indicatif::MultiProgress;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::Instrument;
 
-use crate::commands::job::email_sync::sink;
 use crate::commands::job::local;
 use crate::commands::keyring::email::identity;
 use crate::commands::keyring::email::imap_client::{self, ImapSession};
@@ -26,6 +25,7 @@ use crate::core::retry::retry_with_backoff;
 
 use super::gate::{GateDecision, RecoveryGate, is_server_overloaded_error};
 use super::manifest::{self, Batch, CheckpointEntry};
+use super::sink;
 use super::{ImportContext, ImportJob, PendingMailbox, attach, push};
 
 const JOB: &str = "email-import";

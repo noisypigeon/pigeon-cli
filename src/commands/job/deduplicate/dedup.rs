@@ -11,22 +11,12 @@ use indicatif::MultiProgress;
 
 use super::manifest::after_zip_separator;
 use crate::commands::job::archive;
-use crate::commands::job::email_sync::sink;
-use crate::core::data::{ContentIndex, Dedup, sanitize_filename, unique_path};
+use crate::commands::job::progress::new_progress_bar;
+use crate::core::data::{ContentIndex, sanitize_filename, unique_path};
 
 pub(crate) const CONTENT_HASHES_FILE: &str = ".content-hashes";
 
 pub(crate) struct DeduplicateDedup(pub(crate) ContentIndex);
-
-impl Dedup for DeduplicateDedup {
-    fn check(&self, hash: &str) -> Option<&str> {
-        self.0.check(hash)
-    }
-
-    fn commit(&mut self, hash: &str, relative_path: &str) -> Result<(), String> {
-        self.0.commit(hash, relative_path)
-    }
-}
 
 /// One file finished the concurrent download/expand/hash pipeline,
 /// awaiting placement -- `scratch_path` points at its bytes sitting outside
@@ -105,7 +95,7 @@ pub(crate) fn place_and_report(
             .then_with(|| a.original_key.cmp(&b.original_key))
     });
 
-    let bar = sink::new_progress_bar("place".to_string(), files.len() as u64, multi_progress);
+    let bar = new_progress_bar("place".to_string(), files.len() as u64, multi_progress);
     let mut summary = PlacementSummary::default();
     let mut records = Vec::new();
     let mut finished_keys = Vec::with_capacity(files.len());
@@ -279,7 +269,13 @@ mod tests {
             vec![("bucket-a".to_string(), "docs/report.pdf".to_string())]
         );
         assert!(result_dir.path().join("pdf/report.pdf").exists());
-        assert_eq!(dedup.check("hash-a"), Some("pdf/report.pdf"));
+        assert_eq!(
+            dedup
+                .0
+                .check_with_original_key_and_bucket("hash-a")
+                .map(|(relative_path, _, _)| relative_path),
+            Some("pdf/report.pdf")
+        );
     }
 
     #[test]

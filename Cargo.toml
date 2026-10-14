@@ -24,7 +24,6 @@ name = "cli"
 path = "tests/cli.rs"
 
 [dependencies]
-aes-gcm-siv = "0.11"
 async-imap = { version = "0.11.3", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = { version = "0.6.0", default-features = false, features = ["runtime-tokio"] }
 bytes = "1.12.1"
@@ -33,8 +32,6 @@ dialoguer = "0.12.0"
 directories = "6.0.0"
 futures = "0.3.34"
 hex = "0.4"
-hkdf = "0.12"
-hmac = "0.12"
 htmd = "0.5.5"
 indicatif = "0.18.6"
 mail-parser = "0.11.9"

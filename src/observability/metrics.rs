@@ -58,10 +58,9 @@ pub(crate) const NO_BUCKET: &str = "n/a";
 /// each job's existing `FailureBreakdown` field names (e.g. deduplicate's
 /// "download"/"hash"/"place"); `outcome` matches that phase's real semantics
 /// rather than a forced success/failure binary (e.g. transform's
-/// transcode step uses "transcoded"/"copied_through", email_pull's
-/// attachment step
-/// uses "extracted"/"extraction_failed" since that still counts as synced
-/// in the job's own model). Supersedes ADR-0092's `record_job_summary`,
+/// transcode step uses "transcoded"/"copied_through", and email-import's
+/// attachment step uses "ok"/"failed" for an extraction that does not stop
+/// the message itself being delivered). Supersedes ADR-0092's `record_job_summary`,
 /// which only ever reported once at the very end of a run -- a dashboard
 /// built on that never showed anything mid-run. A job's running totals are
 /// `sum by (pigeon_job, outcome) (pigeon_job_phase_total{pigeon_job="..."})`.
@@ -77,8 +76,8 @@ pub(crate) fn record_phase(
 }
 
 /// Same as `record_phase`, but for a site that already knows it's
-/// reporting for several items at once (e.g. email_sync/email_pull's
-/// connect/examine/batch failures, each counted per UID in the batch
+/// reporting for several items at once (e.g. email-import's
+/// connect/examine/fetch failures, each counted per UID in the batch
 /// rather than per individual item) -- avoids looping just to call
 /// `record_phase` once per UID.
 pub(crate) fn record_phase_count(

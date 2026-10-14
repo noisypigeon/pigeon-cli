@@ -324,224 +324,6 @@ fn job_help_lists_run_subcommand() {
 }
 
 #[test]
-fn job_run_help_lists_email_sync() {
-    pigeon()
-        .args(["job", "run", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("email-sync"));
-}
-
-#[test]
-fn job_run_email_sync_help_shows_identities_and_concurrency_flags() {
-    pigeon()
-        .args(["job", "run", "email-sync", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--identities"))
-        .stdout(predicate::str::contains("--local-output"))
-        .stdout(predicate::str::contains("--remote-output"))
-        .stdout(predicate::str::contains("--concurrency"))
-        .stdout(predicate::str::contains("--upload-concurrency"))
-        .stdout(predicate::str::contains("--max-connections-per-identity"))
-        .stdout(predicate::str::contains("--upload-only"))
-        .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--non-interactive"));
-}
-
-#[test]
-fn job_run_email_sync_upload_only_without_a_completed_run_fails_fast() {
-    let config_dir = TempDir::new().unwrap();
-    let local_output = TempDir::new().unwrap();
-    write_identity(&config_dir, "first-last", "first.last@example.com");
-
-    // The identity resolves fine (it's configured), but its local output
-    // tree was never populated: the per-identity preflight check
-    // (ADR-0090) must skip it and, with no other identity selected, fail
-    // the whole command -- before ever touching IMAP credentials or
-    // --remote-output.
-    pigeon_in(&config_dir)
-        .args([
-            "job",
-            "run",
-            "email-sync",
-            "--upload-only",
-            "--identities",
-            "first-last",
-            "--local-output",
-            local_output.path().to_str().unwrap(),
-            "--non-interactive",
-        ])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "no completed local run found for any selected identity",
-        ));
-}
-
-#[test]
-fn job_run_email_sync_without_identities_fails_fast_non_interactively() {
-    let config_dir = TempDir::new().unwrap();
-    let local_output = TempDir::new().unwrap();
-
-    pigeon_in(&config_dir)
-        .args([
-            "job",
-            "run",
-            "email-sync",
-            "--local-output",
-            local_output.path().to_str().unwrap(),
-            "--concurrency",
-            "4",
-            "--non-interactive",
-        ])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "--identities is required when not running interactively",
-        ));
-}
-
-#[test]
-fn job_run_email_sync_with_unknown_identity_fails_fast() {
-    let config_dir = TempDir::new().unwrap();
-    let local_output = TempDir::new().unwrap();
-    write_identity(&config_dir, "first-last", "first.last@example.com");
-
-    pigeon_in(&config_dir)
-        .args([
-            "job",
-            "run",
-            "email-sync",
-            "--identities",
-            "no-such-alias",
-            "--local-output",
-            local_output.path().to_str().unwrap(),
-            "--concurrency",
-            "4",
-            "--non-interactive",
-        ])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "no identity with alias 'no-such-alias'",
-        ));
-}
-
-#[test]
-fn job_run_help_lists_email_pull() {
-    pigeon()
-        .args(["job", "run", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("email-pull"));
-}
-
-#[test]
-fn job_run_email_pull_help_shows_identities_and_concurrency_flags() {
-    pigeon()
-        .args(["job", "run", "email-pull", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--identities"))
-        .stdout(predicate::str::contains("--local-output"))
-        .stdout(predicate::str::contains("--remote-output"))
-        .stdout(predicate::str::contains("--concurrency"))
-        .stdout(predicate::str::contains("--upload-concurrency"))
-        .stdout(predicate::str::contains("--max-connections-per-identity"))
-        .stdout(predicate::str::contains("--upload-only"))
-        .stdout(predicate::str::contains("--report-bucket"))
-        .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0081 §4: email-pull never offers encryption, at all.
-        .stdout(predicate::str::contains("--encryption-key").not());
-}
-
-#[test]
-fn job_run_email_pull_upload_only_without_a_completed_run_fails_fast() {
-    let config_dir = TempDir::new().unwrap();
-    let local_output = TempDir::new().unwrap();
-    write_identity(&config_dir, "first-last", "first.last@example.com");
-
-    // The identity resolves fine (it's configured), but its local output
-    // tree was never populated: the per-identity preflight check
-    // (ADR-0090) must skip it and, with no other identity selected, fail
-    // the whole command -- before ever touching IMAP credentials or
-    // --remote-output.
-    pigeon_in(&config_dir)
-        .args([
-            "job",
-            "run",
-            "email-pull",
-            "--upload-only",
-            "--identities",
-            "first-last",
-            "--local-output",
-            local_output.path().to_str().unwrap(),
-            "--non-interactive",
-        ])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "no completed local run found for any selected identity",
-        ));
-}
-
-#[test]
-fn job_run_email_pull_without_identities_fails_fast_non_interactively() {
-    let config_dir = TempDir::new().unwrap();
-    let local_output = TempDir::new().unwrap();
-
-    pigeon_in(&config_dir)
-        .args([
-            "job",
-            "run",
-            "email-pull",
-            "--local-output",
-            local_output.path().to_str().unwrap(),
-            "--concurrency",
-            "4",
-            "--non-interactive",
-        ])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "--identities is required when not running interactively",
-        ));
-}
-
-#[test]
-fn job_run_email_pull_with_unknown_identity_fails_fast() {
-    let config_dir = TempDir::new().unwrap();
-    let local_output = TempDir::new().unwrap();
-    write_identity(&config_dir, "first-last", "first.last@example.com");
-
-    pigeon_in(&config_dir)
-        .args([
-            "job",
-            "run",
-            "email-pull",
-            "--identities",
-            "no-such-alias",
-            "--local-output",
-            local_output.path().to_str().unwrap(),
-            "--concurrency",
-            "4",
-            "--non-interactive",
-        ])
-        .assert()
-        .failure()
-        .code(1)
-        .stderr(predicate::str::contains(
-            "no identity with alias 'no-such-alias'",
-        ));
-}
-
-#[test]
 fn job_run_help_lists_deduplicate() {
     pigeon()
         .args(["job", "run", "--help"])
@@ -1389,12 +1171,31 @@ fn deduplicate_generates_the_sandboxed_rclone_config_beside_the_keyring() {
 // backoff (the test-cost constraint ADR-0145 recorded).
 
 #[test]
-fn job_run_help_lists_the_email_group() {
+fn job_run_help_lists_the_email_group_and_not_the_removed_jobs() {
+    // Until ADR-0147 this asserted only that the listing contains
+    // "email", which "email-sync" already satisfied -- so it could not
+    // actually distinguish the `email` group from its flat siblings. Both
+    // halves are load-bearing now.
     pigeon()
         .args(["job", "run", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("email"));
+        .stdout(predicate::str::contains("email"))
+        .stdout(predicate::str::contains("email-sync").not())
+        .stdout(predicate::str::contains("email-pull").not());
+}
+
+/// Both removed job types must fail as unrecognised subcommands, not
+/// merely be absent from the listing (ADR-0147).
+#[test]
+fn job_run_rejects_the_removed_email_jobs() {
+    for removed in ["email-sync", "email-pull"] {
+        pigeon()
+            .args(["job", "run", removed, "--help"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unrecognized subcommand"));
+    }
 }
 
 #[test]
@@ -1424,7 +1225,8 @@ fn job_run_email_import_help_shows_its_full_flag_set() {
 }
 
 /// Pins ADR-0146 §1's scoping decisions, the way ADR-0081's own
-/// `--encryption-key` test pins email-pull's. Each absence is deliberate
+/// `--encryption-key` test pinned the since-removed `email-pull`'s. Each
+/// absence is deliberate
 /// and each would be easy to add back by accident:
 /// `--encryption-key` is permanently out of scope; `--upload-only` is
 /// meaningless when delivery is inline; `--concurrency` would imply it
@@ -1669,4 +1471,64 @@ fn job_run_email_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("was not found on PATH"));
+}
+
+/// ADR-0147 §2: a leftover `kind = "encryption-key"` entry must fail with a
+/// message naming both the file and the block to delete. Asserted at the
+/// CLI level and not only in `Store::load`'s own unit tests because the
+/// failure path locks the operator out of *every* keyring command --
+/// including the `list`/`delete` they would otherwise use to clean it up --
+/// so what reaches stderr is the only remediation they get.
+#[test]
+fn keyring_list_explains_how_to_remove_a_leftover_encryption_key_entry() {
+    let config_dir = TempDir::new().unwrap();
+    append_keyring_entry(
+        &config_dir,
+        "[[entries]]\nkind = \"encryption-key\"\nalias = \"primary\"\n\
+         created_at = \"2026-09-24T00:00:00Z\"\nkey_hex = \"0\"\n",
+    );
+
+    pigeon_in(&config_dir)
+        .args(["keyring", "list"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("encryption-key"))
+        .stderr(predicate::str::contains("ADR-0147"))
+        .stderr(predicate::str::contains("[[entries]]"))
+        .stderr(predicate::str::contains("keyring.toml"));
+}
+
+/// The companion to the above: a stale `encryption_key_alias` on a *bucket*
+/// entry is a different compatibility story. Nothing in the crate uses
+/// `deny_unknown_fields`, so serde ignores it and no migration is needed.
+#[test]
+fn keyring_list_ignores_a_stale_encryption_key_alias_on_a_bucket_entry() {
+    let config_dir = TempDir::new().unwrap();
+    append_keyring_entry(
+        &config_dir,
+        "[[entries]]\nkind = \"bucket\"\nalias = \"backup\"\n\
+         endpoint = \"https://nyc3.digitaloceanspaces.com\"\nbucket = \"my-bucket\"\n\
+         access_key_id = \"AKID\"\nsecret_key = \"fake-secret\"\n\
+         encryption_key_alias = \"primary\"\n",
+    );
+
+    pigeon_in(&config_dir)
+        .args(["keyring", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("backup"));
+}
+
+/// ADR-0147 removed the `encryption-key` kind, so `keyring add` offers
+/// exactly two.
+#[test]
+fn keyring_add_help_lists_only_email_and_bucket() {
+    pigeon()
+        .args(["keyring", "add", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("email"))
+        .stdout(predicate::str::contains("bucket"))
+        .stdout(predicate::str::contains("encryption-key").not());
 }
