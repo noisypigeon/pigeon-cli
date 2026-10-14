@@ -26,7 +26,15 @@ path = "tests/cli.rs"
 [dependencies]
 async-imap = { version = "0.11.3", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = { version = "0.6.0", default-features = false, features = ["runtime-tokio"] }
+# ADR-0149: reads .xlsx/.xls in-process. Deliberately NO `dates` feature:
+# `Data::DateTime` and `ExcelDateTime::to_ymd_hms_milli` are both ungated and
+# the latter applies the 1904 date system itself, so ISO-8601 rendering needs
+# no `chrono` alongside this crate's existing `time`.
+calamine = { version = "0.36.1", default-features = false }
 clap = { version = "4", features = ["derive", "cargo"] }
+# ADR-0149: writes the per-sheet CSVs. Quoting/escaping untrusted cell text
+# is not worth hand-rolling.
+csv = "1.4"
 dialoguer = "0.12.0"
 directories = "6.0.0"
 futures = "0.3.34"

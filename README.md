@@ -108,7 +108,7 @@ machine, not just pigeon's own process tree) — see ADR-0128.
 - `pigeon keyring list` — list every configured entry.
 - `pigeon job run email import [flags]` — deliver each message's raw `.eml` and unpacked attachments from an authenticated identity to a destination, at a chosen `--messages-per-minute` pace.
 - `pigeon job run deduplicate [flags]` — inflate every zip, content-hash a bucket, keep one copy of each byte-identical file, and upload the result.
-- `pigeon job run transform [flags]` — transcode images, video, or audio-only recordings between a source and destination bucket via `ffmpeg`.
+- `pigeon job run transform [flags]` — transcode images, video, or audio-only recordings via `ffmpeg`, or convert spreadsheets (`.numbers`/`.xlsx`/`.xls`/`.csv`) to one `.csv` per sheet, between a source and destination bucket.
 - `pigeon job run rclone copy [flags]` — copy one configured bucket to another via `rclone`.
 - `pigeon job run rclone delete [flags]` — recursively and permanently purge a configured bucket's contents.
 
