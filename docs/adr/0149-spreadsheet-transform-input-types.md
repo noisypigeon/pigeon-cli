@@ -321,7 +321,7 @@ cover a new kind. Each is extended.
   `ffmpeg` but **not `rclone`**, which every job requires on `PATH`
   (`prepare_rclone`, ADR-0145 §5). Either the image cannot run any job or
   production provisions `rclone` by some path this repo does not record. Filed
-  per ADR-0031 rather than fixed in a spreadsheet ADR.
+  per ADR-0031 rather than fixed in a spreadsheet ADR ([#96](https://github.com/noisypigeon/pigeon-cli/issues/96)).
 
 ## Consequences
 
@@ -367,10 +367,10 @@ cover a new kind. Each is extended.
 Filed per ADR-0031 where genuinely deferred rather than a permanent boundary:
 
 - **`.numbers` package directories** (see Consequences). Deferred, not
-  rejected -- it needs source-listing changes, not a converter change.
+  rejected -- it needs source-listing changes, not a converter change ([#94](https://github.com/noisypigeon/pigeon-cli/issues/94)).
 - **`xlsm`, `xlsb`, `ods` aliases.** `calamine` reads all three, but ADR-0139's
   rule is that an alias is added on evidence of a real miss. Cheap to add when
-  one appears.
+  one appears ([#95](https://github.com/noisypigeon/pigeon-cli/issues/95)).
 - **CSV normalization** -- transcoding encoding, delimiter, or line endings on a
   `.csv` input. Settled as copy-through in §4: the input is already valid, and
   delimiter/encoding sniffing is a new source of silent corruption.
