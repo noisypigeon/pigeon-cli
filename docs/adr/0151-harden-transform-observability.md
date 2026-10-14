@@ -278,3 +278,16 @@ working by the rerun that prompted ADR-0152: lock stubs counted separately
 spurious pause/resume WARNs, the log rotated and isolable by `run_id`, the log
 artifact down from 326 MB-interrupted to 3.198 KiB-complete, and
 `push-logs/` empty.
+
+## Amendment (2026-10-14): §1's scope is deliberately preserved (ADR-0154)
+
+ADR-0154 adds thirteen document input kinds and does **not** extend
+`strict_stem` to any of them, for the reason §1 gives: the strict charset earns
+its place only where the report column holds more than one value, and only
+multi-output kinds produce that. Every document kind is single-output.
+
+The measurement in §1 is what makes this a decision rather than an omission --
+widening `group_key`'s charset does not rename already-written objects, it
+duplicates them, at the 67%-of-inputs rate measured here. ADR-0154 pins the
+property with a test asserting a document destination name is byte-identical to
+today's media naming.

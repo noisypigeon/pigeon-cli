@@ -384,3 +384,19 @@ construction, `place_one` still hard-errors on a genuine collision, and the job
 still only ever copies -- never deletes -- at the destination. Image, video, and
 audio runs go through the unchanged single-output path and produce
 byte-identical names, so no already-written bucket needs remediation.
+
+## Amendment (2026-10-14): two more copy-through kinds (ADR-0154)
+
+ADR-0154 adds document input kinds, two of which arrive already in their
+target format and so take §4's `copy_through` path: `pdf` to `.pdf` and `txt`
+to `.txt`. With `jpeg` and ADR-0149's `csv` that makes four copy-through
+kinds, all for the same reason -- zero re-encode, zero generational loss.
+
+§5's unique-by-construction naming is what makes this safe at a scale §4 did
+not anticipate: seven document kinds now resolve to one `destination:pdf/`
+prefix, and they do not collide because the digest covers the source key, not
+just the stem.
+
+`--output-file-type`, deferred here until a second output format per family is
+actually wanted, stays deferred -- ADR-0154 §8 cites this when declining to
+offer a choice between stripped and preserved Markdown.

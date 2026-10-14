@@ -284,3 +284,20 @@ truncated-encode guard corrected). Each gets a short forward-pointing
   confirming `.opus` objects at the destination, that a tagged file with
   album art succeeds, and spot-checking one output's bitrate and that its
   title/artist tags survived.
+
+## Amendment (2026-10-14): the one-predicate-per-family shape has a limit (ADR-0154)
+
+§3 introduced `is_audio()` on the reasoning that a call site should ask what a
+kind *is* rather than widen a `match` arm list -- the shape that let ADR-0141's
+dispatch bug hide. ADR-0154 records where that stops working.
+
+It holds because every audio kind has one output extension, so the predicate
+and the branch it selects coincide. Documents span three (`.pdf`, `.txt`,
+`.csv`), so no `is_document()` can select a branch, and adding one would only
+invite each call site to re-derive the real distinction `output_extension()`
+already carries. ADR-0154 §4 therefore adds no family predicate at all, and
+declines to fold `tsv` into `is_spreadsheet()` for the related reason that the
+predicate is consulted by three unrelated concerns and would be right for only
+one of them.
+
+`is_audio()` itself is unchanged.
