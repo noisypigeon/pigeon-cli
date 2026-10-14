@@ -120,3 +120,18 @@ incident:
   value, `.staging/scratch/` starts empty even with files pre-seeded there,
   and a pre-seeded `result/` file is pushed directly with no new `ffmpeg`
   invocation and no collision error.
+
+## Amendment (2026-10-14): crash resume deliberately excludes case variants (ADR-0152)
+
+This ADR's resume rests on `manifest::gather_pending` scanning `source/` and
+reconstructing each file's key from its path. ADR-0152 pulls a case-colliding
+key to a *disambiguated* path, which that reconstruction would get wrong -- so
+those files are deliberately kept out of `source/` and are therefore invisible
+to this resume. After a crash they are simply re-pulled, one small `copyto`
+each.
+
+That is the point rather than a shortfall: the alternative is an on-disk
+key-to-path side map, and keeping variants outside `source/` avoids needing
+one. This ADR's clear-stale-scratch step gains the variant tree on the same
+reasoning -- a variant left behind is not resumable state, because nothing
+records which key it came from.

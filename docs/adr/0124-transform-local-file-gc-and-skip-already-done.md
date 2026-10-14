@@ -202,3 +202,12 @@ ADR-0151 removes each alongside its output, on the same
 delete-once-durably-pushed trigger and with the same best-effort handling.
 The retain-on-failure rule is honoured for them too: a failed push keeps its
 log, which is the only case where it has diagnostic value.
+
+## Amendment (2026-10-14): the GC covers a second local tree (ADR-0152)
+
+ADR-0152 pulls a case-colliding source key to `.staging/case-variants/`
+rather than into `source/`, so a file's bytes no longer always live where its
+key says. This ADR's GC needs no logic change -- it deletes
+`PendingFile::absolute_path`, which already carried the location rather than
+deriving it -- but it now reaches that second tree, and the tree itself is
+cleared at startup alongside `scratch/`.

@@ -69,7 +69,7 @@ use super::format::{InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
 use super::{destination, media, placement, push, sheets};
 use crate::core::rclone::RcloneCommand as _;
-use crate::core::rclone::command::Copy;
+use crate::core::rclone::command::{Copy, CopyTo};
 
 /// Wraps `media::transcode_to_jpg` at the call site (not inside `media.rs`
 /// itself, mirroring `upload.rs`'s separation of retry policy from the thing
@@ -465,6 +465,32 @@ fn result_dir(local_output: &Path) -> PathBuf {
     local_output.join("result")
 }
 
+/// Where a case-colliding source key's bytes land (ADR-0152).
+///
+/// Deliberately **outside** `source/`: `manifest::gather_pending` scans
+/// that tree and reconstructs each file's key from its path, which a
+/// disambiguated name would make it get wrong. Keeping variants out of it
+/// means ADR-0127's crash resume does not cover them -- after a crash they
+/// are simply re-pulled, one small `copyto` each -- and that is exactly
+/// why no on-disk key-to-path side map is needed.
+fn case_variant_dir(local_output: &Path) -> PathBuf {
+    staging_dir(local_output).join("case-variants")
+}
+
+/// This key's own directory under `case_variant_dir`.
+///
+/// A directory per key rather than a suffixed filename, because a suffixed
+/// name would have to be *invertible* for anything to recover the source
+/// key for hashing. Indexed by position in the sorted collision set, so it
+/// is deterministic across runs; the basename is kept verbatim so the local
+/// file still looks like what it is.
+fn case_variant_path(local_output: &Path, index: usize, source_key: &str) -> PathBuf {
+    let basename = source_key.rsplit('/').next().unwrap_or(source_key);
+    case_variant_dir(local_output)
+        .join(format!("{index:04}"))
+        .join(basename)
+}
+
 fn push_log_dir(local_output: &Path) -> PathBuf {
     staging_dir(local_output).join("push-logs")
 }
@@ -555,7 +581,7 @@ fn existing_group_outputs(result_dir: &Path, group: &str) -> Vec<PathBuf> {
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
     skip_all,
-    fields(relative_path = %pending_file.relative_path),
+    fields(relative_path = %pending_file.source_key),
     level = "debug"
 )]
 async fn process_one(
@@ -571,7 +597,7 @@ async fn process_one(
     push_semaphore: Arc<Semaphore>,
     endpoint_gate: Arc<EndpointGate>,
 ) -> ProcessResult {
-    let group = placement::group_key(source_path, &pending_file.relative_path, input_file_type);
+    let group = placement::group_key(source_path, &pending_file.source_key, input_file_type);
 
     // ADR-0127, extended per-group by ADR-0149: outputs already sitting in
     // `result_dir` survived a prior crash *after* a successful, verified
@@ -665,7 +691,7 @@ async fn process_one(
                     result_dir,
                     &output.scratch_path,
                     source_path,
-                    &pending_file.relative_path,
+                    &pending_file.source_key,
                     input_file_type,
                 )
             };
@@ -724,7 +750,7 @@ async fn process_one(
                 return Err((FailureStage::Push, err));
             }
             if endpoint_gate
-                .wait_for_recovery(&pending_file.relative_path, &err)
+                .wait_for_recovery(&pending_file.source_key, &err)
                 .await
                 == GateDecision::GiveUp
             {
@@ -771,11 +797,8 @@ async fn convert_one(
     group: &str,
     scratch: &Path,
 ) -> Result<Vec<PendingOutput>, String> {
-    let single_name = placement::compute_destination_name(
-        source_path,
-        &pending_file.relative_path,
-        input_file_type,
-    );
+    let single_name =
+        placement::compute_destination_name(source_path, &pending_file.source_key, input_file_type);
 
     if input_file_type.is_spreadsheet() {
         return convert_spreadsheet(pending_file, input_file_type, group, &single_name, scratch)
@@ -790,7 +813,7 @@ async fn convert_one(
             retry_transcode_unless_fatal(
                 TRANSCODE_RETRIES,
                 TRANSCODE_RETRY_BACKOFF,
-                &pending_file.relative_path,
+                &pending_file.source_key,
                 || media::transcode_to_jpg(input, &scratch_path),
             )
             .await
@@ -799,7 +822,7 @@ async fn convert_one(
             retry_transcode_unless_fatal(
                 TRANSCODE_RETRIES,
                 TRANSCODE_RETRY_BACKOFF,
-                &pending_file.relative_path,
+                &pending_file.source_key,
                 || media::transcode_video(input, &scratch_path, video_quality, transcode_threads),
             )
             .await
@@ -808,7 +831,7 @@ async fn convert_one(
             retry_transcode_unless_fatal(
                 TRANSCODE_RETRIES,
                 TRANSCODE_RETRY_BACKOFF,
-                &pending_file.relative_path,
+                &pending_file.source_key,
                 || media::transcode_audio(input, &scratch_path),
             )
             .await
@@ -990,7 +1013,7 @@ fn enqueue(
     }
     let absolute_path = source_dir.join(&relative_path);
     queue.push_back(PendingFile {
-        relative_path,
+        source_key: relative_path,
         absolute_path,
     });
     EnqueueOutcome::Queued
@@ -1099,17 +1122,60 @@ fn files_needing_pull(
 /// a file, at `notice` level as `Duplicate object found in source -
 /// ignoring`, which this job never reads -- and that wrongness sent the
 /// original ADR-0144 investigation down a false-positive path for a while.
-fn undelivered_detail(relative_path: &str, case_collisions: &HashSet<String>) -> String {
-    if case_collisions.contains(relative_path) {
-        "another source key differs from this one only by letter case, so rclone delivered at \
-         most one of them to the case-insensitive local volume and ignored this one; the two \
-         keys are distinct objects at the source"
+///
+/// ADR-0152 replaces the collision arm entirely. A colliding key is no
+/// longer dropped by the bulk pull: it is fetched individually, so the only
+/// way one goes undelivered now is that its own `copyto` failed -- and
+/// `case_variant_failures` carries rclone's actual error for it, which is
+/// strictly more useful than any prose this function could invent.
+fn undelivered_detail(
+    relative_path: &str,
+    case_collisions: &HashSet<String>,
+    case_variant_failures: &HashMap<String, String>,
+) -> String {
+    if let Some(err) = case_variant_failures.get(relative_path) {
+        format!(
+            "this source key collides with another under case-folding, so it was pulled \
+             individually to its own local path (ADR-0152) -- and that pull failed: {err}"
+        )
+    } else if case_collisions.contains(relative_path) {
+        // Reachable only if a colliding key went missing without its own
+        // pull reporting an error, which would be a bug rather than the
+        // ordinary case this arm used to describe.
+        "this source key collides with another under case-folding and should have been pulled \
+         individually, but it never entered the pipeline and its own pull reported no error"
             .to_string()
     } else {
         "file was in this run's pull set but rclone never reported it as copied, so it never \
          entered the transcode pipeline"
             .to_string()
     }
+}
+
+/// Splits this run's pull set into the keys the bulk `rclone copy` can take
+/// and the ones that must be fetched individually (ADR-0152).
+///
+/// Deliberately removes *every* member of a colliding group, not just the
+/// ones rclone would have dropped: which one it keeps is its own ordering
+/// decision and not something this job can predict, so excluding the whole
+/// group is what makes the outcome deterministic. It also leaves the bulk
+/// pull with no collision to resolve at all, so its `duplicate_notices`
+/// should be 0 -- a crisp signal that this split is doing its job.
+///
+/// The variant list is sorted so `case_variant_path`'s index, and therefore
+/// every local path it derives, is stable across runs.
+fn split_pull_set(
+    files_to_pull: &[String],
+    case_collisions: &HashSet<String>,
+) -> (Vec<String>, Vec<String>) {
+    let bulk: Vec<String> = files_to_pull
+        .iter()
+        .filter(|key| !case_collisions.contains(*key))
+        .cloned()
+        .collect();
+    let mut variants: Vec<String> = case_collisions.iter().cloned().collect();
+    variants.sort();
+    (bulk, variants)
 }
 
 fn case_insensitive_collisions(relative_paths: &[String]) -> HashSet<String> {
@@ -1138,9 +1204,13 @@ struct PullSelection {
     skipped_apple_double: u64,
     skipped_lock_file: u64,
     /// Members of `to_pull` that collide with another member under
-    /// case-folding, so at most one of them can ever be delivered to a
-    /// case-insensitive local volume (ADR-0144). Not a failure in itself --
-    /// it is what makes the resulting `Pull` failure explicable.
+    /// case-folding (ADR-0144), so they cannot all share one directory on
+    /// a case-insensitive local volume.
+    ///
+    /// Since ADR-0152 these are **excluded from the bulk pull and fetched
+    /// individually** into their own directories, so every one of them
+    /// arrives. Before that, rclone resolved the clash itself by keeping
+    /// one and ignoring the rest, and the rest became `Pull` failures.
     case_collisions: HashSet<String>,
 }
 
@@ -1181,14 +1251,19 @@ pub(crate) async fn run_transform_job(
     // file is reprocessed anyway. Clearing it here just reclaims that disk
     // space proactively instead of leaving it until then. Best-effort: a
     // missing directory (first run) or a removal failure is not fatal.
-    if let Err(err) = std::fs::remove_dir_all(&scratch_dir)
-        && err.kind() != std::io::ErrorKind::NotFound
-    {
-        tracing::warn!(
-            path = %scratch_dir.display(),
-            error = %err,
-            "transform: failed to clear stale scratch directory from a prior run"
-        );
+    // ADR-0152 clears the case-variant tree on the same reasoning: a
+    // variant left behind is not resumable state (nothing records which key
+    // it came from), and re-pulling it costs one small `copyto`.
+    for stale in [&scratch_dir, &case_variant_dir(&plan.local_output)] {
+        if let Err(err) = std::fs::remove_dir_all(stale)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %stale.display(),
+                error = %err,
+                "transform: failed to clear a stale staging directory from a prior run"
+            );
+        }
     }
 
     // The authoritative "already done" source (ADR-0120) -- fetched once,
@@ -1211,7 +1286,7 @@ pub(crate) async fn run_transform_job(
     let mut skipped_lock_file: u64 = 0;
     for pending_file in already_on_disk {
         match enqueue(
-            pending_file.relative_path,
+            pending_file.source_key,
             &source_dir,
             &plan.source_path,
             plan.input_file_type,
@@ -1274,6 +1349,7 @@ pub(crate) async fn run_transform_job(
     let files_to_pull = selection.to_pull;
     let selection_skipped_already_done = selection.skipped_already_done;
     let case_collisions = selection.case_collisions;
+    let (bulk_files_to_pull, case_variant_keys) = split_pull_set(&files_to_pull, &case_collisions);
     // The initial on-disk scan above may have found its own AppleDouble
     // stubs; both choke points feed the same counter.
     skipped_apple_double += selection.skipped_apple_double;
@@ -1288,11 +1364,13 @@ pub(crate) async fn run_transform_job(
         crate::commands::job::local::check_disk_space(&source_dir, 0)?;
     }
 
-    // ADR-0144: surfaced before the pull so the operator learns about it
+    // ADR-0144 surfaced this before the pull so the operator learns about it
     // from the log rather than from an inexplicable `Pull` failure hours
-    // later. One line per colliding group, with every member named -- there
-    // is nothing this job can do about it automatically, so naming the keys
-    // is the whole remedy.
+    // later. ADR-0152 keeps the per-group line and the named keys, but it is
+    // no longer a warning about data this job is about to lose: every member
+    // is now pulled to its own directory, so this is an INFO describing what
+    // was done. ADR-0144's "rclone will deliver at most one of them" became
+    // false the moment that landed.
     if !case_collisions.is_empty() {
         let mut groups: HashMap<String, Vec<&String>> = HashMap::new();
         for relative_path in &case_collisions {
@@ -1303,11 +1381,11 @@ pub(crate) async fn run_transform_job(
         }
         for (_, mut group) in groups {
             group.sort();
-            tracing::warn!(
+            tracing::info!(
                 pigeon_job = "transform",
                 keys = ?group,
-                "transform: source keys differ only by letter case and cannot all be pulled to a \
-                 case-insensitive local volume; rclone will deliver at most one of them"
+                "transform: source keys differ only by letter case, so they cannot share one \
+                 local directory; each is pulled individually to its own path"
             );
         }
     }
@@ -1319,6 +1397,7 @@ pub(crate) async fn run_transform_job(
         skipped_apple_double,
         skipped_lock_file,
         case_colliding_keys = case_collisions.len(),
+        bulk_files_to_pull = bulk_files_to_pull.len(),
         queued_from_local_scan = queue.len(),
         "transform: pull phase starting"
     );
@@ -1328,7 +1407,7 @@ pub(crate) async fn run_transform_job(
     let pull_log_path = plan
         .local_output
         .join(format!("rclone-pull-{}.jsonl", plan.run_id));
-    let mut pull_handle = if files_to_pull.is_empty() {
+    let mut pull_handle = if bulk_files_to_pull.is_empty() {
         // Nothing to pull -- every matching source file is already done.
         // Skip spawning `rclone` entirely rather than running it against an
         // empty files-from list.
@@ -1337,7 +1416,8 @@ pub(crate) async fn run_transform_job(
             Ok::<_, String>(crate::core::rclone::RcloneLogSummary::default())
         })
     } else {
-        let files_from_path = write_files_from(&staging_dir(&plan.local_output), &files_to_pull)?;
+        let files_from_path =
+            write_files_from(&staging_dir(&plan.local_output), &bulk_files_to_pull)?;
         let pull_pid_tx_clone = pull_pid_tx.clone();
         tokio::spawn({
             let source_path = plan.source_path.clone();
@@ -1368,6 +1448,73 @@ pub(crate) async fn run_transform_job(
         })
     };
     drop(pull_pid_tx);
+
+    // ADR-0152: fetch each colliding key individually, into its own
+    // directory, and queue it directly. Done here rather than through the
+    // bulk pull's live tail because each lands at a path its key does not
+    // describe, so `enqueue`'s `source_dir.join(key)` would be wrong for it
+    // -- the queue entry carries the two separately, which is what
+    // `PendingFile`'s rename made explicit.
+    //
+    // Sequential on purpose: a colliding group is inherently tiny (two keys
+    // in the run that prompted this), so there is nothing to parallelise and
+    // no reason to add a second concurrency knob.
+    let mut case_variant_failures: HashMap<String, String> = HashMap::new();
+    if !case_variant_keys.is_empty() {
+        for (index, source_key) in case_variant_keys.iter().enumerate() {
+            let local_path = case_variant_path(&plan.local_output, index, source_key);
+            if let Some(parent) = local_path.parent()
+                && let Err(err) = std::fs::create_dir_all(parent)
+            {
+                case_variant_failures.insert(
+                    source_key.clone(),
+                    format!("failed to create {}: {err}", parent.display()),
+                );
+                continue;
+            }
+            let source = format!(
+                "{}{source_key}",
+                if plan.source_path.ends_with('/') || plan.source_path.ends_with(':') {
+                    plan.source_path.clone()
+                } else {
+                    format!("{}/", plan.source_path)
+                }
+            );
+            let result = (CopyTo {
+                source,
+                destination: local_path.display().to_string(),
+                log_path: case_variant_dir(&plan.local_output)
+                    .join(format!("{index:04}-pull.jsonl")),
+                job: "transform",
+                step: "pull",
+                // A download, so no upload metrics -- `deduplicate`'s own
+                // pull leg sets this the same way.
+                emit_upload_metrics: false,
+                bytes: 0,
+            })
+            .run()
+            .await;
+            match result {
+                Ok(()) => {
+                    if dispatched.insert(source_key.clone()) {
+                        queue.push_back(PendingFile {
+                            source_key: source_key.clone(),
+                            absolute_path: local_path,
+                        });
+                    }
+                }
+                Err(err) => {
+                    case_variant_failures.insert(source_key.clone(), err);
+                }
+            }
+        }
+        tracing::info!(
+            pigeon_job = "transform",
+            pulled = case_variant_keys.len() - case_variant_failures.len(),
+            failed = case_variant_failures.len(),
+            "transform: case-variant pull complete"
+        );
+    }
 
     // Caps each concurrent `ffmpeg` transcode's own internal thread count so
     // the whole in-flight fleet stays within the host's real core count
@@ -1424,7 +1571,7 @@ pub(crate) async fn run_transform_job(
             let Some(pending_file) = queue.pop_front() else {
                 break;
             };
-            let relative_path = pending_file.relative_path.clone();
+            let relative_path = pending_file.source_key.clone();
             let source_path = plan.source_path.clone();
             let destination_path = plan.destination_path.clone();
             let result_dir = result_dir.clone();
@@ -1649,7 +1796,7 @@ pub(crate) async fn run_transform_job(
             destination_filenames: Vec::new(),
             outcome: Outcome::Failed,
             stage: Some(FailureStage::Pull),
-            detail: undelivered_detail(relative_path, &case_collisions),
+            detail: undelivered_detail(relative_path, &case_collisions, &case_variant_failures),
         });
     }
     if failures.pull > 0 {
@@ -2807,23 +2954,43 @@ mod tests {
         assert!(upper.starts_with("IMG_0260-") && lower.starts_with("IMG_0260-"));
     }
 
-    /// ADR-0144: the two arms of the undelivered explanation must not be
-    /// swapped, because the generic one is a false statement for a
-    /// case-collision.
+    /// ADR-0144's rule survives -- the arms must not be swapped, because the
+    /// generic one is a false statement for a case-collision -- but ADR-0152
+    /// changes what the collision arm says. A colliding key is now pulled
+    /// individually, so the only way one goes undelivered is that its own
+    /// `copyto` failed, and the detail carries rclone's real error.
     #[test]
-    fn undelivered_detail_explains_a_case_collision_differently_from_a_real_no_show() {
+    fn undelivered_detail_explains_a_failed_variant_pull_with_its_real_error() {
         let collisions: HashSet<String> = ["IMG_0260.jpg".to_string()].into_iter().collect();
+        let failures: HashMap<String, String> =
+            [("IMG_0260.jpg".to_string(), "403 Forbidden".to_string())]
+                .into_iter()
+                .collect();
 
-        let collided = undelivered_detail("IMG_0260.jpg", &collisions);
-        assert!(collided.contains("differs from this one only by letter case"));
+        let collided = undelivered_detail("IMG_0260.jpg", &collisions, &failures);
+        assert!(collided.contains("pulled"));
+        assert!(
+            collided.contains("403 Forbidden"),
+            "the operator needs rclone's own error, not prose: {collided}"
+        );
         assert!(
             !collided.contains("never reported it as copied"),
-            "rclone did report this file -- at notice level -- so this must not claim otherwise"
+            "this file was asked for individually, so this must not claim otherwise"
         );
 
-        let no_show = undelivered_detail("IMG_9999.jpg", &collisions);
+        let no_show = undelivered_detail("IMG_9999.jpg", &collisions, &failures);
         assert!(no_show.contains("never reported it as copied"));
         assert!(!no_show.contains("letter case"));
+    }
+
+    /// A colliding key missing *without* its own pull having failed is a bug,
+    /// not the ordinary case the old arm described -- so it says so rather
+    /// than blaming rclone's duplicate handling, which no longer applies.
+    #[test]
+    fn undelivered_detail_flags_a_collision_that_vanished_without_an_error() {
+        let collisions: HashSet<String> = ["IMG_0260.jpg".to_string()].into_iter().collect();
+        let detail = undelivered_detail("IMG_0260.jpg", &collisions, &HashMap::new());
+        assert!(detail.contains("reported no error"), "{detail}");
     }
 
     /// ADR-0130: an AppleDouble stub matches rclone's `--include '*.<ext>'`
@@ -3076,6 +3243,107 @@ mod tests {
         ));
         assert!(contents.contains("pull: 2 transferred, 0 rclone error(s) reported."));
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
+    }
+
+    // --- ADR-0152: case-colliding source keys ----------------------------
+
+    #[test]
+    fn case_variant_paths_are_deterministic_and_never_collide() {
+        let local_output = Path::new("/tmp/work");
+        let upper = case_variant_path(local_output, 0, "Bookkeeping.xlsx");
+        let lower = case_variant_path(local_output, 1, "bookkeeping.xlsx");
+
+        // The whole point: two keys differing only by case land in two
+        // different *directories*, so no filesystem can conflate them.
+        assert_ne!(upper, lower);
+        assert_ne!(upper.parent(), lower.parent());
+        assert_eq!(upper.file_name().unwrap(), "Bookkeeping.xlsx");
+        assert_eq!(lower.file_name().unwrap(), "bookkeeping.xlsx");
+
+        // Deterministic across calls, so a rerun computes the same paths.
+        assert_eq!(
+            upper,
+            case_variant_path(local_output, 0, "Bookkeeping.xlsx")
+        );
+
+        // Outside `source/`, which is what keeps `gather_pending` from
+        // reconstructing a wrong key from the disambiguated path.
+        assert!(!upper.starts_with(source_dir(local_output)));
+        assert!(upper.starts_with(case_variant_dir(local_output)));
+    }
+
+    #[test]
+    fn a_nested_colliding_key_keeps_only_its_basename_locally() {
+        let path = case_variant_path(Path::new("/tmp/work"), 3, "a/b/c/Ledger.xlsx");
+        assert_eq!(path.file_name().unwrap(), "Ledger.xlsx");
+        // The directory disambiguates, so the nesting need not be recreated.
+        assert!(path.parent().unwrap().ends_with("0003"));
+    }
+
+    /// **The #83 decision point**, tested where it can actually be tested.
+    ///
+    /// An end-to-end test of this is **not reproducible on either
+    /// filesystem**, which is worth stating rather than faking: on a
+    /// case-insensitive host the fixture cannot be created at all (writing
+    /// `ledger.xlsx` overwrites `Ledger.xlsx` in the local source
+    /// directory), and on a case-sensitive host the bulk pull would deliver
+    /// both anyway, so the test would pass without the new path ever
+    /// running -- the ADR-0139 mistake. The collision only exists because
+    /// the real source is S3, which is case-sensitive while the local pull
+    /// tree may not be.
+    ///
+    /// So the split itself is a pure function, and this pins it.
+    #[test]
+    fn colliding_keys_leave_the_bulk_pull_and_become_variant_pulls() {
+        let to_pull = vec![
+            "Bookkeeping.xlsx".to_string(),
+            "bookkeeping.xlsx".to_string(),
+            "bookkeeping-2.xlsx".to_string(),
+            "Other.xlsx".to_string(),
+        ];
+        let collisions = case_insensitive_collisions(&to_pull);
+        let (bulk, variants) = split_pull_set(&to_pull, &collisions);
+
+        // Every member of the colliding group leaves the bulk pull --
+        // deliberately all of them, not just the ones rclone would have
+        // dropped, since which one it keeps is its own ordering decision.
+        assert_eq!(
+            variants,
+            vec![
+                "Bookkeeping.xlsx".to_string(),
+                "bookkeeping.xlsx".to_string()
+            ]
+        );
+        // `bookkeeping-2.xlsx` folds to a *different* string, so it is not a
+        // collision and stays in the bulk set -- which preserves the source
+        // listing's own order.
+        assert_eq!(
+            bulk,
+            vec!["bookkeeping-2.xlsx".to_string(), "Other.xlsx".to_string()]
+        );
+        // Nothing is lost or duplicated across the split.
+        assert_eq!(bulk.len() + variants.len(), to_pull.len());
+    }
+
+    #[test]
+    fn a_pull_set_with_no_collision_is_left_entirely_to_the_bulk_pull() {
+        let to_pull = vec!["a.xlsx".to_string(), "b.xlsx".to_string()];
+        let collisions = case_insensitive_collisions(&to_pull);
+        let (bulk, variants) = split_pull_set(&to_pull, &collisions);
+        assert_eq!(bulk, to_pull);
+        assert!(variants.is_empty());
+    }
+
+    /// The variant list is sorted, so `case_variant_path`'s index -- and
+    /// therefore every local path -- is stable across runs.
+    #[test]
+    fn the_variant_pull_order_is_deterministic() {
+        let a = vec!["b.xlsx".to_string(), "B.xlsx".to_string()];
+        let b = vec!["B.xlsx".to_string(), "b.xlsx".to_string()];
+        let split_a = split_pull_set(&a, &case_insensitive_collisions(&a)).1;
+        let split_b = split_pull_set(&b, &case_insensitive_collisions(&b)).1;
+        assert_eq!(split_a, split_b);
+        assert_eq!(split_a, vec!["B.xlsx".to_string(), "b.xlsx".to_string()]);
     }
 
     // --- ADR-0149: spreadsheets ------------------------------------------

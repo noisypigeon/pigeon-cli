@@ -256,3 +256,25 @@ forward-pointing "Amendment" section.
   `push-logs/`, a kilobyte-scale log artifact that completes, and that a
   second re-run is a clean no-op -- which is what proves
   `DestinationGroups` recognises the renamed spreadsheet outputs.
+
+## Amendment (2026-10-14): §6's explanation becomes a fallback (ADR-0152)
+
+§6 made the `rclone_errors` vs. `undelivered_files` cross-check say "fully
+accounted for by case-colliding source keys" when that was the whole
+explanation. It was, on the run this ADR analysed, and the wording was
+correct. ADR-0152 then removes the cause: every colliding key is pulled
+individually, so a collision no longer produces an undelivered file and the
+bulk pull no longer even sees a duplicate -- `duplicate_notices` should read
+**0**.
+
+Both the message and `duplicate_notices` stay, as a fallback for a colliding
+key whose own pull fails. Expect that path to be quiet; a run where it fires
+is reporting a real per-key pull failure, not the ordinary collision this ADR
+was describing.
+
+Everything else in this ADR is unaffected. Its six fixes were all confirmed
+working by the rerun that prompted ADR-0152: lock stubs counted separately
+(revealing that run's "2 AppleDouble" were in fact both `~$` stubs), zero
+spurious pause/resume WARNs, the log rotated and isolable by `run_id`, the log
+artifact down from 326 MB-interrupted to 3.198 KiB-complete, and
+`push-logs/` empty.
