@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::commands::keyring::store::Store;
+use crate::core::keyring::credentials;
 
 const RCLONE_CONFIG_FILE_NAME: &str = "rclone.conf";
 
@@ -102,10 +103,17 @@ pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), S
                 bucket_config.alias,
             ));
         }
+        // ADR-0148 §1: resolved through `credentials::resolve_secret`, not
+        // read off the field. Until then this took `secret_key` directly,
+        // so ADR-0087's `PIGEON_SECRET_<ALIAS>` override never reached a
+        // single rclone-addressed operation -- which is every job's data
+        // path. It appeared to work only because the two `minio` call
+        // sites resolved it themselves before calling.
+        let secret_access_key =
+            credentials::resolve_secret(&bucket_config.alias, &bucket_config.secret_key);
         contents.push_str(&format!(
-            "[{backend}]\ntype = s3\nprovider = Other\naccess_key_id = {}\nsecret_access_key = {}\nendpoint = {}\nacl = private\nno_check_bucket = true\n\n[{}]\ntype = alias\nremote = {backend}:{}\n\n",
+            "[{backend}]\ntype = s3\nprovider = Other\naccess_key_id = {}\nsecret_access_key = {secret_access_key}\nendpoint = {}\nacl = private\nno_check_bucket = true\n\n[{}]\ntype = alias\nremote = {backend}:{}\n\n",
             bucket_config.access_key_id,
-            bucket_config.secret_key,
             bucket_config.endpoint,
             bucket_config.alias,
             bucket_config.bucket,
@@ -418,6 +426,56 @@ mod tests {
     /// Aliases are unbounded strings, so a configured alias can collide
     /// with another's derived backend name. Rejected outright rather than
     /// silently misrouting one alias into the other's bucket.
+    /// ADR-0148 §1. Until this ADR, `write_sandboxed_config` read
+    /// `BucketConfig::secret_key` directly, so ADR-0087's
+    /// `PIGEON_SECRET_<ALIAS>` override never reached any rclone-addressed
+    /// operation -- i.e. every job's data path. The env var is set and
+    /// removed inside the test, and the alias is unique to it, so it cannot
+    /// collide with another test running in the same process.
+    #[test]
+    fn write_sandboxed_config_prefers_the_pigeon_secret_override_over_the_stored_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rclone.conf");
+        let alias = "adr-0148-override-test";
+
+        let mut store = Store::default();
+        store.push(Entry::Bucket(sample_bucket(alias)));
+
+        // SAFETY: single-threaded test, and the var is removed before it
+        // returns. The alias is unique so no other test reads this name.
+        unsafe { std::env::set_var("PIGEON_SECRET_ADR_0148_OVERRIDE_TEST", "from-the-env") };
+        let result = write_sandboxed_config(&store, &path);
+        unsafe { std::env::remove_var("PIGEON_SECRET_ADR_0148_OVERRIDE_TEST") };
+        result.unwrap();
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("secret_access_key = from-the-env"),
+            "the override must win: {contents}"
+        );
+        assert!(
+            !contents.contains("secret_access_key = shh"),
+            "the stored key must not survive alongside it: {contents}"
+        );
+    }
+
+    /// The companion: with no override set, the stored key is still used.
+    #[test]
+    fn write_sandboxed_config_falls_back_to_the_stored_key_with_no_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("rclone.conf");
+
+        let mut store = Store::default();
+        store.push(Entry::Bucket(sample_bucket("adr-0148-no-override-test")));
+        write_sandboxed_config(&store, &path).unwrap();
+
+        assert!(
+            std::fs::read_to_string(&path)
+                .unwrap()
+                .contains("secret_access_key = shh")
+        );
+    }
+
     #[test]
     fn write_sandboxed_config_rejects_an_alias_colliding_with_a_derived_backend_name() {
         let dir = tempfile::tempdir().unwrap();
