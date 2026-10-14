@@ -15,20 +15,10 @@
 //! `media::copy_through`, the same treatment ADR-0112 gives a `jpeg`.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use calamine::{Data, Range, Reader};
 
 use super::media::NOT_A_WORKBOOK_SIGNATURE;
-
-/// How long `soffice` gets before being treated as hung.
-///
-/// Unlike every `ffmpeg` call in this job, which has no timeout at all,
-/// LibreOffice's documented failure mode is hanging rather than exiting
-/// non-zero -- it is a desktop application running headless, and a
-/// half-initialised profile can leave it waiting forever. A per-file cap is
-/// the difference between one failed file and a run that never ends.
-const SOFFICE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Largest input this module will hand to `calamine`.
 ///
@@ -62,98 +52,18 @@ pub(crate) struct SheetOutput {
     pub path: PathBuf,
 }
 
-/// Confirms `soffice` is on `PATH`, for a `--input-file-type numbers` run
-/// only (ADR-0149 §6).
-///
-/// Unlike `media::check_ffmpeg_available`, this checks the **exit status**
-/// and not merely that the process spawned. That function's
-/// `.output().await.map_err(..)` catches only spawn failure, so a
-/// present-but-broken binary passes it; not replicating that here.
-pub(crate) async fn check_soffice_available() -> Result<(), String> {
-    let output = tokio::process::Command::new("soffice")
-        .arg("--version")
-        .output()
-        .await
-        .map_err(|_| {
-            "'soffice' was not found on PATH -- required for \
-             'pigeon job run transform --input-file-type numbers' to read Apple Numbers files"
-                .to_string()
-        })?;
-    if !output.status.success() {
-        return Err(format!(
-            "'soffice --version' failed (exit {:?}) -- required for \
-             'pigeon job run transform --input-file-type numbers'. stderr: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    Ok(())
-}
-
 /// Converts an Apple Numbers file to `.xlsx` inside `work_dir`, returning
 /// the produced path (ADR-0149 §4).
 ///
-/// The output keeps a real `.xlsx` extension, which matters twice over:
-/// `calamine::open_workbook_auto` dispatches on the extension, and this is
-/// why the ADR-0115 scratch-suffix trap that forces every `ffmpeg` call to
-/// pass an explicit `-f` muxer does not apply here.
+/// Thin wrapper over `super::soffice::convert` since ADR-0154 §6 moved the
+/// runner out of this module so the document kinds could share it. The
+/// `.xlsx` target is what matters here: `calamine::open_workbook_auto`
+/// dispatches on the extension.
 pub(crate) async fn convert_numbers_to_xlsx(
     input: &Path,
     work_dir: &Path,
 ) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(work_dir)
-        .map_err(|err| format!("failed to create {}: {err}", work_dir.display()))?;
-    let profile_dir = work_dir.join("lo-profile");
-
-    // `-env:UserInstallation` is not optional. Without it every concurrent
-    // `soffice` shares one profile directory, and they either serialise on
-    // its lock or fail outright -- and this job runs `--concurrency` files
-    // at once.
-    let mut command = tokio::process::Command::new("soffice");
-    command
-        .arg("--headless")
-        .arg(format!(
-            "-env:UserInstallation=file://{}",
-            profile_dir.display()
-        ))
-        .args(["--convert-to", "xlsx", "--outdir"])
-        .arg(work_dir)
-        .arg(input);
-
-    let output = match tokio::time::timeout(SOFFICE_TIMEOUT, command.output()).await {
-        Ok(Ok(output)) => output,
-        Ok(Err(err)) => return Err(format!("failed to run soffice: {err}")),
-        Err(_) => {
-            return Err(format!(
-                "soffice timed out after {}s converting {} -- {NOT_A_WORKBOOK_SIGNATURE} this run \
-                 can process",
-                SOFFICE_TIMEOUT.as_secs(),
-                input.display()
-            ));
-        }
-    };
-
-    let stem = input
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .ok_or_else(|| format!("{} has no usable file stem", input.display()))?;
-    let produced = work_dir.join(format!("{stem}.xlsx"));
-
-    // The exit code is deliberately not the authority: `soffice` exits 0 on
-    // some conversion failures, printing its complaint to stdout. What the
-    // next stage actually needs is a non-empty file where it expects one.
-    let produced_len = std::fs::metadata(&produced).map(|meta| meta.len()).ok();
-    match produced_len {
-        Some(len) if len > 0 => Ok(produced),
-        _ => Err(format!(
-            "soffice produced no usable .xlsx for {} (exit {:?}) -- \
-             {NOT_A_WORKBOOK_SIGNATURE}. stdout: {} stderr: {}",
-            input.display(),
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
-    }
+    super::soffice::convert(input, work_dir, "xlsx", NOT_A_WORKBOOK_SIGNATURE).await
 }
 
 /// Splits a workbook into one CSV per non-empty sheet, written into
@@ -634,18 +544,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn check_soffice_available_reports_a_missing_binary_clearly() {
-        // Only meaningful where `soffice` is genuinely absent; where it is
-        // installed this asserts the success path instead.
-        match check_soffice_available().await {
-            Ok(()) => {}
-            Err(err) => assert!(err.contains("soffice"), "{err}"),
-        }
-    }
-
-    #[tokio::test]
     async fn convert_numbers_to_xlsx_fails_clearly_without_a_usable_output() {
-        if check_soffice_available().await.is_err() {
+        if super::super::soffice::check_available().await.is_err() {
             eprintln!("skipping: soffice not found on PATH");
             return;
         }

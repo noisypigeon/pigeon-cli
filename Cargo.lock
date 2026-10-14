@@ -125,7 +125,7 @@ checksum = "9a6728e0f7931b36d725ac234fcb02539e9f7888dbeaaa8a18d9ea5792181570"
 dependencies = [
  "async-channel 2.5.0",
  "async-compression",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "futures",
@@ -204,6 +204,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
+name = "base64"
+version = "0.23.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac07cdecf99051d9a5238b80f35af32cdeba5b336e55d957b318b50137e18da5"
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -259,7 +265,7 @@ dependencies = [
  "encoding_rs",
  "fast-float2",
  "log",
- "quick-xml",
+ "quick-xml 0.41.0",
  "serde",
  "zip",
 ]
@@ -1326,7 +1332,7 @@ version = "0.18.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1db0d8f1fc9e62caebd0319e11eaec5822b0186c171568f0480b46a0137f9108"
 dependencies = [
- "base64",
+ "base64 0.22.1",
  "evmap",
  "http-body-util",
  "hyper",
@@ -1551,6 +1557,7 @@ dependencies = [
  "mail-parser",
  "metrics",
  "metrics-exporter-prometheus",
+ "plist",
  "predicates",
  "serde",
  "serde_json",
@@ -1604,6 +1611,18 @@ name = "pkg-config"
 version = "0.3.34"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+
+[[package]]
+name = "plist"
+version = "1.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2896bade328c13f7042a297ea5ac5b0951f6cf989dea5f32c2fd98da398195cb"
+dependencies = [
+ "base64 0.23.1",
+ "indexmap",
+ "quick-xml 0.42.0",
+ "time",
+]
 
 [[package]]
 name = "portable-atomic"
@@ -1696,6 +1715,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
 dependencies = [
  "encoding_rs",
+ "memchr",
+]
+
+[[package]]
+name = "quick-xml"
+version = "0.42.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
+dependencies = [
  "memchr",
 ]
 

@@ -739,4 +739,85 @@ mod tests {
             b"already here"
         );
     }
+
+    // --- ADR-0154: documents ---
+
+    /// **The property that scopes ADR-0154 §3.** Every document kind is
+    /// single-output, so `strict_stem` stays spreadsheet-only and a
+    /// document name is built exactly like a media one. Widening it would
+    /// not rename already-written objects -- this job never deletes -- it
+    /// would *duplicate* them.
+    #[test]
+    fn a_document_destination_name_is_built_like_a_media_one() {
+        // A stem `strict_stem` would rewrite but `sanitize_filename` keeps.
+        let stem = "Budget (Normal, Reduced)";
+        for kind in [
+            InputFileType::Doc,
+            InputFileType::Docx,
+            InputFileType::Pages,
+            InputFileType::Rtf,
+            InputFileType::Pdf,
+            InputFileType::Epub,
+            InputFileType::Pptx,
+            InputFileType::Key,
+            InputFileType::Txt,
+            InputFileType::Md,
+            InputFileType::Rst,
+            InputFileType::Textclipping,
+            InputFileType::Tsv,
+        ] {
+            let name = compute_destination_name(
+                "source:docs",
+                &format!("{stem}.{}", kind.canonical_extension()),
+                kind,
+            );
+            assert!(
+                name.starts_with(stem),
+                "{kind} name {name} does not start with the raw stem"
+            );
+            assert!(
+                name.ends_with(&format!(".{}", kind.output_extension())),
+                "{kind} name {name}"
+            );
+        }
+    }
+
+    /// Seven document kinds now share one `destination:pdf/` prefix. They
+    /// do not collide because the digest covers the source key, which is
+    /// ADR-0112 §5's unique-by-construction property doing the work ADR-0154
+    /// §3 relies on instead of adding collision handling.
+    #[test]
+    fn document_kinds_sharing_one_destination_prefix_do_not_collide() {
+        let names: Vec<String> = [
+            (InputFileType::Doc, "doc/report.doc"),
+            (InputFileType::Docx, "docx/report.docx"),
+            (InputFileType::Rtf, "rtf/report.rtf"),
+            (InputFileType::Pages, "pages/report.pages"),
+            (InputFileType::Pptx, "pptx/report.pptx"),
+            (InputFileType::Epub, "epub/report.epub"),
+            (InputFileType::Pdf, "pdf/report.pdf"),
+        ]
+        .into_iter()
+        .map(|(kind, key)| compute_destination_name("source:archive", key, kind))
+        .collect();
+
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), names.len(), "collision among {names:?}");
+        for name in &names {
+            assert!(name.ends_with(".pdf"), "{name}");
+        }
+    }
+
+    /// A multi-spelling kind's digest is over the source key, so the same
+    /// stem under `.md` and `.markdown` are distinct outputs rather than
+    /// one overwriting the other.
+    #[test]
+    fn markdowns_three_spellings_produce_distinct_destination_names() {
+        let names: Vec<String> = ["notes.md", "notes.markdown", "notes.mkd"]
+            .into_iter()
+            .map(|key| compute_destination_name("source:md", key, InputFileType::Md))
+            .collect();
+        let unique: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(unique.len(), 3, "{names:?}");
+    }
 }

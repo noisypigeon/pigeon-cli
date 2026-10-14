@@ -313,6 +313,25 @@ const UNEXPECTED_VIDEO_STREAM_SIGNATURE: &str = "is not an audio-only recording"
 /// invite.
 pub(crate) const NOT_A_WORKBOOK_SIGNATURE: &str = "is not a readable spreadsheet";
 
+/// `documents`'s not-a-readable-document rejection (ADR-0154), covering all
+/// three of its subprocess converters -- `soffice`, `ebook-convert` and
+/// `pandoc` -- plus a malformed `tsv`. Here for the same two reasons
+/// `NOT_A_WORKBOOK_SIGNATURE` is.
+pub(crate) const NOT_A_DOCUMENT_SIGNATURE: &str = "is not a readable document";
+
+/// `documents::ensure_keynote`'s rejection of a `.key` that is not an iWork
+/// container (ADR-0154 §2).
+///
+/// Distinct from `NOT_A_DOCUMENT_SIGNATURE` on purpose: this one is the
+/// difference between a wasted conversion and a published private key, so
+/// it is worth being able to grep a run's log for it specifically.
+pub(crate) const NOT_A_KEYNOTE_SIGNATURE: &str = "is not a Keynote presentation";
+
+/// `documents::clipping_to_text`'s rejection of a file that is not a
+/// readable macOS text clipping -- in practice a pre-OS-X resource-fork one
+/// (ADR-0154).
+pub(crate) const NOT_A_TEXTCLIPPING_SIGNATURE: &str = "is not a readable text clipping";
+
 /// Whether `err` means the operator pointed this run at the wrong
 /// `--input-file-type` for this file -- the file itself is intact
 /// (ADR-0143).
@@ -328,6 +347,9 @@ pub(crate) fn is_wrong_input_kind_error(err: &str) -> bool {
         NO_VIDEO_STREAM_SIGNATURE,
         UNEXPECTED_VIDEO_STREAM_SIGNATURE,
         NOT_A_WORKBOOK_SIGNATURE,
+        NOT_A_DOCUMENT_SIGNATURE,
+        NOT_A_KEYNOTE_SIGNATURE,
+        NOT_A_TEXTCLIPPING_SIGNATURE,
     ]
     .iter()
     .any(|signature| err.contains(signature))
@@ -664,6 +686,9 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         NO_VIDEO_STREAM_SIGNATURE,
         UNEXPECTED_VIDEO_STREAM_SIGNATURE,
         NOT_A_WORKBOOK_SIGNATURE,
+        NOT_A_DOCUMENT_SIGNATURE,
+        NOT_A_KEYNOTE_SIGNATURE,
+        NOT_A_TEXTCLIPPING_SIGNATURE,
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -1500,5 +1525,49 @@ mod tests {
         let truncated: (u32, u32) = (512, 512);
         let area_truncated = truncated.0 as u64 * truncated.1 as u64;
         assert_ne!(area_a, area_truncated);
+    }
+
+    // --- ADR-0154: documents ---
+
+    /// All three new signatures answer **both** questions: retrying does
+    /// not help, and the local copy has no diagnostic value. Built from
+    /// the consts so producer and matcher cannot drift -- the same shape
+    /// ADR-0153's audio pair uses.
+    #[test]
+    fn every_document_signature_is_non_retryable_and_wrong_input_kind() {
+        for signature in [
+            NOT_A_DOCUMENT_SIGNATURE,
+            NOT_A_KEYNOTE_SIGNATURE,
+            NOT_A_TEXTCLIPPING_SIGNATURE,
+        ] {
+            let message = format!("/tmp/thing.key {signature} -- some trailing detail");
+            assert!(
+                is_non_retryable_transcode_error(&message),
+                "not non-retryable: {message}"
+            );
+            assert!(
+                is_wrong_input_kind_error(&message),
+                "not wrong-input-kind: {message}"
+            );
+        }
+    }
+
+    /// The three stay distinct strings, so a run's log can be grepped for
+    /// the private-key case specifically (ADR-0154 §9).
+    #[test]
+    fn the_document_signatures_do_not_overlap() {
+        let all = [
+            NOT_A_DOCUMENT_SIGNATURE,
+            NOT_A_KEYNOTE_SIGNATURE,
+            NOT_A_TEXTCLIPPING_SIGNATURE,
+            NOT_A_WORKBOOK_SIGNATURE,
+        ];
+        for (i, a) in all.iter().enumerate() {
+            for (j, b) in all.iter().enumerate() {
+                if i != j {
+                    assert!(!a.contains(b), "{a} contains {b}");
+                }
+            }
+        }
     }
 }

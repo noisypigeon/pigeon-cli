@@ -22,14 +22,30 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 
-# `libreoffice-calc` is needed only by `job run transform --input-file-type
-# numbers` (ADR-0149): no Rust crate reads Apple's IWA format, so `soffice`
-# converts a `.numbers` file to `.xlsx` and `calamine` takes it from there.
-# It is the heaviest thing in this image by far; the other three spreadsheet
-# kinds need nothing beyond the binary itself.
+# The three LibreOffice packages back `job run transform`'s `soffice`
+# kinds: `-calc` reads `.numbers` (ADR-0149), and `-writer`/`-impress` read
+# the document kinds ADR-0154 added. The split matters -- `-calc` alone does
+# **not** open Writer or Impress formats, so without the other two, six
+# document kinds would fail on this image.
+#
+# `calibre` provides `ebook-convert` for `--input-file-type epub` alone:
+# LibreOffice's EPUB filter is export-only (measured against its own filter
+# registry), so it is the one document kind `soffice` cannot serve.
+# `pandoc` renders `md`/`rst` to prose.
+#
+# Together these are by far the heaviest thing in this image. Accepted
+# rather than worked around: the alternative is a job that cannot run where
+# it is deployed. The in-process kinds -- `xlsx`/`xls`/`csv`/`tsv`/`pdf`/
+# `txt`/`textclipping` -- need none of them.
+#
+# Still missing and still open: `rclone`, which *every* job requires on
+# PATH -- https://github.com/noisypigeon/pigeon-cli/issues/96.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
-       ffmpeg libreoffice-calc ca-certificates libssl3 \
+       ffmpeg \
+       libreoffice-calc libreoffice-writer libreoffice-impress \
+       calibre pandoc \
+       ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /usr/sbin/nologin pigeon

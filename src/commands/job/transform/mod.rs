@@ -15,12 +15,14 @@
 //! `placement`'s for the naming scheme.
 
 mod destination;
+mod documents;
 mod format;
 mod manifest;
 mod media;
 mod placement;
 mod push;
 mod sheets;
+mod soffice;
 pub mod wizard;
 mod worker;
 

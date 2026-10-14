@@ -50,6 +50,66 @@ pub(crate) enum InputFileType {
     /// a departure from ADR-0112's jpeg and ADR-0149's csv copy-through,
     /// at the cost of a second lossy generation.
     Opus,
+    /// Microsoft Word's old binary format (CFBF). A genuinely different
+    /// format from `Docx`, reached by a different LibreOffice filter, so
+    /// they are disjoint kinds rather than two spellings of one --
+    /// following `Xls`/`Xlsx` (ADR-0154).
+    Doc,
+    /// Microsoft Word's modern OOXML format.
+    Docx,
+    /// Apple Pages. Imported by the same `libetonyek` that reads
+    /// `Numbers`, so it needs `soffice` for the same reason (ADR-0154).
+    Pages,
+    /// Rich Text Format.
+    Rtf,
+    /// Already PDF: copied through byte-for-byte, the same reasoning
+    /// ADR-0112 applies to a `jpeg` and ADR-0149 to a `csv` input already
+    /// in the target format.
+    Pdf,
+    /// An e-book. The **only** document kind LibreOffice cannot read:
+    /// its EPUB filter is export-only (`flags=EXPORT ALIEN 3RDPARTYFILTER`
+    /// with no IMPORT counterpart anywhere in its registry), which is why
+    /// this kind alone shells out to Calibre's `ebook-convert` (ADR-0154).
+    Epub,
+    /// A PowerPoint presentation.
+    Pptx,
+    /// Apple Keynote -- and also the conventional extension for a PEM
+    /// private key, which is why this is the one kind whose input is
+    /// sniffed before conversion (ADR-0154 §2).
+    ///
+    /// LibreOffice does **not** refuse a private key named `.key`: it
+    /// imports it as a plain-text Writer document, exits 0, and writes a
+    /// valid PDF with the key legible in it. Measured. Without
+    /// `documents::ensure_keynote` a run of this kind would publish
+    /// private keys to the destination bucket.
+    Key,
+    /// Already plain text: copied through byte-for-byte.
+    Txt,
+    /// Markdown. The first kind with **three** spellings -- `md`,
+    /// `markdown` and `mkd` are one format under different extensions,
+    /// generalizing `Jpeg`'s two (ADR-0154 §1).
+    ///
+    /// Rendered to prose by `pandoc -t plain`, which **discards link URLs
+    /// and all inline markup**. Lossy and deliberate: this family is
+    /// defined by its output being readable prose (ADR-0154 §8).
+    Md,
+    /// reStructuredText. Shares `Md`'s converter and its markup loss; a
+    /// separate kind because `pandoc` needs to be told which reader to
+    /// use, and because the two are genuinely different formats.
+    Rst,
+    /// The macOS snippet created by dragging selected text to the Finder.
+    ///
+    /// A modern one is a **data-fork binary property list**, not the
+    /// resource fork the name suggests (measured, ADR-0154): one
+    /// `UTI-Data` key holding three encodings of the same text, one of
+    /// them already UTF-8. So it is read in-process with no external
+    /// binary and no platform dependency.
+    Textclipping,
+    /// A tab-separated table, converted to CSV. Deliberately **not** a
+    /// member of `is_spreadsheet()` (ADR-0154 §4): that predicate is
+    /// consulted by three unrelated concerns and this kind is
+    /// single-output, so it would be right for only one of them.
+    Tsv,
 }
 
 impl InputFileType {
@@ -64,9 +124,10 @@ impl InputFileType {
     /// directory of `.jpg` files with `--input-file-type=jpeg` silently
     /// matched nothing until this returned a set rather than one string.
     ///
-    /// Only `Jpeg` has a second spelling; every other kind keeps exactly
-    /// one, deliberately unspeculative -- a new alias gets added when a
-    /// real run is observed to miss files, not in anticipation.
+    /// `Jpeg` has two spellings and `Md` (ADR-0154) three; every other
+    /// kind keeps exactly one, deliberately unspeculative -- a new alias
+    /// gets added when a real run is observed to miss files, not in
+    /// anticipation.
     pub(crate) fn extensions(self) -> &'static [&'static str] {
         match self {
             InputFileType::Png => &["png"],
@@ -84,6 +145,20 @@ impl InputFileType {
             InputFileType::Aac => &["aac"],
             InputFileType::Wav => &["wav"],
             InputFileType::Opus => &["opus"],
+            InputFileType::Doc => &["doc"],
+            InputFileType::Docx => &["docx"],
+            InputFileType::Pages => &["pages"],
+            InputFileType::Rtf => &["rtf"],
+            InputFileType::Pdf => &["pdf"],
+            InputFileType::Epub => &["epub"],
+            InputFileType::Pptx => &["pptx"],
+            InputFileType::Key => &["key"],
+            InputFileType::Txt => &["txt"],
+            // One format, three extensions in the wild (ADR-0154 §1).
+            InputFileType::Md => &["md", "markdown", "mkd"],
+            InputFileType::Rst => &["rst"],
+            InputFileType::Textclipping => &["textclipping"],
+            InputFileType::Tsv => &["tsv"],
         }
     }
 
@@ -126,7 +201,20 @@ impl InputFileType {
             | InputFileType::Mp3
             | InputFileType::Aac
             | InputFileType::Wav
-            | InputFileType::Opus => self.canonical_extension(),
+            | InputFileType::Opus
+            | InputFileType::Doc
+            | InputFileType::Docx
+            | InputFileType::Pages
+            | InputFileType::Rtf
+            | InputFileType::Pdf
+            | InputFileType::Epub
+            | InputFileType::Pptx
+            | InputFileType::Key
+            | InputFileType::Txt
+            | InputFileType::Md
+            | InputFileType::Rst
+            | InputFileType::Textclipping
+            | InputFileType::Tsv => self.canonical_extension(),
         }
     }
 
@@ -159,9 +247,29 @@ impl InputFileType {
             "aac" => Ok(InputFileType::Aac),
             "wav" => Ok(InputFileType::Wav),
             "opus" => Ok(InputFileType::Opus),
+            "doc" => Ok(InputFileType::Doc),
+            "docx" => Ok(InputFileType::Docx),
+            "pages" => Ok(InputFileType::Pages),
+            "rtf" => Ok(InputFileType::Rtf),
+            "pdf" => Ok(InputFileType::Pdf),
+            "epub" => Ok(InputFileType::Epub),
+            "pptx" => Ok(InputFileType::Pptx),
+            "key" => Ok(InputFileType::Key),
+            "txt" => Ok(InputFileType::Txt),
+            "md" | "markdown" | "mkd" => Ok(InputFileType::Md),
+            "rst" => Ok(InputFileType::Rst),
+            "textclipping" => Ok(InputFileType::Textclipping),
+            "tsv" => Ok(InputFileType::Tsv),
+            // Grouped by output family rather than listed flat: at 29
+            // spellings a single run-on list is unreadable, and the
+            // grouping is the thing a reader actually needs -- which
+            // extension they will find their output under (ADR-0154).
             other => Err(format!(
-                "unknown --input-file-type '{other}' (expected png, jpeg, heic, mov, m4v, mp4, \
-                 mp4-audio, m4a, mp3, aac, wav, opus, numbers, xlsx, xls, or csv)"
+                "unknown --input-file-type '{other}' (expected an image kind png, jpeg or heic; \
+                 a video kind mov, m4v or mp4; an audio kind mp4-audio, m4a, mp3, aac, wav or \
+                 opus; a spreadsheet kind numbers, xlsx, xls or csv; a document kind doc, docx, \
+                 pages, rtf, pdf, epub, pptx or key; a text kind txt, md, markdown, mkd, rst or \
+                 textclipping; or tsv)"
             )),
         }
     }
@@ -185,7 +293,15 @@ impl InputFileType {
     /// The fixed output extension for this input kind: `jpg` for every image
     /// kind (ADR-0112), `mp4` for every video kind (ADR-0122) regardless of
     /// which video extension was the input, `opus` for `Mp4Audio`
-    /// (ADR-0142).
+    /// (ADR-0142), and -- since ADR-0154 -- `pdf`, `txt` or `csv` for a
+    /// document kind.
+    ///
+    /// Documents are the first input family whose members do **not** share
+    /// one output extension, which is why ADR-0154 §4 adds no
+    /// `is_document()` to sit beside `is_video()`/`is_audio()`/
+    /// `is_spreadsheet()`: those work because each of their families has a
+    /// single output, so the predicate and the branch it selects coincide.
+    /// Here this function carries the distinction instead.
     ///
     /// An exhaustive `match` rather than ADR-0112's original
     /// `if is_video() { "mp4" } else { "jpg" }`, so a kind added later
@@ -203,19 +319,23 @@ impl InputFileType {
             InputFileType::Numbers
             | InputFileType::Xlsx
             | InputFileType::Xls
-            | InputFileType::Csv => "csv",
+            | InputFileType::Csv
+            | InputFileType::Tsv => "csv",
+            InputFileType::Doc
+            | InputFileType::Docx
+            | InputFileType::Pages
+            | InputFileType::Rtf
+            | InputFileType::Pdf
+            | InputFileType::Epub
+            | InputFileType::Pptx
+            | InputFileType::Key => "pdf",
+            InputFileType::Txt
+            | InputFileType::Md
+            | InputFileType::Rst
+            | InputFileType::Textclipping => "txt",
         }
     }
 
-    /// Whether this kind is a spreadsheet, i.e. goes through
-    /// `super::sheets` rather than `super::media` (ADR-0149).
-    ///
-    /// Asks what a kind *is* rather than making each call site widen a
-    /// `match` arm list. That matters here because a spreadsheet is this
-    /// job's first kind where one input yields *several* outputs, so the
-    /// branch it selects is structural rather than a choice of encoder --
-    /// and a kind added later that forgot to appear in such a list would
-    /// silently take the single-output path.
     /// Whether this kind is transcoded to Opus by `media::transcode_audio`
     /// (ADR-0153).
     ///
@@ -261,6 +381,22 @@ impl InputFileType {
         }
     }
 
+    /// Whether this kind is a spreadsheet, i.e. goes through
+    /// `super::sheets` rather than `super::media` (ADR-0149).
+    ///
+    /// Asks what a kind *is* rather than making each call site widen a
+    /// `match` arm list. That matters here because a spreadsheet is this
+    /// job's first kind where one input yields *several* outputs, so the
+    /// branch it selects is structural rather than a choice of encoder --
+    /// and a kind added later that forgot to appear in such a list would
+    /// silently take the single-output path.
+    ///
+    /// `Tsv` is deliberately **not** a member despite also producing a
+    /// `.csv` (ADR-0154 §4). This predicate is consulted by three
+    /// unrelated concerns -- `strict_stem` selection in
+    /// `placement::group_key`, `place_sheet` versus `place_one`, and
+    /// converter dispatch -- and a `tsv` is single-output, so joining it
+    /// here would be right for only one of the three.
     pub(crate) fn is_spreadsheet(self) -> bool {
         matches!(
             self,
@@ -563,7 +699,8 @@ mod tests {
             "xlsm",
             "xlsb",
             "ods",
-            "tsv",
+            // `tsv` was here until ADR-0154 made it a real kind -- the
+            // same reversal ADR-0153 made for `opus`.
         ] {
             assert!(InputFileType::parse(value).is_err(), "{value} parsed");
         }
@@ -861,6 +998,196 @@ mod tests {
             VideoQuality::Lossless,
         ] {
             assert_eq!(quality.as_str(), quality.to_string());
+        }
+    }
+
+    // --- ADR-0154: documents ---
+
+    #[test]
+    fn parse_accepts_every_document_kind_case_insensitively() {
+        for (value, expected) in [
+            ("doc", InputFileType::Doc),
+            ("DOC", InputFileType::Doc),
+            ("docx", InputFileType::Docx),
+            ("DocX", InputFileType::Docx),
+            ("pages", InputFileType::Pages),
+            ("rtf", InputFileType::Rtf),
+            ("RTF", InputFileType::Rtf),
+            ("pdf", InputFileType::Pdf),
+            ("epub", InputFileType::Epub),
+            ("pptx", InputFileType::Pptx),
+            ("key", InputFileType::Key),
+            ("txt", InputFileType::Txt),
+            ("rst", InputFileType::Rst),
+            ("textclipping", InputFileType::Textclipping),
+            ("textClipping", InputFileType::Textclipping),
+            ("tsv", InputFileType::Tsv),
+            ("TSV", InputFileType::Tsv),
+        ] {
+            assert_eq!(InputFileType::parse(value), Ok(expected), "{value}");
+        }
+    }
+
+    /// **The first kind with three spellings** (ADR-0154 §1), generalizing
+    /// `Jpeg`'s two. They are one format, so one variant -- and the
+    /// canonical one is `md`, which is the prefix a run addresses.
+    #[test]
+    fn markdowns_three_spellings_are_one_kind() {
+        for value in ["md", "markdown", "mkd", "MD", "Markdown", "MKD"] {
+            assert_eq!(
+                InputFileType::parse(value),
+                Ok(InputFileType::Md),
+                "{value}"
+            );
+        }
+        assert_eq!(InputFileType::Md.canonical_extension(), "md");
+        assert_eq!(InputFileType::Md.name(), "md");
+        for ext in ["md", "markdown", "mkd", "MARKDOWN"] {
+            assert!(InputFileType::Md.matches_extension(ext), "{ext}");
+        }
+    }
+
+    /// `doc` and `docx` are genuinely different formats reached by
+    /// different LibreOffice filters, so they are disjoint kinds -- the
+    /// `xls`/`xlsx` precedent (ADR-0154 §1). `*.doc` does not glob-match
+    /// `foo.docx`, so they stay disjoint at the rclone filter too.
+    #[test]
+    fn doc_and_docx_are_disjoint_kinds() {
+        assert!(InputFileType::Doc.matches_extension("doc"));
+        assert!(!InputFileType::Doc.matches_extension("docx"));
+        assert!(InputFileType::Docx.matches_extension("docx"));
+        assert!(!InputFileType::Docx.matches_extension("doc"));
+        assert_ne!(InputFileType::Doc, InputFileType::Docx);
+    }
+
+    #[test]
+    fn parse_rejects_neighbouring_document_spellings() {
+        for value in [
+            "odt",
+            "odp",
+            "ods",
+            "pps",
+            "ppt",
+            "text",
+            "markdown2",
+            "mdown",
+            "restructuredtext",
+            "clipping",
+            "textclip",
+            "tab",
+            "tsvx",
+            "doc.x",
+            "pagesx",
+            "keynote",
+            "ebook",
+        ] {
+            assert!(InputFileType::parse(value).is_err(), "{value} parsed");
+        }
+    }
+
+    /// Documents are the first family whose members do **not** share one
+    /// output extension (ADR-0154), which is the whole reason §4 adds no
+    /// `is_document()` predicate.
+    #[test]
+    fn the_document_kinds_fan_out_to_three_output_extensions() {
+        for kind in [
+            InputFileType::Doc,
+            InputFileType::Docx,
+            InputFileType::Pages,
+            InputFileType::Rtf,
+            InputFileType::Pdf,
+            InputFileType::Epub,
+            InputFileType::Pptx,
+            InputFileType::Key,
+        ] {
+            assert_eq!(kind.output_extension(), "pdf", "{kind}");
+        }
+        for kind in [
+            InputFileType::Txt,
+            InputFileType::Md,
+            InputFileType::Rst,
+            InputFileType::Textclipping,
+        ] {
+            assert_eq!(kind.output_extension(), "txt", "{kind}");
+        }
+        assert_eq!(InputFileType::Tsv.output_extension(), "csv");
+    }
+
+    /// No document kind is video, audio, or -- crucially -- a spreadsheet.
+    /// `Tsv` outputs `.csv` but is single-output, and `is_spreadsheet()`
+    /// selects three unrelated behaviours it must not take (ADR-0154 §4).
+    #[test]
+    fn no_document_kind_is_video_audio_or_spreadsheet() {
+        for kind in [
+            InputFileType::Doc,
+            InputFileType::Docx,
+            InputFileType::Pages,
+            InputFileType::Rtf,
+            InputFileType::Pdf,
+            InputFileType::Epub,
+            InputFileType::Pptx,
+            InputFileType::Key,
+            InputFileType::Txt,
+            InputFileType::Md,
+            InputFileType::Rst,
+            InputFileType::Textclipping,
+            InputFileType::Tsv,
+        ] {
+            assert!(!kind.is_video(), "{kind} is_video");
+            assert!(!kind.is_audio(), "{kind} is_audio");
+            assert!(!kind.is_spreadsheet(), "{kind} is_spreadsheet");
+        }
+        // The four real spreadsheet kinds are unchanged.
+        for kind in [
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
+        ] {
+            assert!(kind.is_spreadsheet(), "{kind}");
+        }
+    }
+
+    /// Prefix inference comes free from `canonical_extension()` /
+    /// `output_extension()`: `source:docx/` -> `destination:pdf/`.
+    #[test]
+    fn every_document_kinds_display_name_parses_back_to_itself() {
+        for kind in [
+            InputFileType::Doc,
+            InputFileType::Docx,
+            InputFileType::Pages,
+            InputFileType::Rtf,
+            InputFileType::Pdf,
+            InputFileType::Epub,
+            InputFileType::Pptx,
+            InputFileType::Key,
+            InputFileType::Txt,
+            InputFileType::Md,
+            InputFileType::Rst,
+            InputFileType::Textclipping,
+            InputFileType::Tsv,
+        ] {
+            assert_eq!(InputFileType::parse(kind.name()), Ok(kind), "{kind}");
+            assert_eq!(kind.name(), kind.canonical_extension(), "{kind}");
+        }
+    }
+
+    /// The error text is grouped by output family rather than listed flat
+    /// (ADR-0154): at 29 spellings a run-on list is unreadable, and the
+    /// grouping is what a reader actually needs.
+    #[test]
+    fn the_parse_error_names_every_family() {
+        let err = InputFileType::parse("nonsense").expect_err("rejected");
+        for fragment in [
+            "image kind",
+            "video kind",
+            "audio kind",
+            "spreadsheet kind",
+            "document kind",
+            "text kind",
+            "tsv",
+        ] {
+            assert!(err.contains(fragment), "{fragment} missing from: {err}");
         }
     }
 }

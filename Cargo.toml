@@ -43,6 +43,12 @@ indicatif = "0.18.6"
 mail-parser = "0.11.9"
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
+# ADR-0154: reads a macOS `.textclipping`, which is a binary property list
+# in the data fork -- measured, not the resource fork the format's age
+# suggests. `default-features = false` drops the serde derive support this
+# only needs `Value` for; `quick-xml` comes along but was already in the
+# lockfile transitively via `calamine`.
+plist = { version = "1.7", default-features = false }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

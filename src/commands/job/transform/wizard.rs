@@ -20,7 +20,7 @@ use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
 use super::format::{AudioQuality, InputFileType, VideoQuality};
-use super::{TransformJob, media, sheets, worker};
+use super::{TransformJob, documents, media, soffice, worker};
 
 /// Resolves `--input-file-type` -- mandatory, a small vetted menu
 /// (`InputFileType::parse`), never falls through to an interactive prompt
@@ -54,6 +54,21 @@ impl WizardInput for InputFileTypeInput {
             "xlsx",
             "xls",
             "csv",
+            "doc",
+            "docx",
+            "pages",
+            "rtf",
+            "pdf",
+            "epub",
+            "pptx",
+            "key",
+            "txt",
+            "md",
+            "markdown",
+            "mkd",
+            "rst",
+            "textclipping",
+            "tsv",
         ];
         let selected = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Input file type")
@@ -404,12 +419,72 @@ pub fn dispatch(
 /// which was correct when every input kind was media. It no longer is:
 /// `xlsx`/`xls`/`csv` are read and written in-process by `sheets`, and
 /// `numbers` needs `soffice` instead. Demanding the union would make a
-/// pure-spreadsheet deployment install a transcoder it never invokes.
+/// pure-spreadsheet deployment install a transcoder it never invokes --
+/// and since ADR-0154 the union is four binaries, not two.
 async fn required_converter_available(input_file_type: InputFileType) -> Result<(), String> {
+    match converter_for(input_file_type) {
+        Converter::None => Ok(()),
+        Converter::Ffmpeg => media::check_ffmpeg_available().await,
+        Converter::Soffice => soffice::check_available().await,
+        Converter::Calibre => documents::check_calibre_available().await,
+        Converter::Pandoc => documents::check_pandoc_available().await,
+    }
+}
+
+/// Which external binary, if any, an input kind's conversion shells out to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Converter {
+    /// Converted in-process: no binary beyond `rclone` itself.
+    None,
+    Ffmpeg,
+    Soffice,
+    /// Calibre's `ebook-convert`, for `epub` alone (ADR-0154).
+    Calibre,
+    Pandoc,
+}
+
+/// An **exhaustive** match, which is the whole point of it (ADR-0154 §5).
+///
+/// This was `_ => media::check_ffmpeg_available()`, so any kind added
+/// without touching it silently demanded `ffmpeg` and never checked its
+/// real converter -- a `docx` run would have passed preflight on a host
+/// with no LibreOffice and then failed on the first file. ADR-0149 §7
+/// catalogued four places a new variant must be added that the compiler
+/// cannot check and missed this fifth, which that same ADR introduced.
+/// Exhaustive here hands it to the compiler permanently.
+fn converter_for(input_file_type: InputFileType) -> Converter {
     match input_file_type {
-        InputFileType::Numbers => sheets::check_soffice_available().await,
-        InputFileType::Xlsx | InputFileType::Xls | InputFileType::Csv => Ok(()),
-        _ => media::check_ffmpeg_available().await,
+        InputFileType::Png
+        | InputFileType::Jpeg
+        | InputFileType::Heic
+        | InputFileType::Mov
+        | InputFileType::M4v
+        | InputFileType::Mp4
+        | InputFileType::Mp4Audio
+        | InputFileType::M4a
+        | InputFileType::Mp3
+        | InputFileType::Aac
+        | InputFileType::Wav
+        | InputFileType::Opus => Converter::Ffmpeg,
+        InputFileType::Numbers
+        | InputFileType::Doc
+        | InputFileType::Docx
+        | InputFileType::Pages
+        | InputFileType::Rtf
+        | InputFileType::Pptx
+        | InputFileType::Key => Converter::Soffice,
+        InputFileType::Epub => Converter::Calibre,
+        InputFileType::Md | InputFileType::Rst => Converter::Pandoc,
+        // Read and written in-process: `sheets` via `calamine`/`csv`,
+        // `documents` via `csv` and `plist`, and the three kinds already in
+        // their target format, which are a plain file copy.
+        InputFileType::Xlsx
+        | InputFileType::Xls
+        | InputFileType::Csv
+        | InputFileType::Tsv
+        | InputFileType::Pdf
+        | InputFileType::Txt
+        | InputFileType::Textclipping => Converter::None,
     }
 }
 

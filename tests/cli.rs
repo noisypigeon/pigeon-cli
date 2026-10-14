@@ -1147,7 +1147,9 @@ fn job_run_transform_rejects_an_unknown_kind_and_lists_the_spreadsheet_ones() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("unknown --input-file-type 'xlsm'"))
-        .stderr(predicate::str::contains("numbers, xlsx, xls, or csv"));
+        .stderr(predicate::str::contains(
+            "a spreadsheet kind numbers, xlsx, xls or csv",
+        ));
 }
 
 /// ADR-0153: an invalid `--audio-quality` fails fast and never falls
@@ -1718,4 +1720,223 @@ fn keyring_add_help_lists_only_email_and_bucket() {
         .stdout(predicate::str::contains("email"))
         .stdout(predicate::str::contains("bucket"))
         .stdout(predicate::str::contains("encryption-key").not());
+}
+
+// --- ADR-0154: documents ---
+
+/// ADR-0154: `transform --help` names every new input kind. Backticked so
+/// an incidental substring elsewhere in the help text cannot satisfy the
+/// assertion.
+#[test]
+fn job_run_transform_help_lists_every_document_input_kind() {
+    let config_dir = TempDir::new().unwrap();
+    let assert = pigeon_in(&config_dir)
+        .args(["job", "run", "transform", "--help"])
+        .assert()
+        .success();
+    let help = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    for kind in [
+        "`doc`",
+        "`docx`",
+        "`pages`",
+        "`rtf`",
+        "`pdf`",
+        "`epub`",
+        "`pptx`",
+        "`key`",
+        "`txt`",
+        "`md`",
+        "`rst`",
+        "`textclipping`",
+        "`tsv`",
+    ] {
+        assert!(help.contains(kind), "{kind} missing from transform --help");
+    }
+}
+
+/// The two new binaries are named in the help, so an operator learns what a
+/// document run needs before it fails on the first file.
+#[test]
+fn job_run_transform_help_names_the_new_converters() {
+    let config_dir = TempDir::new().unwrap();
+    let assert = pigeon_in(&config_dir)
+        .args(["job", "run", "transform", "--help"])
+        .assert()
+        .success();
+    let help = String::from_utf8_lossy(&assert.get_output().stdout).to_string();
+    assert!(help.contains("ebook-convert"), "{help}");
+    assert!(help.contains("pandoc"), "{help}");
+}
+
+/// ADR-0154 §5: the preflight is now an exhaustive match, so each kind
+/// demands exactly its own converter. `tsv` is read and written in-process,
+/// so it must demand neither `ffmpeg` nor `soffice`.
+#[test]
+fn job_run_transform_with_a_tsv_input_kind_requires_no_converter() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "tsv",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("'rclone' was not found on PATH"))
+        .stderr(predicate::str::contains("'ffmpeg' was not found").not())
+        .stderr(predicate::str::contains("'soffice' was not found").not())
+        .stderr(predicate::str::contains("'pandoc' was not found").not());
+}
+
+/// A Word document goes through LibreOffice, never `ffmpeg`. Before
+/// ADR-0154 §5 replaced the preflight's wildcard arm, this run would have
+/// demanded `ffmpeg` and never checked `soffice` at all.
+#[test]
+fn job_run_transform_with_a_docx_input_kind_requires_soffice_not_ffmpeg() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "docx",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("'soffice' was not found on PATH"))
+        .stderr(predicate::str::contains("'ffmpeg' was not found").not());
+}
+
+/// `epub` is the one kind LibreOffice cannot read -- its EPUB filter is
+/// export-only -- so this run must name Calibre, not `soffice`.
+#[test]
+fn job_run_transform_with_an_epub_input_kind_requires_calibre() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "epub",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "'ebook-convert' was not found on PATH",
+        ))
+        .stderr(predicate::str::contains("'ffmpeg' was not found").not())
+        .stderr(predicate::str::contains("'soffice' was not found").not());
+}
+
+/// Markdown and reStructuredText are rendered by `pandoc`.
+#[test]
+fn job_run_transform_with_a_markdown_input_kind_requires_pandoc() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "md",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("'pandoc' was not found on PATH"))
+        .stderr(predicate::str::contains("'ffmpeg' was not found").not())
+        .stderr(predicate::str::contains("'soffice' was not found").not());
+}
+
+/// ADR-0154 §1: `markdown` and `mkd` are accepted spellings of the same
+/// kind, so they must reach the same preflight as `md`.
+#[test]
+fn job_run_transform_accepts_every_markdown_spelling() {
+    for spelling in ["md", "markdown", "mkd"] {
+        let config_dir = TempDir::new().unwrap();
+        let local_output = TempDir::new().unwrap();
+        let empty_path_dir = TempDir::new().unwrap();
+
+        pigeon_in(&config_dir)
+            .env("PATH", empty_path_dir.path())
+            .args([
+                "job",
+                "run",
+                "transform",
+                "--input-file-type",
+                spelling,
+                "--source",
+                "source",
+                "--destination",
+                "dest",
+                "--local-output",
+                local_output.path().to_str().unwrap(),
+                "--concurrency",
+                "4",
+                "--non-interactive",
+            ])
+            .assert()
+            .failure()
+            .code(1)
+            .stderr(predicate::str::contains("'pandoc' was not found on PATH"));
+    }
 }
