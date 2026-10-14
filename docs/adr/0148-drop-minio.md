@@ -98,8 +98,8 @@ One unrelated-but-adjacent prune, found while auditing the manifest: **`time`'s 
 ## Out of scope
 
 - **PR-triggered CI** ([#47](https://github.com/noisypigeon/pigeon-cli/issues/47)). The gate is local `mise run ci` by ADR-0029's design and stays that way; the issue remains open as an accepted, documented gap rather than silently carried. One correction to its text, found while confirming it: `release.yml` runs `fmt-check` and `lint` on push to `main` but **never `cargo test`**, and then publishes to crates.io -- so the gap is not just "no PR check", it is "tests never run server-side at all". Noted in the issue; not acted on here.
-- **Unused-dependency detection.** Nothing in the toolchain catches one, which is the structural cause of ADR-0147 shipping two. Filed per ADR-0031 rather than bolted on here, since adding a tool to `mise run ci` is a tooling decision with its own trade-offs.
-- **Tightening the `pub mod` back-doors.** `client.rs`'s four dead functions survived ~130 ADRs because a fully-`pub` module path makes `dead_code` blind. Several `pub mod`s under `commands/job/` and `keyring/bucket/` could be `pub(crate)`, which would let the compiler catch the next one instead of an ADR census. Filed per ADR-0031.
+- **Unused-dependency detection.** Nothing in the toolchain catches one, which is the structural cause of ADR-0147 shipping two. Filed per ADR-0031 rather than bolted on here, since adding a tool to `mise run ci` is a tooling decision with its own trade-offs. ([#91](https://github.com/noisypigeon/pigeon-cli/issues/91))
+- **Tightening the `pub mod` back-doors.** `client.rs`'s four dead functions survived ~130 ADRs because a fully-`pub` module path makes `dead_code` blind. Several `pub mod`s under `commands/job/` and `keyring/bucket/` could be `pub(crate)`, which would let the compiler catch the next one instead of an ADR census. Filed per ADR-0031. ([#92](https://github.com/noisypigeon/pigeon-cli/issues/92))
 - **Issue #63's stderr-substring fragility.** §3 deliberately declines to add a second instance; it does not fix the existing one in `Lsjson::finish`.
 
 ## Consequences
