@@ -20,7 +20,7 @@ use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
 use super::format::{InputFileType, VideoQuality};
-use super::{TransformJob, media, worker};
+use super::{TransformJob, media, sheets, worker};
 
 /// Resolves `--input-file-type` -- mandatory, a small vetted menu
 /// (`InputFileType::parse`), never falls through to an interactive prompt
@@ -37,7 +37,19 @@ impl WizardInput for InputFileTypeInput {
     }
 
     fn prompt(&self) -> Result<InputFileType, String> {
-        let options = ["png", "jpeg", "heic", "mov", "m4v", "mp4", "mp4-audio"];
+        let options = [
+            "png",
+            "jpeg",
+            "heic",
+            "mov",
+            "m4v",
+            "mp4",
+            "mp4-audio",
+            "numbers",
+            "xlsx",
+            "xls",
+            "csv",
+        ];
         let selected = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Input file type")
             .items(options)
@@ -336,6 +348,22 @@ pub fn dispatch(
     ))
 }
 
+/// Confirms the external converter this run's input kind actually needs is
+/// on `PATH` (ADR-0149 §6).
+///
+/// Before ADR-0149 this job unconditionally required `ffmpeg`/`ffprobe`,
+/// which was correct when every input kind was media. It no longer is:
+/// `xlsx`/`xls`/`csv` are read and written in-process by `sheets`, and
+/// `numbers` needs `soffice` instead. Demanding the union would make a
+/// pure-spreadsheet deployment install a transcoder it never invokes.
+async fn required_converter_available(input_file_type: InputFileType) -> Result<(), String> {
+    match input_file_type {
+        InputFileType::Numbers => sheets::check_soffice_available().await,
+        InputFileType::Xlsx | InputFileType::Xls | InputFileType::Csv => Ok(()),
+        _ => media::check_ffmpeg_available().await,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_async(
     input_file_type: Option<String>,
@@ -358,10 +386,27 @@ async fn dispatch_async(
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    // Checked before any prompts -- fail immediately on a missing binary,
-    // not partway through a long-running pipeline. `rclone`'s own
-    // equivalent check now lives in `prepare_rclone` below (ADR-0145 §5).
-    if let Err(err) = media::check_ffmpeg_available().await {
+    // ADR-0149 §6: the input kind resolves *first*, because which external
+    // binaries this run needs depends on it -- a `csv`/`xlsx`/`xls` run
+    // needs neither `ffmpeg` nor `soffice`, and a `numbers` run needs
+    // `soffice` rather than `ffmpeg`. Resolving it here rather than after
+    // `load_keyring` keeps the property the original ordering protected:
+    // the binary check still happens before any prompt that could block on
+    // a long pipeline. (`InputFileTypeInput` reads no keyring state, so
+    // moving it up is safe.)
+    let input_file_type = match (InputFileTypeInput {
+        flag: input_file_type,
+    })
+    .resolve(non_interactive)
+    {
+        Ok(value) => value,
+        Err(err) => return fail(err),
+    };
+
+    // Fail immediately on a missing binary, not partway through a
+    // long-running pipeline. `rclone`'s own equivalent check lives in
+    // `prepare_rclone` below (ADR-0145 §5) and applies to every kind.
+    if let Err(err) = required_converter_available(input_file_type).await {
         return fail(err);
     }
 
@@ -372,15 +417,6 @@ async fn dispatch_async(
     if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
-
-    let input_file_type = match (InputFileTypeInput {
-        flag: input_file_type,
-    })
-    .resolve(non_interactive)
-    {
-        Ok(value) => value,
-        Err(err) => return fail(err),
-    };
     // Only consulted for a video input kind (ADR-0122) -- png/jpeg/heic runs
     // are never prompted for this and the value goes unused.
     let video_quality = if input_file_type.is_video() {
@@ -532,7 +568,7 @@ async fn dispatch_async(
                 .count();
             let mut message = format!(
                 "Pulled {} file(s); {transcoded} transcoded, {copied_through} copied through, \
-                 {failed} failed; pushed {} file(s).",
+                 {failed} failed; pushed {} output file(s).",
                 summary.pulled, summary.pushed
             );
             // ADR-0130: a run that correctly skipped a large already-done

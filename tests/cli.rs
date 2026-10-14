@@ -718,6 +718,13 @@ fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_fl
         .stdout(predicate::str::contains("media:mp4/"))
         // ADR-0142: the audio-only input kind is listed.
         .stdout(predicate::str::contains("mp4-audio"))
+        // ADR-0149: the four spreadsheet input kinds are listed. Matched
+        // with their backticks so a bare `csv`/`xls` substring appearing
+        // incidentally in future help text cannot satisfy this.
+        .stdout(predicate::str::contains("`numbers`"))
+        .stdout(predicate::str::contains("`xlsx`"))
+        .stdout(predicate::str::contains("`xls`"))
+        .stdout(predicate::str::contains("`csv`"))
         // ADR-0136: bucket-config aliases, not raw rclone path strings, and
         // no separate upload phase of the shape --upload-concurrency sizes.
         .stdout(predicate::str::contains("--source-path").not())
@@ -1001,6 +1008,138 @@ fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_er
         .failure()
         .code(1)
         .stderr(predicate::str::contains("was not found on PATH"));
+}
+
+/// ADR-0149 §6: the external-converter preflight is per input kind, so a
+/// `csv` run must not demand `ffmpeg` it never invokes. It still fails on
+/// `rclone`, which every kind needs -- so this asserts on *which* binary is
+/// named, not merely that something was missing.
+#[test]
+fn job_run_transform_with_a_csv_input_kind_does_not_require_ffmpeg() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "csv",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("'rclone' was not found on PATH"))
+        .stderr(predicate::str::contains("'ffmpeg' was not found").not())
+        .stderr(predicate::str::contains("'soffice' was not found").not());
+}
+
+/// The converse: an image kind still requires `ffmpeg`, and reports it
+/// before `rclone` -- which is why the pre-existing
+/// `..._without_rclone_or_ffmpeg_on_path_...` test above keeps passing.
+#[test]
+fn job_run_transform_with_an_image_input_kind_still_requires_ffmpeg() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "png",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("'ffmpeg' was not found on PATH"));
+}
+
+/// ADR-0149: a `numbers` run needs `soffice` rather than `ffmpeg`.
+#[test]
+fn job_run_transform_with_a_numbers_input_kind_requires_soffice_not_ffmpeg() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "numbers",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("'soffice' was not found on PATH"))
+        .stderr(predicate::str::contains("'ffmpeg' was not found").not());
+}
+
+/// ADR-0149: an unknown kind still fails fast, and the error now names the
+/// spreadsheet kinds among the valid ones.
+#[test]
+fn job_run_transform_rejects_an_unknown_kind_and_lists_the_spreadsheet_ones() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "xlsm",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("unknown --input-file-type 'xlsm'"))
+        .stderr(predicate::str::contains("numbers, xlsx, xls, or csv"));
 }
 
 // --- ADR-0145: --keyring-path -------------------------------------------

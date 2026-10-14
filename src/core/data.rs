@@ -266,9 +266,145 @@ pub(crate) fn is_apple_double_basename(key: &str) -> bool {
     key.rsplit('/').next().unwrap_or(key).starts_with("._")
 }
 
+/// Whether `key`'s final path component is an Excel lock file (`~$<name>`),
+/// the stub Excel leaves beside an open workbook (ADR-0149).
+///
+/// Same shape and the same two choke points as
+/// `is_apple_double_basename`, and for the same reason: these match an
+/// `--include '*.xlsx'` filter but are not workbooks, so without this they
+/// arrive as *failures* rather than skips -- and a deterministic,
+/// non-retryable failure class is exactly what can trip ADR-0121's circuit
+/// breaker into aborting a whole run.
+pub(crate) fn is_excel_lock_basename(key: &str) -> bool {
+    key.rsplit('/').next().unwrap_or(key).starts_with("~$")
+}
+
+/// Longest a sheet-name slug may be, in bytes, inside a destination
+/// filename (ADR-0149).
+///
+/// The budget: a `MAX_FILENAME_LENGTH` stem (100) + `-` + 16 hex digest +
+/// `-` + a `NNofTT` marker (8 at three digits each) + `-` + this (40) +
+/// `.csv` = 171 bytes, comfortably inside the 255-byte per-component limit
+/// `MAX_FILENAME_LENGTH`'s own doc comment reasons about.
+const MAX_SHEET_SLUG_LENGTH: usize = 40;
+
+/// Reduces a workbook sheet name to a filename-safe, report-safe slug
+/// (ADR-0149): keeps `[A-Za-z0-9._-]`, maps every other character to `-`,
+/// collapses runs, trims leading/trailing `-`, truncates to
+/// `MAX_SHEET_SLUG_LENGTH`, and falls back to `"sheet"` when nothing
+/// usable remains.
+///
+/// Deliberately **stricter than `sanitize_filename`**, which does no
+/// character filtering at all -- it keeps the final path component and
+/// truncates, nothing more. That is sufficient for a filename but not
+/// here, because this slug is also written into `transform-report.txt`,
+/// whose format is tab-separated and one-line-per-row, and into that
+/// report's comma-joined `destination_filenames` column. A sheet name
+/// containing a tab, a newline, or a comma would corrupt all three.
+/// Sheet names are author-controlled text, so this is the same class of
+/// problem ADR-0033 fixed for `yaml_quote`, solved the same way: restrict
+/// the character set at the producer rather than escape at each consumer.
+///
+/// The report's comma-join depends on this excluding `,`. Do not widen the
+/// kept set without revisiting `transform::worker::write_report`.
+pub(crate) fn sheet_slug(name: &str) -> String {
+    let mut slug = String::with_capacity(name.len().min(MAX_SHEET_SLUG_LENGTH));
+    let mut pending_separator = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
+            if pending_separator && !slug.is_empty() {
+                slug.push('-');
+            }
+            pending_separator = false;
+            if slug.len() >= MAX_SHEET_SLUG_LENGTH {
+                break;
+            }
+            slug.push(ch);
+        } else {
+            pending_separator = true;
+        }
+    }
+    let trimmed = slug.trim_matches('-');
+    if trimmed.is_empty() {
+        return "sheet".to_string();
+    }
+    trimmed.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn is_excel_lock_basename_matches_only_an_excel_lock_stub() {
+        assert!(is_excel_lock_basename("~$Budget.xlsx"));
+        assert!(is_excel_lock_basename("finance/2026/~$Budget.xlsx"));
+        assert!(!is_excel_lock_basename("Budget.xlsx"));
+        assert!(!is_excel_lock_basename("finance/~tilde/Budget.xlsx"));
+        // A `~$` anywhere but the start of the basename is an ordinary name.
+        assert!(!is_excel_lock_basename("Budget~$.xlsx"));
+        assert!(!is_excel_lock_basename(""));
+    }
+
+    #[test]
+    fn sheet_slug_keeps_safe_characters_and_collapses_the_rest() {
+        assert_eq!(sheet_slug("Summary"), "Summary");
+        assert_eq!(sheet_slug("Q1 Detail"), "Q1-Detail");
+        assert_eq!(sheet_slug("2026_totals.v2"), "2026_totals.v2");
+        assert_eq!(sheet_slug("already-hyphenated"), "already-hyphenated");
+        // Runs of unsafe characters collapse to a single separator.
+        assert_eq!(sheet_slug("A   ///   B"), "A-B");
+        // Leading/trailing separators are trimmed, never left dangling.
+        assert_eq!(sheet_slug("  Summary  "), "Summary");
+        assert_eq!(sheet_slug("///"), "sheet");
+        assert_eq!(sheet_slug(""), "sheet");
+    }
+
+    /// The reason this exists rather than reusing `sanitize_filename`
+    /// (ADR-0149): the slug is written into `transform-report.txt`, which is
+    /// tab-separated and one-line-per-row, and into that report's
+    /// comma-joined filename column. A sheet name is author-controlled, so
+    /// a tab, newline, or comma reaching the slug would corrupt the report.
+    #[test]
+    fn sheet_slug_strips_characters_that_would_corrupt_the_report() {
+        for (name, expected) in [
+            ("has\ttab", "has-tab"),
+            ("has\nnewline", "has-newline"),
+            ("has\r\ncrlf", "has-crlf"),
+            ("Q1,Q2", "Q1-Q2"),
+            ("a\u{1}soh", "a-soh"),
+        ] {
+            let slug = sheet_slug(name);
+            assert_eq!(slug, expected, "slug for {name:?}");
+            assert!(!slug.contains('\t'), "{slug:?} kept a tab");
+            assert!(!slug.contains('\n'), "{slug:?} kept a newline");
+            assert!(!slug.contains(','), "{slug:?} kept a comma");
+        }
+        // `sanitize_filename`, by contrast, passes all of them straight
+        // through -- which is exactly why it is not used for this.
+        assert!(sanitize_filename("Q1,Q2").contains(','));
+    }
+
+    /// A path separator must never survive, or `Path::join` would create an
+    /// implicit subdirectory -- ADR-0013's original concern, which this
+    /// slug inherits by restricting the character set rather than by
+    /// taking the final component.
+    #[test]
+    fn sheet_slug_cannot_emit_a_path_separator() {
+        assert_eq!(sheet_slug("a/b"), "a-b");
+        assert_eq!(sheet_slug("../escape"), "..-escape");
+        assert!(!sheet_slug("a/../b").contains('/'));
+    }
+
+    #[test]
+    fn sheet_slug_truncates_to_the_budgeted_length() {
+        let slug = sheet_slug(&"x".repeat(200));
+        assert_eq!(slug.len(), MAX_SHEET_SLUG_LENGTH);
+        // Non-ASCII must not be cut mid-character; the filter drops it
+        // entirely, so the result stays valid UTF-8 either way.
+        let wide = sheet_slug(&"\u{e9}".repeat(200));
+        assert_eq!(wide, "sheet");
+    }
 
     #[test]
     fn is_apple_double_basename_matches_only_a_resource_fork_sidecar() {

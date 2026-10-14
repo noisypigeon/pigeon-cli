@@ -20,6 +20,7 @@ mod manifest;
 mod media;
 mod placement;
 mod push;
+mod sheets;
 pub mod wizard;
 mod worker;
 

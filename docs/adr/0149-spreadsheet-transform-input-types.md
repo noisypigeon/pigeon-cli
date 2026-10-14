@@ -436,3 +436,101 @@ amending a merged ADR without rewriting it.
   Numbers version, converted end-to-end with its sheet names and cell values
   checked by hand against the source. `Proposed` -> `Accepted` only on that
   evidence; on failure, `Numbers` is removed and refiled.
+
+## Amendment (2026-10-14): four corrections found while implementing this
+
+Implementing §1-§8 turned up four places where this ADR as merged needed
+correcting. The first is a genuine bug in it; the rest preserve its intent
+with fewer moving parts. Recorded here rather than diverged from silently.
+
+**1. The sheet slug needs its own sanitizer; `sanitize_filename` is not
+enough.** §2 specifies the slug as the sheet name "through
+`core::data::sanitize_filename`". That function does **no character
+filtering whatever** — it takes the final path component and truncates to
+100 bytes, nothing else. So a sheet named `Q1,Q2` keeps its comma, and a
+sheet name containing a **tab or newline** would be written straight into
+`transform-report.txt`, whose format is tab-separated and
+one-line-per-row, corrupting it. Sheet names are author-controlled text, so
+this is the bug class ADR-0033 fixed for `yaml_quote`, and it is fixed the
+same way: restrict the character set at the producer rather than escape at
+each consumer. A new `core::data::sheet_slug` keeps `[A-Za-z0-9._-]`, maps
+everything else to `-`, collapses runs, trims, truncates to 40 bytes, and
+falls back to `"sheet"`. §5's comma-joined report column is unambiguous
+only *because* that set excludes `,`; the dependency is noted at the join.
+
+**2. No `dates` feature, and therefore no `chrono`.** §4 specifies
+ISO-8601 dates "via calamine's `dates` feature". That works but is
+unnecessary and would add a second date library beside the `time` crate
+already here. `calamine`'s `formats.rs` constructs
+`Data::DateTime(ExcelDateTime::new(value, type, is_1904))` with **no
+`cfg(feature)` anywhere in the file**, and `ExcelDateTime::to_ymd_hms_milli`
+is **ungated** and applies the 1904 epoch itself; only
+`as_datetime()`/`as_date()` are `#[cfg(feature = "chrono")]`. So ISO-8601
+costs zero added dependencies.
+
+Worth stating why the *other* obvious shortcut is wrong: `is_1904` is a
+private field with no public accessor, so converting from `as_f64()` by
+hand would silently shift a Mac-authored workbook by 1462 days — four years
+and a day. A test pins both epochs apart. Confirmed in the same reading
+that `impl Display for ExcelDateTime` writes the bare serial, so §4's named
+trap (`45234` where a date belongs) is real rather than theoretical, and a
+test pins that too.
+
+**3. `MAX_SHEET_CELLS` bounds the output, not the peak allocation.** §4
+frames the cell cap as the memory guard. It cannot be:
+`worksheet_range` materialises an entire sheet before `get_size()` can be
+asked, so by the time the cap could fire the allocation has happened. The
+cap is kept — it still turns a pathological sheet into a clear,
+non-retryable error — but the real bound is a new pre-parse check on the
+input file's size (`MAX_WORKBOOK_BYTES`), which is cheap and genuinely
+pre-emptive.
+
+**4. Duration cells were unaddressed.** `ExcelDateTimeType` has a
+`TimeDelta` variant, and `to_ymd_hms_milli` on one is meaningless — it is
+elapsed time, not a date. Rendered as `HH:MM:SS` from the fractional-day
+value, the way Excel displays it, with hours deliberately not wrapped at 24.
+
+### Smaller corrections
+
+- **§7 undercounts the hardcoded kind lists at four; there are six**, plus
+  three more in tests. Beyond `format.rs`'s `parse` match, its error text,
+  `wizard.rs`'s `options` array, and `cli.rs`'s `--input-file-type` doc, the
+  kind→output-extension mapping is *also* spelled out in `cli.rs`'s
+  `--destination` doc and in the `Transform` variant's own doc block. In
+  tests: `worker.rs`'s `outcome_for_…` and `media.rs`'s two signature-list
+  tests. All nine updated.
+- **The circuit-breaker abort message hardcoded `ffmpeg`.** Consequences is
+  right that a missing `libetonyek` needs no new code to become a run
+  abort, but the message said "the ffmpeg build on this job's host", which
+  would misname the problem for a `.numbers` run. Now names the converter
+  generically.
+- **§6's "fail before any prompt" holds only because the whole
+  `InputFileTypeInput` block moves above `load_keyring`.** `prompt()` is
+  itself a `Select`, so checking the binary merely "after the input kind
+  resolves" would put it after a prompt. `InputFileTypeInput` reads no
+  keyring state, so hoisting it is safe and keeps the property intact.
+- **`NOT_A_WORKBOOK_SIGNATURE` lives in `media.rs`**, not `sheets.rs`,
+  bending §4's "keeps `media.rs` ffmpeg-only" slightly.
+  `NON_RETRYABLE_SIGNATURES` is a *function-local* const, so it can only be
+  appended to there; and that module's const doc comment exists precisely to
+  stop the producer and both matchers drifting apart.
+- **§5's per-group crash resume needed a decision §5 left open.** "Every
+  expected result already in `result/`" is unanswerable without the sheet
+  count, which means opening the workbook — defeating the point. Resolved by
+  applying `DestinationGroups::index` to a listing of the *local* `result/`
+  tree, exactly as §3 applies it to the remote one: the `-NNofTT-` markers
+  already present declare their own total.
+- **The per-input scratch directory gets an RAII `Drop` guard**, which §5
+  does not mention. `process_one` has many `?` early-returns, and a
+  `.numbers` conversion's scratch directory holds a whole LibreOffice user
+  profile. Without the guard the only cleanup is the startup clear, so a
+  long run would accumulate one profile per converted workbook until the
+  *next* run — real disk exhaustion on the ephemeral VM this job targets.
+- **`place_one` stays on the single-output path.** Routing everything
+  through the resume-tolerant `place_sheet` would have silently dropped
+  ADR-0112 §5's deliberate hard-error-on-collision for media. The tolerance
+  is confined to the kind that needs it.
+- **The circuit breaker samples per input file, not per output**, so a
+  workbook yielding 12 CSVs is one sample. Correct — it detects a systemic
+  converter gap — but its 20-sample window now covers fewer output objects
+  for a spreadsheet run than for a media one.

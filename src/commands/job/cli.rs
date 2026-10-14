@@ -121,12 +121,17 @@ pub enum JobType {
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
     /// maximum-quality `.jpg`, video files (`mov`/`m4v`/`mp4`, ADR-0122)
     /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`,
-    /// or audio-only recordings carrying an `.mp4` extension (`mp4-audio`,
-    /// ADR-0142) into Opus `.opus`
+    /// audio-only recordings carrying an `.mp4` extension (`mp4-audio`,
+    /// ADR-0142) into Opus `.opus`, or spreadsheets
+    /// (`numbers`/`xlsx`/`xls`/`csv`, ADR-0149) into one `.csv` per sheet
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
     /// pull `--source` into a local staging tree, transcoding/copying each
     /// file locally and pushing it individually via `rclone copyto` the
-    /// moment it's ready, rather than waiting for the whole batch.
+    /// moment it's ready, rather than waiting for the whole batch. A
+    /// multi-sheet workbook is the one input kind that yields several
+    /// outputs, each named `{stem}-{hash}-{nn}of{tt}-{sheet}.csv` so they
+    /// stay recognizably related and a half-pushed workbook is detectable
+    /// on a rerun (ADR-0149).
     /// `--source`/`--destination` are pigeon keyring `BucketConfig`
     /// aliases, optionally composed with a prefix within that bucket
     /// (`alias:prefix/`, ADR-0138); an omitted prefix defaults to
@@ -137,17 +142,23 @@ pub enum JobType {
     /// destination names. A single file's transcode or push failure (e.g.
     /// a HEIC file the local `ffmpeg` build can't decode, retried before
     /// giving up) is recorded and reported but never stops any other file
-    /// from being processed and pushed; every file that does succeed stays
-    /// checkpointed for a resumed rerun. Requires both `rclone` and
-    /// `ffmpeg`/`ffprobe` on `PATH`.
+    /// from being processed and pushed. A rerun is resumable without any
+    /// local state: "already done" is answered by listing the destination
+    /// (ADR-0120 removed the local checkpoint). Requires `rclone` on
+    /// `PATH`, plus `ffmpeg`/`ffprobe` for an image, video, or audio input
+    /// kind and `soffice` (LibreOffice) for `numbers`; `xlsx`/`xls`/`csv`
+    /// need neither (ADR-0149).
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
-        /// `mov`, `m4v`, `mp4`, or `mp4-audio`. Interactively selected when
-        /// omitted and stdin is a terminal; required otherwise.
+        /// `mov`, `m4v`, `mp4`, `mp4-audio`, `numbers`, `xlsx`, `xls`, or
+        /// `csv`. Interactively selected when omitted and stdin is a
+        /// terminal; required otherwise.
         /// `mp4-audio` is for audio-only recordings carrying an `.mp4`
         /// extension (voice notes), transcoded to `.opus`; a file that
         /// actually has a video stream is refused rather than silently
-        /// losing its video.
+        /// losing its video. The four spreadsheet kinds all output `.csv`,
+        /// one file per non-empty sheet (ADR-0149); `csv` input is copied
+        /// through byte-for-byte.
         #[arg(long)]
         input_file_type: Option<String>,
 
@@ -175,8 +186,9 @@ pub enum JobType {
         /// Where to push to, same `alias[:prefix/]` form as `--source`
         /// (ADR-0138). An omitted prefix defaults to `--input-file-type`'s
         /// *output* extension (`jpg` for an image kind, `mp4` for a video
-        /// one, `opus` for `mp4-audio`), so one bucket can serve as both
-        /// source and destination when the prefixes differ.
+        /// one, `opus` for `mp4-audio`, `csv` for every spreadsheet kind),
+        /// so one bucket can serve as both source and destination when the
+        /// prefixes differ.
         #[arg(long)]
         destination: Option<String>,
 
@@ -186,8 +198,8 @@ pub enum JobType {
         #[arg(long)]
         local_output: Option<PathBuf>,
 
-        /// Maximum number of files to transcode concurrently (the ffmpeg
-        /// phase only -- `rclone` manages its own internal parallelism via
+        /// Maximum number of files to convert concurrently (the local
+        /// conversion phase only -- `rclone` manages its own parallelism via
         /// `--download-transfers`/`--download-checkers`). Interactively
         /// prompted (a cores-based default) when omitted and stdin is a
         /// terminal; required otherwise.

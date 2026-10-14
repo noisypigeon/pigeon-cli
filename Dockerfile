@@ -22,8 +22,14 @@ RUN cargo build --release
 
 FROM debian:bookworm-slim
 
+# `libreoffice-calc` is needed only by `job run transform --input-file-type
+# numbers` (ADR-0149): no Rust crate reads Apple's IWA format, so `soffice`
+# converts a `.numbers` file to `.xlsx` and `calamine` takes it from there.
+# It is the heaviest thing in this image by far; the other three spreadsheet
+# kinds need nothing beyond the binary itself.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates libssl3 \
+    && apt-get install -y --no-install-recommends \
+       ffmpeg libreoffice-calc ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN useradd --create-home --shell /usr/sbin/nologin pigeon

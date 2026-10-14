@@ -266,6 +266,16 @@ async fn probe_video_diagnostics(path: &Path) -> String {
 const NO_VIDEO_STREAM_SIGNATURE: &str = "has no video stream";
 const UNEXPECTED_VIDEO_STREAM_SIGNATURE: &str = "is not an audio-only recording";
 
+/// `sheets`'s not-a-readable-workbook rejection (ADR-0149).
+///
+/// Lives here rather than in `sheets.rs`, despite this module otherwise
+/// being `ffmpeg`-only, for two reasons: `NON_RETRYABLE_SIGNATURES` below
+/// is a *function-local* const, so it can only be appended to here anyway;
+/// and the doc comment above exists precisely to keep the producer and both
+/// matchers from drifting apart, which splitting them across modules would
+/// invite.
+pub(crate) const NOT_A_WORKBOOK_SIGNATURE: &str = "is not a readable spreadsheet";
+
 /// Whether `err` means the operator pointed this run at the wrong
 /// `--input-file-type` for this file -- the file itself is intact
 /// (ADR-0143).
@@ -277,9 +287,13 @@ const UNEXPECTED_VIDEO_STREAM_SIGNATURE: &str = "is not an audio-only recording"
 /// copy, which is only safe because such a file is undamaged and still
 /// present at `--source`.
 pub(crate) fn is_wrong_input_kind_error(err: &str) -> bool {
-    [NO_VIDEO_STREAM_SIGNATURE, UNEXPECTED_VIDEO_STREAM_SIGNATURE]
-        .iter()
-        .any(|signature| err.contains(signature))
+    [
+        NO_VIDEO_STREAM_SIGNATURE,
+        UNEXPECTED_VIDEO_STREAM_SIGNATURE,
+        NOT_A_WORKBOOK_SIGNATURE,
+    ]
+    .iter()
+    .any(|signature| err.contains(signature))
 }
 
 /// Whether `path` contains at least one video stream, used by
@@ -572,14 +586,17 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         "Unknown encoder",
         NO_VIDEO_STREAM_SIGNATURE,
         UNEXPECTED_VIDEO_STREAM_SIGNATURE,
+        NOT_A_WORKBOOK_SIGNATURE,
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
         .any(|signature| err.contains(signature))
 }
 
-/// `jpeg` input is never routed through ffmpeg -- a plain byte-for-byte
-/// `fs::copy`, zero generational loss (ADR-0112 Decision §4).
+/// An input already in the target format is never routed through a
+/// converter -- a plain byte-for-byte `fs::copy`, zero generational loss
+/// (ADR-0112 Decision §4 for `jpeg`; ADR-0149 reuses it unchanged for
+/// `csv`, on the same reasoning).
 pub(crate) fn copy_through(input: &Path, output: &Path) -> Result<(), String> {
     std::fs::copy(input, output).map_err(|err| {
         format!(

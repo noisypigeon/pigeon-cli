@@ -67,7 +67,7 @@ use tracing::Instrument;
 
 use super::format::{InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
-use super::{destination, media, placement, push};
+use super::{destination, media, placement, push, sheets};
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::Copy;
 
@@ -367,9 +367,12 @@ impl FailureStage {
     }
 }
 
-/// One file's pipeline result: its placed local path, or the stage that
+/// One file's pipeline result: its placed local path(s), or the stage that
 /// failed plus that stage's error (ADR-0130).
-type ProcessResult = Result<PathBuf, (FailureStage, String)>;
+///
+/// A `Vec` since ADR-0149: a workbook yields one output per non-empty
+/// sheet. Every other input kind yields a one-element vector.
+type ProcessResult = Result<Vec<PathBuf>, (FailureStage, String)>;
 
 /// Per-stage failure tally (ADR-0130), reusing the field names
 /// `metrics::record_phase`'s doc comment already expects a job's breakdown
@@ -400,7 +403,11 @@ impl FailureBreakdown {
 #[derive(Debug, Clone)]
 pub(crate) struct FileOutcome {
     pub relative_path: String,
-    pub destination_filename: Option<String>,
+    /// Every output this input produced -- several for a multi-sheet
+    /// workbook (ADR-0149), one for every other kind, none on failure.
+    /// A row stays per *input* file, which is what leaves ADR-0130's pull
+    /// reconciliation unchanged.
+    pub destination_filenames: Vec<String>,
     pub outcome: Outcome,
     /// `Some` iff `outcome` is `Outcome::Failed` (ADR-0130).
     pub stage: Option<FailureStage>,
@@ -457,13 +464,89 @@ fn push_log_dir(local_output: &Path) -> PathBuf {
     staging_dir(local_output).join("push-logs")
 }
 
-/// One file's full pipeline: transcode (png/heic, retried) or copy-through
-/// (jpeg) into a scratch path, place it under `result_dir` at its
-/// deterministic, collision-free name, then push that single file. Returns
-/// the final local path on success so the caller can report it --
-/// checkpoint writes deliberately happen in the single-threaded dispatch
-/// loop below, not here, so concurrent tasks never need to coordinate a
-/// shared file write.
+/// A scratch directory that removes itself (ADR-0149).
+///
+/// `process_one` has many `?` early-returns, and a spreadsheet's scratch
+/// directory can hold a whole LibreOffice user profile -- hundreds of files
+/// per `.numbers` input. Neither existing precedent in this codebase has
+/// such a guard (`deduplicate::process_item` hand-rolls nine
+/// `remove_file` calls at its exit paths), and without one the only cleanup
+/// is `run_transform_job`'s startup clear, so a long run would accumulate
+/// one profile per converted workbook until the *next* run -- real disk
+/// exhaustion on the ephemeral VM this job is built for.
+///
+/// Best-effort on drop, like `remove_local_copy`: a removal failure must
+/// never change a file's outcome.
+struct ScratchDir {
+    path: PathBuf,
+}
+
+impl ScratchDir {
+    fn create(parent: &Path, group: &str) -> Result<Self, String> {
+        let path = parent.join(group);
+        std::fs::create_dir_all(&path)
+            .map_err(|err| format!("failed to create {}: {err}", path.display()))?;
+        Ok(Self { path })
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        if let Err(err) = std::fs::remove_dir_all(&self.path)
+            && err.kind() != std::io::ErrorKind::NotFound
+        {
+            tracing::warn!(
+                path = %self.path.display(),
+                error = %err,
+                "transform: failed to remove scratch directory"
+            );
+        }
+    }
+}
+
+/// One output's final name and the scratch file holding its bytes.
+struct PendingOutput {
+    destination_name: String,
+    scratch_path: PathBuf,
+}
+
+/// Local `result/` files belonging to `group`, newest-run-agnostic and
+/// sorted by name (ADR-0149's per-group extension of ADR-0127's resume).
+///
+/// `result_dir` is bounded by the in-flight window, not the dataset, because
+/// ADR-0124's GC empties it as files are pushed -- so reading it per input
+/// file is cheap.
+fn existing_group_outputs(result_dir: &Path, group: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(result_dir) else {
+        return Vec::new();
+    };
+    let plain_prefix = format!("{group}.");
+    let sheet_prefix = format!("{group}-");
+    let mut names: Vec<String> = entries
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(&plain_prefix) || name.starts_with(&sheet_prefix))
+        .collect();
+    names.sort();
+    names
+        .into_iter()
+        .map(|name| result_dir.join(name))
+        .collect()
+}
+
+/// One file's full pipeline: convert (or copy through) into a scratch
+/// directory, place every resulting output under `result_dir` at its
+/// deterministic, collision-free name, then push each one. Returns the
+/// final local paths on success so the caller can report them.
+///
+/// **One input may yield several outputs** since ADR-0149: a workbook's
+/// sheets each become their own CSV. Every other input kind still produces
+/// exactly one, and takes a path through here that is behaviourally
+/// identical to before.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
     skip_all,
@@ -484,83 +567,58 @@ async fn process_one(
     endpoint_gate: Arc<EndpointGate>,
 ) -> ProcessResult {
     let output_extension = input_file_type.output_extension();
-    let destination_name = placement::compute_destination_name(
-        source_path,
-        &pending_file.relative_path,
-        output_extension,
-    );
+    let group = placement::group_key(source_path, &pending_file.relative_path);
 
-    // ADR-0127: a file already sitting in `result_dir` under its
-    // deterministic name survived a prior crash *after* a successful,
-    // verified transcode (`placement::place_one` only ever renames a
-    // scratch file into `result_dir` once `ffmpeg` has exited 0 and passed
-    // its own dimension/duration guard) -- it is never a partial write.
-    // Skip straight to push instead of re-transcoding and then hitting
-    // `place_one`'s collision guard, which exists for a genuinely different
-    // problem (two distinct source files hashing to the same name), not
-    // this job's own legitimate resume.
-    let existing_result_path = result_dir.join(&destination_name);
-    let final_path = if existing_result_path.exists() {
-        existing_result_path
+    // ADR-0127, extended per-group by ADR-0149: outputs already sitting in
+    // `result_dir` survived a prior crash *after* a successful, verified
+    // conversion -- placement only ever renames a scratch file in once the
+    // converter exited 0 and passed its own guards -- so they are never
+    // partial writes. Skip straight to push instead of redoing the work and
+    // then colliding.
+    //
+    // For a single-output kind this is the same `exists()` question as
+    // before. For a workbook it cannot be, because "are all its outputs
+    // here?" needs the sheet count, which needs opening the file. The
+    // answer is to ask the *names already present*: they carry their own
+    // `{nn}of{tt}` totals, so `DestinationGroups` reads completeness off
+    // the local listing exactly as it does off the remote one.
+    let existing = existing_group_outputs(result_dir, &group);
+    let existing_names: Vec<String> = existing
+        .iter()
+        .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
+        .collect();
+    let final_paths = if !existing.is_empty()
+        && placement::DestinationGroups::index(&existing_names).is_complete(&group)
+    {
+        existing
     } else {
-        let scratch_path = scratch_dir.join(format!("{destination_name}.scratch"));
-        std::fs::create_dir_all(scratch_dir).map_err(|err| {
-            (
-                FailureStage::Transcode,
-                format!("failed to create {}: {err}", scratch_dir.display()),
-            )
-        })?;
-
-        // ADR-0130: this is the run's real disk high-water mark -- a 4K
-        // video's scratch output is multi-GB, and ADR-0124's post-push GC
-        // only bounds steady-state usage, not this transient peak (and is
-        // best-effort, so repeated removal failures accumulate sources with
-        // nothing watching free space). Fails just this one file, matching
-        // `check_disk_space`'s own documented contract.
-        crate::commands::job::local::check_disk_space(scratch_dir, 0)
+        let scratch = ScratchDir::create(scratch_dir, &group)
             .map_err(|err| (FailureStage::Transcode, err))?;
 
-        let transcode_result = match input_file_type {
-            InputFileType::Jpeg => media::copy_through(&pending_file.absolute_path, &scratch_path),
-            InputFileType::Png | InputFileType::Heic => {
-                retry_transcode_unless_fatal(
-                    TRANSCODE_RETRIES,
-                    TRANSCODE_RETRY_BACKOFF,
-                    &pending_file.relative_path,
-                    || media::transcode_to_jpg(&pending_file.absolute_path, &scratch_path),
-                )
-                .await
-            }
-            InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
-                retry_transcode_unless_fatal(
-                    TRANSCODE_RETRIES,
-                    TRANSCODE_RETRY_BACKOFF,
-                    &pending_file.relative_path,
-                    || {
-                        media::transcode_video(
-                            &pending_file.absolute_path,
-                            &scratch_path,
-                            video_quality,
-                            transcode_threads,
-                        )
-                    },
-                )
-                .await
-            }
-            InputFileType::Mp4Audio => {
-                retry_transcode_unless_fatal(
-                    TRANSCODE_RETRIES,
-                    TRANSCODE_RETRY_BACKOFF,
-                    &pending_file.relative_path,
-                    || media::transcode_audio(&pending_file.absolute_path, &scratch_path),
-                )
-                .await
-            }
-        };
+        // ADR-0130: the run's real disk high-water mark. A 4K video's
+        // scratch output is multi-GB and a workbook's CSVs can exceed the
+        // workbook itself, while ADR-0124's post-push GC only bounds
+        // steady-state usage, not this transient peak. Fails just this one
+        // file, matching `check_disk_space`'s documented contract.
+        crate::commands::job::local::check_disk_space(scratch.path(), 0)
+            .map_err(|err| (FailureStage::Transcode, err))?;
+
+        let outputs = convert_one(
+            pending_file,
+            input_file_type,
+            video_quality,
+            transcode_threads,
+            source_path,
+            &group,
+            output_extension,
+            scratch.path(),
+        )
+        .await;
+
         crate::observability::metrics::record_phase_count(
             "transform",
             "transcode",
-            if transcode_result.is_ok() {
+            if outputs.is_ok() {
                 outcome_for(input_file_type).as_str()
             } else {
                 Outcome::Failed.as_str()
@@ -576,82 +634,245 @@ async fn process_one(
         // run accumulate the entire source tree locally. Deleting it is
         // non-destructive and bounds that. Every *other* failure class
         // still keeps its local copy.
-        if let Err(err) = &transcode_result
+        if let Err(err) = &outputs
             && media::is_wrong_input_kind_error(err)
         {
             remove_local_copy(&pending_file.absolute_path);
         }
-        transcode_result.map_err(|err| (FailureStage::Transcode, err))?;
+        let outputs = outputs.map_err(|err| (FailureStage::Transcode, err))?;
 
-        placement::place_one(
-            result_dir,
-            &scratch_path,
-            source_path,
-            &pending_file.relative_path,
-            output_extension,
-        )
-        .map_err(|err| (FailureStage::Place, err))?
+        let mut placed = Vec::with_capacity(outputs.len());
+        for output in &outputs {
+            // A single-output kind keeps `place_one`, whose hard error on an
+            // existing target is ADR-0112 §5's deliberate choice: at this
+            // scale a collision means a bug or an astronomically unlucky
+            // hash, and a verifiably-unique scheme must fail loudly rather
+            // than fall back to the probabilistic disambiguation it exists
+            // to avoid. The legitimate resume it would otherwise trip over
+            // is already caught above, before any conversion runs.
+            //
+            // A workbook needs the tolerant `place_sheet` instead: a prior
+            // run can have crashed after placing sheet 1 of 3, and
+            // re-converting reproduces all three, so sheet 1 arriving again
+            // is expected rather than anomalous.
+            let placed_path = if input_file_type.is_spreadsheet() {
+                placement::place_sheet(result_dir, &output.scratch_path, &output.destination_name)
+            } else {
+                placement::place_one(
+                    result_dir,
+                    &output.scratch_path,
+                    source_path,
+                    &pending_file.relative_path,
+                    output_extension,
+                )
+            };
+            placed.push(placed_path.map_err(|err| (FailureStage::Place, err))?);
+        }
+        placed
     };
 
-    let destination_filename = final_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            (
-                FailureStage::Place,
-                format!(
-                    "placed file at {} has no valid UTF-8 filename",
-                    final_path.display()
-                ),
-            )
-        })?
-        .to_string();
+    for final_path in &final_paths {
+        let destination_filename = final_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| {
+                (
+                    FailureStage::Place,
+                    format!(
+                        "placed file at {} has no valid UTF-8 filename",
+                        final_path.display()
+                    ),
+                )
+            })?
+            .to_string();
 
-    let _permit = push_semaphore.acquire_owned().await.map_err(|err| {
-        (
-            FailureStage::Push,
-            format!("push semaphore closed unexpectedly: {err}"),
-        )
-    })?;
-    // ADR-0144: an endpoint-level failure is shared by every concurrent
-    // push, so it is waited out once for the whole run via `endpoint_gate`
-    // rather than being re-paid per file. Anything else (a 403, a per-file
-    // read error) fails this file immediately, exactly as before -- parking
-    // on the gate for those would stall every other push behind a wait that
-    // could never help.
-    loop {
-        let Err(err) = push::push_one(
-            &final_path,
-            destination_path,
-            &destination_filename,
-            push_log_dir,
-        )
-        .await
-        else {
-            break;
-        };
-
-        if !crate::core::rclone::is_endpoint_unreachable_error(&err) {
-            return Err((FailureStage::Push, err));
-        }
-        if endpoint_gate
-            .wait_for_recovery(&pending_file.relative_path, &err)
+        // One permit per push rather than one held across every output of a
+        // workbook, so `--upload-transfers` keeps meaning "concurrent
+        // pushes" and no permit is held while a sibling waits.
+        let _permit = push_semaphore
+            .clone()
+            .acquire_owned()
             .await
-            == GateDecision::GiveUp
-        {
-            return Err((FailureStage::Push, err));
+            .map_err(|err| {
+                (
+                    FailureStage::Push,
+                    format!("push semaphore closed unexpectedly: {err}"),
+                )
+            })?;
+        // ADR-0144: an endpoint-level failure is shared by every concurrent
+        // push, so it is waited out once for the whole run via
+        // `endpoint_gate` rather than being re-paid per file. Anything else
+        // (a 403, a per-file read error) fails this file immediately,
+        // exactly as before -- parking on the gate for those would stall
+        // every other push behind a wait that could never help.
+        loop {
+            let Err(err) = push::push_one(
+                final_path,
+                destination_path,
+                &destination_filename,
+                push_log_dir,
+            )
+            .await
+            else {
+                break;
+            };
+
+            if !crate::core::rclone::is_endpoint_unreachable_error(&err) {
+                return Err((FailureStage::Push, err));
+            }
+            if endpoint_gate
+                .wait_for_recovery(&pending_file.relative_path, &err)
+                .await
+                == GateDecision::GiveUp
+            {
+                return Err((FailureStage::Push, err));
+            }
         }
+
+        // This output's bytes are now durably present at
+        // `destination_path`, so its local copy no longer serves any
+        // purpose (ADR-0124). The *source* is kept until every output has
+        // pushed -- a partially-pushed workbook must still be re-convertible
+        // from it on the next attempt.
+        remove_local_copy(final_path);
     }
 
-    // This file's bytes are now durably present at `destination_path` --
-    // the local source and result copies no longer serve any purpose
-    // (ADR-0124). Deleting them here, inside this file's own concurrent
-    // task, is safe without any synchronization: each task only ever
-    // touches its own two distinct paths.
+    // Every output is durably pushed, so the local source is now spent too.
+    // Safe without synchronization: each task only ever touches its own
+    // paths.
     remove_local_copy(&pending_file.absolute_path);
-    remove_local_copy(&final_path);
 
-    Ok(final_path)
+    Ok(final_paths)
+}
+
+/// Converts one input into its output(s) inside `scratch`, retrying a
+/// transient converter failure (ADR-0121) but never a deterministic one.
+///
+/// Every kind but the spreadsheets produces exactly one output, named
+/// exactly as it always was. A workbook produces one per non-empty sheet --
+/// except a single-sheet one, which keeps the plain name too, so the
+/// `{nn}of{tt}` marker only ever appears where it carries information.
+#[allow(clippy::too_many_arguments)]
+async fn convert_one(
+    pending_file: &PendingFile,
+    input_file_type: InputFileType,
+    video_quality: VideoQuality,
+    transcode_threads: usize,
+    source_path: &str,
+    group: &str,
+    output_extension: &str,
+    scratch: &Path,
+) -> Result<Vec<PendingOutput>, String> {
+    let single_name = placement::compute_destination_name(
+        source_path,
+        &pending_file.relative_path,
+        output_extension,
+    );
+
+    if input_file_type.is_spreadsheet() {
+        return convert_spreadsheet(
+            pending_file,
+            input_file_type,
+            group,
+            output_extension,
+            &single_name,
+            scratch,
+        )
+        .await;
+    }
+
+    let scratch_path = scratch.join(format!("{single_name}.scratch"));
+    let input = &pending_file.absolute_path;
+    match input_file_type {
+        InputFileType::Jpeg => media::copy_through(input, &scratch_path),
+        InputFileType::Png | InputFileType::Heic => {
+            retry_transcode_unless_fatal(
+                TRANSCODE_RETRIES,
+                TRANSCODE_RETRY_BACKOFF,
+                &pending_file.relative_path,
+                || media::transcode_to_jpg(input, &scratch_path),
+            )
+            .await
+        }
+        InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
+            retry_transcode_unless_fatal(
+                TRANSCODE_RETRIES,
+                TRANSCODE_RETRY_BACKOFF,
+                &pending_file.relative_path,
+                || media::transcode_video(input, &scratch_path, video_quality, transcode_threads),
+            )
+            .await
+        }
+        InputFileType::Mp4Audio => {
+            retry_transcode_unless_fatal(
+                TRANSCODE_RETRIES,
+                TRANSCODE_RETRY_BACKOFF,
+                &pending_file.relative_path,
+                || media::transcode_audio(input, &scratch_path),
+            )
+            .await
+        }
+        InputFileType::Numbers | InputFileType::Xlsx | InputFileType::Xls | InputFileType::Csv => {
+            unreachable!("handled by the is_spreadsheet() branch above")
+        }
+    }?;
+    Ok(vec![PendingOutput {
+        destination_name: single_name,
+        scratch_path,
+    }])
+}
+
+/// The spreadsheet half of `convert_one` (ADR-0149).
+async fn convert_spreadsheet(
+    pending_file: &PendingFile,
+    input_file_type: InputFileType,
+    group: &str,
+    output_extension: &str,
+    single_name: &str,
+    scratch: &Path,
+) -> Result<Vec<PendingOutput>, String> {
+    let input = &pending_file.absolute_path;
+
+    // Already CSV: copied through byte-for-byte, exactly as ADR-0112 treats
+    // a `jpeg` input already in the target format. Encoding, line endings,
+    // delimiter, and quoting are deliberately untouched.
+    if input_file_type == InputFileType::Csv {
+        let scratch_path = scratch.join(format!("{single_name}.scratch"));
+        media::copy_through(input, &scratch_path)?;
+        return Ok(vec![PendingOutput {
+            destination_name: single_name.to_string(),
+            scratch_path,
+        }]);
+    }
+
+    // `.numbers` has no Rust reader, so LibreOffice converts it to `.xlsx`
+    // and the result rejoins the shared `calamine` path. Not retried: both
+    // legs fail deterministically on a given file.
+    let workbook = if input_file_type == InputFileType::Numbers {
+        sheets::convert_numbers_to_xlsx(input, scratch).await?
+    } else {
+        input.clone()
+    };
+
+    let outputs: Vec<sheets::SheetOutput> =
+        sheets::split_workbook_to_csv(&workbook, scratch).await?;
+    Ok(outputs
+        .into_iter()
+        .map(|sheet| PendingOutput {
+            destination_name: if sheet.total == 1 {
+                single_name.to_string()
+            } else {
+                placement::sheet_destination_name(
+                    group,
+                    sheet.index,
+                    sheet.total,
+                    &sheet.sheet_name,
+                    output_extension,
+                )
+            },
+            scratch_path: sheet.path,
+        })
+        .collect())
 }
 
 /// Best-effort local cleanup. Two call contexts: once a file is confirmed
@@ -680,12 +901,18 @@ fn remove_local_copy(path: &Path) {
 fn outcome_for(input_file_type: InputFileType) -> Outcome {
     match input_file_type {
         InputFileType::Jpeg => Outcome::CopiedThrough,
+        // ADR-0149: `csv` is already in the target format, so it is copied
+        // through on exactly ADR-0112's reasoning for `jpeg`.
+        InputFileType::Csv => Outcome::CopiedThrough,
         InputFileType::Png
         | InputFileType::Heic
         | InputFileType::Mov
         | InputFileType::M4v
         | InputFileType::Mp4
-        | InputFileType::Mp4Audio => Outcome::Transcoded,
+        | InputFileType::Mp4Audio
+        | InputFileType::Numbers
+        | InputFileType::Xlsx
+        | InputFileType::Xls => Outcome::Transcoded,
     }
 }
 
@@ -732,7 +959,7 @@ fn enqueue(
     source_dir: &Path,
     source_path: &str,
     output_extension: &str,
-    existing_destination_filenames: &HashSet<String>,
+    destination_groups: &placement::DestinationGroups,
     dispatched: &mut HashSet<String>,
     queue: &mut VecDeque<PendingFile>,
 ) -> EnqueueOutcome {
@@ -744,9 +971,15 @@ fn enqueue(
     if crate::core::data::is_apple_double_basename(&relative_path) {
         return EnqueueOutcome::SkippedAppleDouble;
     }
-    let destination_name =
-        placement::compute_destination_name(source_path, &relative_path, output_extension);
-    if existing_destination_filenames.contains(&destination_name) {
+    // ADR-0149: an Excel lock stub matches `--include '*.xlsx'` but is not a
+    // workbook. Same two choke points, and the same reason, as the
+    // AppleDouble filter above: without this it arrives as a deterministic
+    // *failure*, which is exactly what can trip the circuit breaker.
+    if crate::core::data::is_excel_lock_basename(&relative_path) {
+        return EnqueueOutcome::SkippedLockFile;
+    }
+    let _ = output_extension;
+    if destination_groups.is_complete(&placement::group_key(source_path, &relative_path)) {
         return EnqueueOutcome::AlreadyDone;
     }
     if !dispatched.insert(relative_path.clone()) {
@@ -769,6 +1002,10 @@ enum EnqueueOutcome {
     AlreadyDone,
     AlreadyDispatched,
     SkippedAppleDouble,
+    /// An Excel `~$` lock stub (ADR-0149), counted with the AppleDouble
+    /// skips: neither carries user data, and neither belongs at the
+    /// destination.
+    SkippedLockFile,
 }
 
 /// Filters `source_relative_paths` down to the ones that still need
@@ -787,7 +1024,7 @@ fn files_needing_pull(
     source_relative_paths: Vec<String>,
     source_path: &str,
     output_extension: &str,
-    existing_destination_filenames: &HashSet<String>,
+    destination_groups: &placement::DestinationGroups,
 ) -> PullSelection {
     let mut selection = PullSelection::default();
     for relative_path in source_relative_paths {
@@ -800,9 +1037,19 @@ fn files_needing_pull(
             selection.skipped_apple_double += 1;
             continue;
         }
-        let destination_name =
-            placement::compute_destination_name(source_path, &relative_path, output_extension);
-        if existing_destination_filenames.contains(&destination_name) {
+        // ADR-0149, the first of the two choke points -- see `enqueue`.
+        if crate::core::data::is_excel_lock_basename(&relative_path) {
+            selection.skipped_apple_double += 1;
+            continue;
+        }
+        let _ = output_extension;
+        // ADR-0149: "already done" is a group-completeness question, not
+        // single-name membership, because a workbook maps to several
+        // destination names. The group key is still a pure forward function
+        // of the path alone, which is what keeps ADR-0124's pre-pull filter
+        // working at all -- a sheet *count* needs the file, a group key does
+        // not.
+        if destination_groups.is_complete(&placement::group_key(source_path, &relative_path)) {
             selection.skipped_already_done += 1;
             continue;
         }
@@ -939,6 +1186,9 @@ pub(crate) async fn run_transform_job(
     // one thing that actually persists across this job's ephemeral VMs.
     let existing_destination_filenames =
         destination::list_existing_filenames(&plan.destination_path).await?;
+    // ADR-0149 §3: indexed once, so the per-source-path cost stays O(1)
+    // exactly as the `HashSet` it replaces.
+    let destination_groups = placement::DestinationGroups::index(&existing_destination_filenames);
 
     // Initial directory scan, taken once, before the pull subprocess exists
     // -- picks up anything already on disk this run before the live tail
@@ -954,7 +1204,7 @@ pub(crate) async fn run_transform_job(
             &source_dir,
             &plan.source_path,
             output_extension,
-            &existing_destination_filenames,
+            &destination_groups,
             &mut dispatched,
             &mut queue,
         ) == EnqueueOutcome::SkippedAppleDouble
@@ -1007,7 +1257,7 @@ pub(crate) async fn run_transform_job(
         source_relative_paths,
         &plan.source_path,
         output_extension,
-        &existing_destination_filenames,
+        &destination_groups,
     );
     let files_to_pull = selection.to_pull;
     let selection_skipped_already_done = selection.skipped_already_done;
@@ -1239,14 +1489,18 @@ pub(crate) async fn run_transform_job(
                 }
 
                 match result {
-                    Ok(final_path) => {
-                        pushed += 1;
+                    Ok(final_paths) => {
+                        // Counts output *objects* (ADR-0149): a workbook
+                        // pushing three sheets is three pushes.
+                        pushed += final_paths.len() as u64;
                         outcomes.push(FileOutcome {
                             relative_path,
-                            destination_filename: final_path
-                                .file_name()
-                                .and_then(|name| name.to_str())
-                                .map(str::to_string),
+                            destination_filenames: final_paths
+                                .iter()
+                                .filter_map(|path| {
+                                    path.file_name()?.to_str().map(str::to_string)
+                                })
+                                .collect(),
                             outcome: outcome_for(plan.input_file_type),
                             stage: None,
                             detail: String::new(),
@@ -1256,7 +1510,7 @@ pub(crate) async fn run_transform_job(
                         failures.record(stage);
                         outcomes.push(FileOutcome {
                             relative_path,
-                            destination_filename: None,
+                            destination_filenames: Vec::new(),
                             outcome: Outcome::Failed,
                             stage: Some(stage),
                             detail: err,
@@ -1285,7 +1539,7 @@ pub(crate) async fn run_transform_job(
                                 &source_dir,
                                 &plan.source_path,
                                 output_extension,
-                                &existing_destination_filenames,
+                                &destination_groups,
                                 &mut dispatched,
                                 &mut queue,
                             ) == EnqueueOutcome::SkippedAppleDouble
@@ -1309,7 +1563,7 @@ pub(crate) async fn run_transform_job(
                             &source_dir,
                             &plan.source_path,
                             output_extension,
-                            &existing_destination_filenames,
+                            &destination_groups,
                             &mut dispatched,
                             &mut queue,
                         ) == EnqueueOutcome::SkippedAppleDouble
@@ -1335,10 +1589,11 @@ pub(crate) async fn run_transform_job(
              files, so the run is being aborted instead of grinding through every remaining file \
              with a guaranteed-identical failure. The two usual causes: (1) the wrong \
              --input-file-type for what this source actually holds -- e.g. a mp4-audio run \
-             pointed at real video, or vice versa (ADR-0143); or (2) an environment/capability \
-             gap, the ffmpeg build on this job's host lacking support for this input's format or \
-             a feature it uses. The example error below distinguishes them. Example error: \
-             {example}"
+             pointed at real video, or vice versa (ADR-0143), or a spreadsheet kind pointed at \
+             something that is not a workbook (ADR-0149); or (2) an environment/capability gap, \
+             the converter on this job's host (`ffmpeg` for media, `soffice` for Apple Numbers) \
+             lacking support for this input's format or a feature it uses. The example error \
+             below distinguishes them. Example error: {example}"
         ));
     }
 
@@ -1362,7 +1617,7 @@ pub(crate) async fn run_transform_job(
         failures.record(FailureStage::Pull);
         outcomes.push(FileOutcome {
             relative_path: relative_path.clone(),
-            destination_filename: None,
+            destination_filenames: Vec::new(),
             outcome: Outcome::Failed,
             stage: Some(FailureStage::Pull),
             detail: undelivered_detail(relative_path, &case_collisions),
@@ -1410,6 +1665,10 @@ pub(crate) async fn run_transform_job(
     tracing::info!(
         pigeon_job = "transform",
         pulled = pull_summary.transferred,
+        // Output objects, where `transcoded`/`copied_through` below count
+        // input files (ADR-0149). The field name is kept because the
+        // `analyze-job-run` runbook reads this line, and it genuinely is
+        // the number of pushes.
         pushed,
         transcoded,
         copied_through,
@@ -1450,7 +1709,7 @@ pub(crate) fn write_report(
     // `stage` column added by ADR-0130 -- a failed row now says which stage
     // failed without the reader having to parse `detail`'s prose.
     let mut body =
-        String::from("source_relative_path\toutcome\tstage\tdestination_filename\tdetail\n");
+        String::from("source_relative_path\toutcome\tstage\tdestination_filenames\tdetail\n");
     let mut transcoded = 0;
     let mut copied_through = 0;
     let mut failed = 0;
@@ -1466,13 +1725,19 @@ pub(crate) fn write_report(
             outcome.relative_path,
             outcome.outcome.as_str(),
             outcome.stage.map(FailureStage::as_str).unwrap_or(""),
-            outcome.destination_filename.as_deref().unwrap_or(""),
+            // Comma-joined, which is unambiguous only because
+            // `core::data::sheet_slug` cannot emit a comma -- see its doc
+            // comment before widening that character set. An empty vector
+            // joins to "", so a failed row renders exactly as before.
+            outcome.destination_filenames.join(","),
             outcome.detail,
         );
     }
     let _ = writeln!(
         body,
-        "\n{transcoded} transcoded, {copied_through} copied through, {failed} failed."
+        "\n{transcoded} transcoded, {copied_through} copied through, {failed} failed; \
+         {} output file(s) pushed.",
+        summary.pushed
     );
     let failures = summary.failures;
     let _ = writeln!(
@@ -1956,7 +2221,7 @@ mod tests {
         assert_eq!(summary.pushed, 1);
         assert!(
             destination
-                .join(summary.outcomes[0].destination_filename.as_deref().unwrap())
+                .join(&summary.outcomes[0].destination_filenames[0])
                 .exists()
         );
     }
@@ -2304,7 +2569,7 @@ mod tests {
     fn enqueue_does_not_double_dispatch_a_path_already_dispatched_this_run() {
         let dir = tempfile::tempdir().unwrap();
         let source_dir = dir.path().to_path_buf();
-        let existing_destination_filenames = HashSet::new();
+        let destination_groups = placement::DestinationGroups::default();
         let mut dispatched = HashSet::new();
         let mut queue = VecDeque::new();
 
@@ -2313,7 +2578,7 @@ mod tests {
             &source_dir,
             "source:png/",
             "jpg",
-            &existing_destination_filenames,
+            &destination_groups,
             &mut dispatched,
             &mut queue,
         );
@@ -2325,7 +2590,7 @@ mod tests {
             &source_dir,
             "source:png/",
             "jpg",
-            &existing_destination_filenames,
+            &destination_groups,
             &mut dispatched,
             &mut queue,
         );
@@ -2341,12 +2606,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let source_dir = dir.path().to_path_buf();
         let source_path = "source:png/";
-        let mut existing_destination_filenames = HashSet::new();
-        existing_destination_filenames.insert(placement::compute_destination_name(
+        let names = vec![placement::compute_destination_name(
             source_path,
             "a.png",
             "jpg",
-        ));
+        )];
+        let destination_groups = placement::DestinationGroups::index(&names);
         let mut dispatched = HashSet::new();
         let mut queue = VecDeque::new();
 
@@ -2355,7 +2620,7 @@ mod tests {
             &source_dir,
             source_path,
             "jpg",
-            &existing_destination_filenames,
+            &destination_groups,
             &mut dispatched,
             &mut queue,
         );
@@ -2369,18 +2634,18 @@ mod tests {
     #[test]
     fn files_needing_pull_excludes_a_path_already_present_at_the_destination() {
         let source_path = "source:png/";
-        let mut existing_destination_filenames = HashSet::new();
-        existing_destination_filenames.insert(placement::compute_destination_name(
+        let names = vec![placement::compute_destination_name(
             source_path,
             "a.png",
             "jpg",
-        ));
+        )];
+        let destination_groups = placement::DestinationGroups::index(&names);
 
         let result = files_needing_pull(
             vec!["a.png".to_string(), "b.png".to_string()],
             source_path,
             "jpg",
-            &existing_destination_filenames,
+            &destination_groups,
         );
 
         assert_eq!(result.to_pull, vec!["b.png".to_string()]);
@@ -2458,7 +2723,7 @@ mod tests {
             vec!["IMG_0260.JPG".to_string(), "IMG_0260.jpg".to_string()],
             "source:jpg",
             "jpg",
-            &HashSet::new(),
+            &placement::DestinationGroups::default(),
         );
 
         assert_eq!(
@@ -2516,7 +2781,7 @@ mod tests {
             ],
             "source:png/",
             "jpg",
-            &HashSet::new(),
+            &placement::DestinationGroups::default(),
         );
 
         assert_eq!(selection.to_pull, vec!["a.png".to_string()]);
@@ -2537,7 +2802,7 @@ mod tests {
             Path::new("/tmp/source"),
             "source:png/",
             "jpg",
-            &HashSet::new(),
+            &placement::DestinationGroups::default(),
             &mut dispatched,
             &mut queue,
         );
@@ -2558,7 +2823,7 @@ mod tests {
                 Path::new("/tmp/source"),
                 "source:png/",
                 "jpg",
-                &HashSet::new(),
+                &placement::DestinationGroups::default(),
                 &mut dispatched,
                 &mut queue,
             ),
@@ -2570,7 +2835,7 @@ mod tests {
                 Path::new("/tmp/source"),
                 "source:png/",
                 "jpg",
-                &HashSet::new(),
+                &placement::DestinationGroups::default(),
                 &mut dispatched,
                 &mut queue,
             ),
@@ -2654,14 +2919,14 @@ mod tests {
             outcomes: vec![
                 FileOutcome {
                     relative_path: "a.png".to_string(),
-                    destination_filename: Some("a-abc123.jpg".to_string()),
+                    destination_filenames: vec!["a-abc123.jpg".to_string()],
                     outcome: Outcome::Transcoded,
                     stage: None,
                     detail: String::new(),
                 },
                 FileOutcome {
                     relative_path: "bad.heic".to_string(),
-                    destination_filename: None,
+                    destination_filenames: Vec::new(),
                     outcome: Outcome::Failed,
                     stage: Some(FailureStage::Transcode),
                     detail: "ffmpeg: boom".to_string(),
@@ -2684,12 +2949,320 @@ mod tests {
 
         assert!(contents.contains("a.png\ttranscoded\t\ta-abc123.jpg\t"));
         assert!(contents.contains("bad.heic\tfailed\ttranscode\t\tffmpeg: boom"));
-        assert!(contents.contains("1 transcoded, 0 copied through, 1 failed."));
+        // ADR-0149: the summary now names the output-object count too,
+        // since `pushed` and the per-outcome counts measure different units.
+        assert!(
+            contents.contains("1 transcoded, 0 copied through, 1 failed; 1 output file(s) pushed.")
+        );
         // ADR-0130's added lines.
         assert!(contents.contains("failures by stage: 0 pull, 1 transcode, 0 place, 0 push."));
         assert!(contents.contains("skipped: 3 already done at the destination, 2 AppleDouble"));
         assert!(contents.contains("pull: 2 transferred, 0 rclone error(s) reported."));
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
+    }
+
+    // --- ADR-0149: spreadsheets ------------------------------------------
+
+    /// Minimal valid `.xlsx`, built with the `zip` crate already in this
+    /// tree. A thin wrapper over `sheets`' own fixture writer's approach,
+    /// kept local because these tests need it at a different layer.
+    fn write_test_xlsx(path: &Path, sheets: &[(&str, Vec<Vec<&str>>)]) {
+        use std::io::Write as _;
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let opts: zip::write::FileOptions<'_, ()> = zip::write::FileOptions::default();
+        zip.start_file("_rels/.rels", opts).unwrap();
+        zip.write_all(br#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>"#).unwrap();
+        let mut workbook = String::from(
+            r#"<?xml version="1.0"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>"#,
+        );
+        let mut rels = String::from(
+            r#"<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">"#,
+        );
+        for (position, (name, _)) in sheets.iter().enumerate() {
+            let id = position + 1;
+            workbook.push_str(&format!(
+                r#"<sheet name="{name}" sheetId="{id}" r:id="rId{id}"/>"#
+            ));
+            rels.push_str(&format!(r#"<Relationship Id="rId{id}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet{id}.xml"/>"#));
+        }
+        workbook.push_str("</sheets></workbook>");
+        rels.push_str("</Relationships>");
+        zip.start_file("xl/workbook.xml", opts).unwrap();
+        zip.write_all(workbook.as_bytes()).unwrap();
+        zip.start_file("xl/_rels/workbook.xml.rels", opts).unwrap();
+        zip.write_all(rels.as_bytes()).unwrap();
+        for (position, (_, rows)) in sheets.iter().enumerate() {
+            let mut sheet = String::from(
+                r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
+            );
+            for (row_index, row) in rows.iter().enumerate() {
+                let row_number = row_index + 1;
+                sheet.push_str(&format!(r#"<row r="{row_number}">"#));
+                for (column_index, value) in row.iter().enumerate() {
+                    let column = (b'A' + column_index as u8) as char;
+                    sheet.push_str(&format!(
+                        r#"<c r="{column}{row_number}" t="inlineStr"><is><t>{value}</t></is></c>"#
+                    ));
+                }
+                sheet.push_str("</row>");
+            }
+            sheet.push_str("</sheetData></worksheet>");
+            zip.start_file(format!("xl/worksheets/sheet{}.xml", position + 1), opts)
+                .unwrap();
+            zip.write_all(sheet.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    fn spreadsheet_plan(
+        source: &Path,
+        destination: &Path,
+        local_output: &Path,
+        input_file_type: InputFileType,
+    ) -> TransformPlan {
+        TransformPlan {
+            source_path: source.display().to_string(),
+            destination_path: destination.display().to_string(),
+            local_output: local_output.to_path_buf(),
+            input_file_type,
+            download_transfers: 2,
+            download_checkers: 4,
+            video_quality: VideoQuality::Medium,
+            tpslimit: None,
+            max_pending_downloads: 100,
+            run_id: "test-run".to_string(),
+        }
+    }
+
+    /// The headline ADR-0149 case. Deliberately **not** gated on
+    /// `check_ffmpeg_available`, unlike every pre-existing end-to-end test
+    /// here: a spreadsheet run invokes no `ffmpeg`, so gating it would make
+    /// it silently never run -- the ADR-0139 mistake in miniature.
+    #[tokio::test]
+    async fn a_multi_sheet_workbook_pushes_every_sheet_on_one_report_row() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        write_test_xlsx(
+            &source.join("Budget.xlsx"),
+            &[
+                ("Summary", vec![vec!["a", "b"]]),
+                ("Blank", vec![]),
+                ("Notes", vec![vec!["n"]]),
+            ],
+        );
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Xlsx);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        // Two non-empty sheets -> two pushes, from one input file.
+        assert_eq!(summary.pushed, 2);
+        assert_eq!(summary.outcomes.len(), 1);
+        assert_eq!(summary.outcomes[0].relative_path, "Budget.xlsx");
+        assert_eq!(summary.outcomes[0].destination_filenames.len(), 2);
+
+        let group = placement::group_key(&plan.source_path, "Budget.xlsx");
+        let mut pushed: Vec<String> = std::fs::read_dir(&destination)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        pushed.sort();
+        assert_eq!(
+            pushed,
+            vec![
+                format!("{group}-01of02-Summary.csv"),
+                format!("{group}-02of02-Notes.csv"),
+            ]
+        );
+
+        // ADR-0124: both local trees empty once everything is pushed.
+        assert!(
+            std::fs::read_dir(source_dir(&local_output))
+                .unwrap()
+                .next()
+                .is_none(),
+            "local source/ should be empty"
+        );
+        assert!(
+            std::fs::read_dir(result_dir(&local_output))
+                .unwrap()
+                .next()
+                .is_none(),
+            "local result/ should be empty"
+        );
+        // ADR-0149: the scratch directory removes itself.
+        assert!(
+            std::fs::read_dir(scratch_dir(&local_output))
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "scratch/ should hold no leftover per-input directories"
+        );
+
+        // A rerun is a clean no-op.
+        let rerun = run_transform_job(&plan, 2, 2).await.unwrap();
+        assert_eq!(rerun.pushed, 0);
+        assert!(rerun.outcomes.is_empty());
+        assert_eq!(rerun.skipped_already_done, 1);
+    }
+
+    /// **The decision the `{nn}of{tt}` marker exists for** (ADR-0149 §3).
+    /// A destination holding only some of a workbook's sheets must be
+    /// detected as incomplete, so the workbook is re-pulled and finished --
+    /// where an "any member present" test would call it done and lose the
+    /// missing sheet forever.
+    #[tokio::test]
+    async fn an_incomplete_sheet_group_at_the_destination_is_redone() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        write_test_xlsx(
+            &source.join("Budget.xlsx"),
+            &[("Summary", vec![vec!["a"]]), ("Notes", vec![vec!["n"]])],
+        );
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Xlsx);
+        let group = placement::group_key(&plan.source_path, "Budget.xlsx");
+
+        // Sheet 1 of 2 landed in a prior run; sheet 2 never did.
+        std::fs::write(
+            destination.join(format!("{group}-01of02-Summary.csv")),
+            b"from a prior run",
+        )
+        .unwrap();
+
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(
+            summary.skipped_already_done, 0,
+            "a half-pushed group must not count as already done"
+        );
+        assert_eq!(summary.pushed, 2, "both sheets are pushed on the redo");
+        assert!(
+            destination
+                .join(format!("{group}-02of02-Notes.csv"))
+                .exists()
+        );
+
+        // And now it *is* complete, so a further rerun is a no-op.
+        let rerun = run_transform_job(&plan, 2, 2).await.unwrap();
+        assert_eq!(rerun.pushed, 0);
+        assert_eq!(rerun.skipped_already_done, 1);
+    }
+
+    /// A single-sheet workbook keeps the plain, unsuffixed name -- the
+    /// marker only ever appears where it carries information.
+    #[tokio::test]
+    async fn a_single_sheet_workbook_keeps_the_plain_destination_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        write_test_xlsx(&source.join("Solo.xlsx"), &[("Only", vec![vec!["x"]])]);
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Xlsx);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1);
+        let expected = placement::compute_destination_name(&plan.source_path, "Solo.xlsx", "csv");
+        assert!(destination.join(&expected).exists(), "expected {expected}");
+    }
+
+    /// `.csv` input is copied through byte-for-byte, on exactly ADR-0112's
+    /// reasoning for a `jpeg` already in the target format.
+    #[tokio::test]
+    async fn a_csv_input_is_copied_through_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        // Deliberately odd: CRLF, a semicolon delimiter, Latin-1-ish bytes.
+        let original: &[u8] = b"a;b
+c;d
+";
+        std::fs::write(source.join("notes.csv"), original).unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Csv);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(summary.outcomes[0].outcome, Outcome::CopiedThrough);
+        let expected = placement::compute_destination_name(&plan.source_path, "notes.csv", "csv");
+        assert_eq!(
+            std::fs::read(destination.join(&expected)).unwrap(),
+            original,
+            "copy-through must not rewrite the bytes"
+        );
+    }
+
+    /// An Excel `~$` lock stub matches `--include '*.xlsx'` but is not a
+    /// workbook, so it is skipped rather than failed -- the same treatment
+    /// ADR-0130 gives an AppleDouble sidecar, and for the same reason: a
+    /// deterministic failure class is what trips the circuit breaker.
+    #[tokio::test]
+    async fn an_excel_lock_stub_is_skipped_not_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        write_test_xlsx(&source.join("Real.xlsx"), &[("S", vec![vec!["x"]])]);
+        std::fs::write(source.join("~$Real.xlsx"), b"lock stub").unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Xlsx);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(summary.outcomes.len(), 1);
+        assert_eq!(summary.outcomes[0].relative_path, "Real.xlsx");
+        assert_eq!(summary.skipped_apple_double, 1, "the stub is a skip");
+    }
+
+    /// A misdirected run (a spreadsheet kind pointed at something that is
+    /// not a workbook) fails with a message classified as a wrong-input-kind
+    /// error, so ADR-0143's rule applies and the local source copy is
+    /// dropped rather than retained.
+    #[tokio::test]
+    async fn a_non_workbook_fails_and_drops_its_local_source_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source.join("bogus.xlsx"), b"not a workbook at all").unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Xlsx);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(summary.failed);
+        assert_eq!(summary.pushed, 0);
+        assert_eq!(summary.failures.transcode, 1);
+        assert!(
+            media::is_wrong_input_kind_error(&summary.outcomes[0].detail),
+            "{}",
+            summary.outcomes[0].detail
+        );
+        assert!(
+            !source_dir(&local_output).join("bogus.xlsx").exists(),
+            "ADR-0143: a wrong-input-kind failure drops its local copy"
+        );
     }
 
     /// ADR-0142 end-to-end: a `mp4-audio` run must pull an audio-only

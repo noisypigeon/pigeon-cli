@@ -23,6 +23,16 @@ pub(crate) enum InputFileType {
     /// extension distinguishes the two; `media::transcode_audio`'s
     /// has-a-video-stream guard is what makes selecting this kind safe.
     Mp4Audio,
+    /// Apple Numbers. The only kind needing an external converter other
+    /// than `ffmpeg` (ADR-0149): no Rust crate reads Apple's IWA format, so
+    /// `sheets::convert_numbers_to_xlsx` shells out to `soffice` and the
+    /// result rejoins the shared `calamine` path.
+    Numbers,
+    Xlsx,
+    Xls,
+    /// Already CSV: copied through byte-for-byte, the same reasoning
+    /// ADR-0112 applies to a `jpeg` input already in the target format.
+    Csv,
 }
 
 impl InputFileType {
@@ -48,6 +58,10 @@ impl InputFileType {
             InputFileType::Mov => &["mov"],
             InputFileType::M4v => &["m4v"],
             InputFileType::Mp4 | InputFileType::Mp4Audio => &["mp4"],
+            InputFileType::Numbers => &["numbers"],
+            InputFileType::Xlsx => &["xlsx"],
+            InputFileType::Xls => &["xls"],
+            InputFileType::Csv => &["csv"],
         }
     }
 
@@ -81,7 +95,11 @@ impl InputFileType {
             | InputFileType::Heic
             | InputFileType::Mov
             | InputFileType::M4v
-            | InputFileType::Mp4 => self.canonical_extension(),
+            | InputFileType::Mp4
+            | InputFileType::Numbers
+            | InputFileType::Xlsx
+            | InputFileType::Xls
+            | InputFileType::Csv => self.canonical_extension(),
         }
     }
 
@@ -105,9 +123,13 @@ impl InputFileType {
             "m4v" => Ok(InputFileType::M4v),
             "mp4" => Ok(InputFileType::Mp4),
             "mp4-audio" => Ok(InputFileType::Mp4Audio),
+            "numbers" => Ok(InputFileType::Numbers),
+            "xlsx" => Ok(InputFileType::Xlsx),
+            "xls" => Ok(InputFileType::Xls),
+            "csv" => Ok(InputFileType::Csv),
             other => Err(format!(
                 "unknown --input-file-type '{other}' (expected png, jpeg, heic, mov, m4v, mp4, \
-                 or mp4-audio)"
+                 mp4-audio, numbers, xlsx, xls, or csv)"
             )),
         }
     }
@@ -141,7 +163,27 @@ impl InputFileType {
             InputFileType::Png | InputFileType::Jpeg | InputFileType::Heic => "jpg",
             InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => "mp4",
             InputFileType::Mp4Audio => "opus",
+            InputFileType::Numbers
+            | InputFileType::Xlsx
+            | InputFileType::Xls
+            | InputFileType::Csv => "csv",
         }
+    }
+
+    /// Whether this kind is a spreadsheet, i.e. goes through
+    /// `super::sheets` rather than `super::media` (ADR-0149).
+    ///
+    /// Asks what a kind *is* rather than making each call site widen a
+    /// `match` arm list. That matters here because a spreadsheet is this
+    /// job's first kind where one input yields *several* outputs, so the
+    /// branch it selects is structural rather than a choice of encoder --
+    /// and a kind added later that forgot to appear in such a list would
+    /// silently take the single-output path.
+    pub(crate) fn is_spreadsheet(self) -> bool {
+        matches!(
+            self,
+            InputFileType::Numbers | InputFileType::Xlsx | InputFileType::Xls | InputFileType::Csv
+        )
     }
 }
 
@@ -263,6 +305,10 @@ mod tests {
             InputFileType::Mov,
             InputFileType::M4v,
             InputFileType::Mp4,
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
         ] {
             assert_eq!(kind.canonical_extension(), kind.to_string());
         }
@@ -292,6 +338,10 @@ mod tests {
             InputFileType::M4v,
             InputFileType::Mp4,
             InputFileType::Mp4Audio,
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
         ] {
             assert_eq!(InputFileType::parse(kind.name()).unwrap(), kind);
         }
@@ -306,6 +356,89 @@ mod tests {
         assert!(InputFileType::Mp4Audio.matches_extension("mp4"));
         assert!(InputFileType::Mp4Audio.matches_extension("MP4"));
         assert_eq!(InputFileType::Mp4Audio.output_extension(), "opus");
+        for kind in [
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
+        ] {
+            assert_eq!(kind.output_extension(), "csv", "{kind}");
+        }
+    }
+
+    /// ADR-0149: the four spreadsheet kinds.
+    #[test]
+    fn parse_accepts_every_spreadsheet_kind_case_insensitively() {
+        for (value, expected) in [
+            ("numbers", InputFileType::Numbers),
+            ("NUMBERS", InputFileType::Numbers),
+            ("xlsx", InputFileType::Xlsx),
+            ("XLSX", InputFileType::Xlsx),
+            ("xls", InputFileType::Xls),
+            ("XLS", InputFileType::Xls),
+            ("csv", InputFileType::Csv),
+            ("CSV", InputFileType::Csv),
+        ] {
+            assert_eq!(InputFileType::parse(value).unwrap(), expected, "{value}");
+        }
+    }
+
+    /// Neighbouring spellings are not aliases, per ADR-0139's rule that one
+    /// is added on evidence of a real miss rather than in anticipation.
+    /// `calamine` reads `xlsm`/`xlsb`/`ods` too; they are deliberately out.
+    #[test]
+    fn parse_rejects_neighbouring_spreadsheet_spellings() {
+        for value in [
+            "xlsx2",
+            "number",
+            "numbers2",
+            "excel",
+            "spreadsheet",
+            "sheet",
+            "xlsm",
+            "xlsb",
+            "ods",
+            "tsv",
+        ] {
+            assert!(InputFileType::parse(value).is_err(), "{value} parsed");
+        }
+    }
+
+    /// `*.xls` does not glob-match `foo.xlsx`, so the two kinds stay
+    /// disjoint at the rclone `--include` filter with no special handling --
+    /// and `matches_extension` must agree with that.
+    #[test]
+    fn xls_and_xlsx_are_disjoint_kinds() {
+        assert!(InputFileType::Xls.matches_extension("xls"));
+        assert!(InputFileType::Xls.matches_extension("XLS"));
+        assert!(!InputFileType::Xls.matches_extension("xlsx"));
+        assert!(InputFileType::Xlsx.matches_extension("xlsx"));
+        assert!(!InputFileType::Xlsx.matches_extension("xls"));
+    }
+
+    #[test]
+    fn is_spreadsheet_is_true_only_for_spreadsheet_kinds() {
+        for kind in [
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
+        ] {
+            assert!(kind.is_spreadsheet(), "{kind}");
+            // Not video, which is also what suppresses --video-quality.
+            assert!(!kind.is_video(), "{kind}");
+        }
+        for kind in [
+            InputFileType::Png,
+            InputFileType::Jpeg,
+            InputFileType::Heic,
+            InputFileType::Mov,
+            InputFileType::M4v,
+            InputFileType::Mp4,
+            InputFileType::Mp4Audio,
+        ] {
+            assert!(!kind.is_spreadsheet(), "{kind}");
+        }
     }
 
     /// `Mp4Audio` must not be a video kind despite its `.mp4` input
@@ -345,6 +478,10 @@ mod tests {
             InputFileType::M4v,
             InputFileType::Mp4,
             InputFileType::Mp4Audio,
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
         ] {
             assert_eq!(
                 kind.extensions().len(),
