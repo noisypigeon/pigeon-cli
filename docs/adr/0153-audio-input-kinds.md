@@ -226,16 +226,20 @@ exists precisely so the operator chooses.
 
 - **Preserving embedded cover art in the output.** Opus-in-Ogg can carry
   `METADATA_BLOCK_PICTURE`, but ffmpeg's support for writing it is uneven,
-  so this is its own decision rather than a line in this one.
-- **Reclassifying the duration-guard message as non-retryable** (§2).
+  so this is its own decision rather than a line in this one
+  ([#105](https://github.com/noisypigeon/pigeon-cli/issues/105)).
+- **Reclassifying the duration-guard message as non-retryable** (§2)
+  ([#106](https://github.com/noisypigeon/pigeon-cli/issues/106)).
 - **Sample-rate and bit-depth preservation for `.wav`.** Opus always
   operates at 48 kHz internally, so a 96 kHz or 24-bit master is resampled
   and requantized by construction -- inherent to the output format, not a
   tunable. Named because a WAV archive is the one input class where an
-  operator might reasonably have expected otherwise.
+  operator might reasonably have expected otherwise ([#107](https://github.com/noisypigeon/pigeon-cli/issues/107)).
 - **Multichannel audio.** A 5.1 source at 128 kbps is under-provisioned,
   since the tiers are chosen for stereo. Not guarded -- no such file is
-  known to be in scope -- but recorded so a future surprise has a reference.
+  known to be in scope -- but recorded so a future surprise has a
+  reference. Shares [#107](https://github.com/noisypigeon/pigeon-cli/issues/107)'s cause: both are Opus's own format
+  constraints rather than a pigeon choice.
 - `flac`, `aiff`, `ogg`, `wma` kinds -- added on evidence of a real need.
 - Capping the target bitrate at the source's (§6, rejected with reasoning).
 - Lossless archival (FLAC output) -- this job has one output format per
