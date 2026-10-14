@@ -278,3 +278,30 @@ notarization requires a paid Apple Developer ID and is out of scope here.
   `pigeon-v0.4.2-aarch64-unknown-linux-gnu.tar.gz` attached; download and
   run each on its respective platform to confirm `pigeon --version`
   reports `0.4.2`.
+
+## Amendment (2026-10-14): publish now runs after the push (ADR-0150)
+
+This ADR's "Publish runs before the commit/tag/push, not after" is reversed
+by ADR-0150, after a merge landing mid-run took the release pipeline down for
+five consecutive merges. The reasoning here covered a *failed publish* and was
+sound for it; it never considered a **successful publish followed by a failed
+push**, which is what happened — run `38488459828` published `0.4.28`, then had
+`git push origin HEAD:main` rejected as a non-fast-forward because PR #89
+merged while it was still building. That outcome is strictly worse than the one
+this ordering protects against: unrecoverable (a registry version cannot be
+reclaimed) and self-perpetuating (every later run recomputed the same number
+and collided).
+
+The cost this ADR cites for the other ordering — "a naive retry would
+double-bump" — is answered by §2a above, which already decrees the bump happens
+"always, unconditionally, regardless of how that version got there". A skipped
+version number is something this ADR had already decided not to care about, so
+push-first trades an unrecoverable failure for one this ADR calls a non-issue.
+
+Two further consequences. `--allow-dirty`, introduced here *because* the bump
+was uncommitted at publish time, is dropped — the tree is clean once the commit
+precedes the publish. And the idempotent-retry property this ordering was
+chosen to provide is now an explicit crates.io sparse-index pre-check, so it
+holds under either order rather than as a side effect of one. §2a's version-bump
+rule, §2b's changelog cut, the concurrency group, the loop guard, and the
+GitHub Release step are all unchanged.
