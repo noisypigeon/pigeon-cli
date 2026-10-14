@@ -210,3 +210,20 @@ moves from `jpeg/` to `jpg/`). Each gets a short forward-pointing
   (plus an excluded `c.png`) asserts both are pushed and copied through.
 - Manual, the reported failure: rerun the operator's exact command
   against `source:jpg/` and confirm a non-zero copied-through count.
+
+## Amendment (2026-10-13): four more single-spelling kinds (ADR-0149)
+
+ADR-0149 adds `numbers`, `xlsx`, `xls`, and `csv` to the extension-set model
+this ADR introduced. Each has exactly one spelling, per this ADR's rule that an
+alias is added on evidence of a real miss rather than in anticipation --
+`calamine` reads `xlsm`/`xlsb`/`ods` too, and they are deliberately left out
+until a run is observed to want them. `*.xls` does not glob-match `foo.xlsx`, so
+`Xls` and `Xlsx` stay disjoint at the `--include` filter with no special
+handling, and `every_other_kind_has_exactly_one_spelling` is extended to cover
+all four.
+
+Also relevant: this ADR's zero-match source-listing warning is the only thing
+standing between an operator and a silently-invisible `.numbers` saved as a
+package *directory*, which uploads as many objects under `Foo.numbers/` and
+matches no `*.numbers` pattern. ADR-0149 records that as a known limitation on
+exactly this ADR's reasoning.
