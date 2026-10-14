@@ -18,7 +18,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use super::format::VideoQuality;
+use super::format::{AudioQuality, VideoQuality};
 
 /// Confirms `ffmpeg`/`ffprobe` are on `PATH`, checked once up front before
 /// any prompts (the same shape as `rclone::worker::check_rclone_available`),
@@ -189,6 +189,43 @@ pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), 
 /// nonetheless exits 0.
 const DURATION_TOLERANCE_SECONDS: f64 = 0.5;
 
+/// Extra duration allowance, as a fraction of the input's own duration
+/// (ADR-0153).
+///
+/// The absolute `DURATION_TOLERANCE_SECONDS` floor alone is wrong for any
+/// input whose duration ffprobe can only *estimate*. A raw ADTS `.aac`
+/// stream carries no container duration, so ffprobe derives it from bitrate
+/// and size, and the error scales with length. Measured on generated
+/// fixtures:
+///
+/// | source | reported in | out | delta |
+/// |---|---|---|---|
+/// | 3s | 3.000s | 3.048s | 0.048s |
+/// | 30s | 29.627s | 30.030s | 0.403s |
+/// | 180s | 177.868s | 180.031s | **2.162s** |
+///
+/// A ~1.2% under-estimate, so every real-length track would have failed the
+/// old guard. 2% covers that with headroom while still catching a partial
+/// write, which is a far larger fraction of the stream.
+const DURATION_TOLERANCE_FRACTION: f64 = 0.02;
+
+/// Whether `after` is short enough of `before` to mean a truncated or
+/// partial encode (ADR-0153).
+///
+/// **One-sided on purpose.** A partial write always produces a *shorter*
+/// output; an output *longer* than the input is never evidence of
+/// truncation, and for an estimated input duration it is the normal case
+/// (see `DURATION_TOLERANCE_FRACTION`'s measurements, where every output
+/// exceeded its reported input). The old symmetric comparison treated that
+/// as a failure.
+///
+/// Pure so the thresholds are testable without running `ffmpeg`, the same
+/// reason ADR-0143 extracted `circuit_breaker_should_trip`.
+fn is_truncated_encode(before: f64, after: f64) -> bool {
+    let allowance = DURATION_TOLERANCE_SECONDS.max(before.abs() * DURATION_TOLERANCE_FRACTION);
+    before - after > allowance
+}
+
 /// `path`'s container-level duration in seconds (`ffprobe`'s
 /// `format=duration`), or `None` if `ffprobe` can't determine it -- treated
 /// as "skip the check," same posture as `probe_dimensions`.
@@ -311,9 +348,9 @@ async fn has_video_stream(path: &Path) -> bool {
             "-select_streams",
             "v",
             "-show_entries",
-            "stream=index",
+            "stream=index:stream_disposition=attached_pic",
             "-of",
-            "csv=p=0",
+            "json",
         ])
         .arg(path)
         .output()
@@ -321,7 +358,48 @@ async fn has_video_stream(path: &Path) -> bool {
     else {
         return false;
     };
-    output.status.success() && !output.stdout.is_empty()
+    if !output.status.success() {
+        return false;
+    }
+    let Ok(probe) = serde_json::from_slice::<VideoStreamProbe>(&output.stdout) else {
+        return false;
+    };
+    probe
+        .streams
+        .iter()
+        .any(|stream| stream.disposition.attached_pic == 0)
+}
+
+/// `has_video_stream`'s probe output (ADR-0153).
+///
+/// The `disposition` is what this exists for. ffmpeg models **embedded
+/// cover art as a video stream**, so a plain `-select_streams v` count
+/// returns 1 for any tagged music file -- which would have made ADR-0142's
+/// has-a-video-stream guard reject essentially every `.mp3`/`.m4a`/`.aac`
+/// in a real library, classify it wrong-input-kind (so ADR-0143 deletes the
+/// local copy), and trip ADR-0121's circuit breaker into aborting the run.
+/// Measured against a real fixture: an m4a with attached art reports
+/// stream index 1 under the old probe and `attached_pic=1` under this one.
+#[derive(Debug, Deserialize, Default)]
+struct VideoStreamProbe {
+    #[serde(default)]
+    streams: Vec<VideoStreamEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoStreamEntry {
+    #[serde(default)]
+    disposition: VideoStreamDisposition,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct VideoStreamDisposition {
+    /// `1` for cover art, `0` for a genuine video stream. Defaulted so a
+    /// probe that omits the field entirely is read as real video, which is
+    /// the conservative direction -- it preserves ADR-0141/0142's guards
+    /// rather than silently disarming them.
+    #[serde(default)]
+    attached_pic: u8,
 }
 
 /// Transcodes `input` (mov/m4v/mp4) to `output` (always `.mp4`, H.265/HEVC,
@@ -461,26 +539,19 @@ pub(crate) async fn transcode_video(
     if let (Some(before), Some(after)) = (
         probe_duration_seconds(input).await,
         probe_duration_seconds(output).await,
-    ) && (before - after).abs() > DURATION_TOLERANCE_SECONDS
+    ) && is_truncated_encode(before, after)
     {
         return Err(format!(
-            "transcoding {} changed duration from {before:.3}s to {after:.3}s (tolerance \
-             {DURATION_TOLERANCE_SECONDS}s); refusing a truncated or partial encode",
-            input.display()
+            "transcoding {} shortened duration from {before:.3}s to {after:.3}s (allowance \
+             {DURATION_TOLERANCE_SECONDS}s or {}% of the input, whichever is larger); refusing \
+             a truncated or partial encode",
+            input.display(),
+            DURATION_TOLERANCE_FRACTION * 100.0
         ));
     }
 
     Ok(())
 }
-
-/// Opus bitrate for `transcode_audio` (ADR-0142). 48k, not the
-/// speech-tuned 32k: this content is personal archival audio of *unknown*
-/// type -- some clips may be music rather than speech -- and 48k is the
-/// lowest rate that stays comfortably transparent for speech while
-/// remaining acceptable for general audio, still roughly 2.2x smaller than
-/// a typical 128k AAC source. Same archival-over-streaming reasoning as
-/// `VideoQuality::Medium`'s deliberately-better-than-conventional CRF.
-const OPUS_BITRATE: &str = "48k";
 
 /// Transcodes `input` (an audio-only `.mp4`, ADR-0142) to `output`
 /// (always `.opus`, Ogg-encapsulated Opus):
@@ -515,7 +586,11 @@ const OPUS_BITRATE: &str = "48k";
 /// Verified by the same duration guard `transcode_video` uses -- audio
 /// shares exactly that truncated/partial-encode failure mode. The
 /// pixel-area dimension guard is skipped: there are no dimensions.
-pub(crate) async fn transcode_audio(input: &Path, output: &Path) -> Result<(), String> {
+pub(crate) async fn transcode_audio(
+    input: &Path,
+    output: &Path,
+    quality: AudioQuality,
+) -> Result<(), String> {
     if has_video_stream(input).await {
         return Err(format!(
             "{} has a video stream, so it {UNEXPECTED_VIDEO_STREAM_SIGNATURE}; refusing to \
@@ -534,7 +609,7 @@ pub(crate) async fn transcode_audio(input: &Path, output: &Path) -> Result<(), S
             "-c:a",
             "libopus",
             "-b:a",
-            OPUS_BITRATE,
+            quality.bitrate(),
             "-application",
             "audio",
             "-f",
@@ -556,12 +631,14 @@ pub(crate) async fn transcode_audio(input: &Path, output: &Path) -> Result<(), S
     if let (Some(before), Some(after)) = (
         probe_duration_seconds(input).await,
         probe_duration_seconds(output).await,
-    ) && (before - after).abs() > DURATION_TOLERANCE_SECONDS
+    ) && is_truncated_encode(before, after)
     {
         return Err(format!(
-            "transcoding {} changed duration from {before:.3}s to {after:.3}s (tolerance \
-             {DURATION_TOLERANCE_SECONDS}s); refusing a truncated or partial encode",
-            input.display()
+            "transcoding {} shortened duration from {before:.3}s to {after:.3}s (allowance \
+             {DURATION_TOLERANCE_SECONDS}s or {}% of the input, whichever is larger); refusing \
+             a truncated or partial encode",
+            input.display(),
+            DURATION_TOLERANCE_FRACTION * 100.0
         ));
     }
 
@@ -1064,7 +1141,7 @@ mod tests {
         }
 
         let output = dir.path().join("voice-abcdef0123456789.opus.scratch");
-        if let Err(err) = transcode_audio(&input, &output).await {
+        if let Err(err) = transcode_audio(&input, &output, AudioQuality::Medium).await {
             eprintln!("skipping: this ffmpeg build can't encode libopus: {err}");
             return;
         }
@@ -1099,7 +1176,7 @@ mod tests {
         }
 
         let output = dir.path().join("out.opus");
-        let err = transcode_audio(&input, &output)
+        let err = transcode_audio(&input, &output, AudioQuality::Medium)
             .await
             .expect_err("a file with a video stream must not be transcoded to audio-only");
 
@@ -1129,7 +1206,11 @@ mod tests {
         std::fs::write(&input, b"this is not a real mp4 file").unwrap();
         let output = dir.path().join("out.opus");
 
-        assert!(transcode_audio(&input, &output).await.is_err());
+        assert!(
+            transcode_audio(&input, &output, AudioQuality::Medium)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -1152,6 +1233,145 @@ mod tests {
         assert!(!has_video_stream(&garbage).await);
 
         assert!(!has_video_stream(&dir.path().join("does-not-exist.mp4")).await);
+    }
+
+    /// **The ADR-0153 finding, pinned.** ffmpeg models embedded cover art
+    /// as a video stream, so before this `has_video_stream` returned `true`
+    /// for any tagged music file -- which would have made ADR-0142's guard
+    /// reject essentially every `.mp3`/`.m4a`/`.aac` in a real library,
+    /// delete its local copy (ADR-0143), and abort the run via ADR-0121's
+    /// circuit breaker.
+    #[tokio::test]
+    async fn cover_art_does_not_count_as_a_video_stream() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+
+        let audio = dir.path().join("tone.mp4");
+        if generate_audio_only_mp4(&audio).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate an audio fixture");
+            return;
+        }
+        let cover = dir.path().join("cover.png");
+        generate_test_png(&cover).await.unwrap();
+
+        let tagged = dir.path().join("tagged.m4a");
+        let muxed = tokio::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-i"])
+            .arg(&audio)
+            .arg("-i")
+            .arg(&cover)
+            .args([
+                "-map",
+                "0:a",
+                "-map",
+                "1:v",
+                "-c:a",
+                "copy",
+                "-c:v",
+                "mjpeg",
+                "-disposition:v",
+                "attached_pic",
+            ])
+            .arg(&tagged)
+            .output()
+            .await;
+        if muxed.map(|out| !out.status.success()).unwrap_or(true) {
+            eprintln!("skipping: this ffmpeg build can't attach cover art");
+            return;
+        }
+
+        // The whole point: art is not video.
+        assert!(
+            !has_video_stream(&tagged).await,
+            "cover art must not read as a video stream"
+        );
+        assert!(!has_video_stream(&audio).await);
+
+        // And a genuine video still does, so ADR-0141/0142's guards are
+        // not disarmed.
+        let video = dir.path().join("real.mp4");
+        if generate_test_video(&video).await.is_ok() {
+            assert!(has_video_stream(&video).await);
+        }
+    }
+
+    /// A tagged file must therefore transcode, not be refused.
+    #[tokio::test]
+    async fn an_audio_file_with_cover_art_transcodes_rather_than_being_refused() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("tone.mp4");
+        if generate_audio_only_mp4(&audio).await.is_err() {
+            eprintln!("skipping: this ffmpeg build can't generate an audio fixture");
+            return;
+        }
+        let cover = dir.path().join("cover.png");
+        generate_test_png(&cover).await.unwrap();
+        let tagged = dir.path().join("tagged.m4a");
+        let muxed = tokio::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-i"])
+            .arg(&audio)
+            .arg("-i")
+            .arg(&cover)
+            .args([
+                "-map",
+                "0:a",
+                "-map",
+                "1:v",
+                "-c:a",
+                "copy",
+                "-c:v",
+                "mjpeg",
+                "-disposition:v",
+                "attached_pic",
+            ])
+            .arg(&tagged)
+            .output()
+            .await;
+        if muxed.map(|out| !out.status.success()).unwrap_or(true) {
+            eprintln!("skipping: this ffmpeg build can't attach cover art");
+            return;
+        }
+
+        let output = dir.path().join("out.scratch");
+        transcode_audio(&tagged, &output, AudioQuality::Transparent)
+            .await
+            .expect("a tagged music file must transcode");
+        assert!(std::fs::metadata(&output).unwrap().len() > 0);
+    }
+
+    /// **The second ADR-0153 finding, pinned.** The truncated-encode guard
+    /// is one-sided and scales with duration, because a raw ADTS `.aac`
+    /// carries no container duration and ffprobe's estimate is ~1.2% short
+    /// -- measured at 177.868s reported for a 180s source, which the old
+    /// symmetric 0.5s comparison failed outright.
+    #[test]
+    fn the_truncated_encode_guard_is_one_sided_and_scales() {
+        // An output *longer* than the input is never truncation. This is
+        // the measured ADTS case, and the old guard rejected it.
+        assert!(!is_truncated_encode(177.868, 180.031));
+        assert!(!is_truncated_encode(29.627, 30.030));
+        assert!(!is_truncated_encode(3.000, 3.048));
+
+        // A genuine partial write is still caught, at every scale.
+        assert!(is_truncated_encode(180.0, 90.0));
+        assert!(is_truncated_encode(10.0, 2.0));
+        assert!(is_truncated_encode(3.0, 1.0));
+
+        // The absolute floor still governs short files: 0.4s short of a 3s
+        // input is inside the 0.5s floor, 0.6s is not.
+        assert!(!is_truncated_encode(3.0, 2.6));
+        assert!(is_truncated_encode(3.0, 2.4));
+
+        // And the relative allowance governs long ones: 2% of 600s is 12s.
+        assert!(!is_truncated_encode(600.0, 589.0));
+        assert!(is_truncated_encode(600.0, 586.0));
     }
 
     #[test]

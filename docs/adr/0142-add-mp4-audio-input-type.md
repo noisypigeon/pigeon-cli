@@ -215,3 +215,36 @@ ADR-0143 fixes both halves: a wrong-input-kind failure now deletes its
 local source copy (non-destructive -- the file is still at `--source`), and
 the breaker trips on 18 of 20 rather than 20 of 20. The guard itself, its
 message, and its non-retryable classification are unchanged.
+
+## Amendment (2026-10-14): the deferred quality menu, and four more audio kinds (ADR-0153)
+
+This ADR's Out of scope deferred an `--audio-quality` menu "if a real need
+surfaces". It surfaced: ADR-0153 adds `m4a`, `mp3`, `aac`, `wav`, and
+`opus`, which are a music library and (for `wav`) uncompressed, not the
+voice notes this ADR's 48 kbps was chosen for.
+
+Four changes to what this ADR established:
+
+- **`OPUS_BITRATE` is retired** into `AudioQuality::Medium`, carrying its
+  doc comment and its reasoning intact -- that reasoning is still correct
+  for the kind it was written about.
+- **`mp4-audio`'s default is still `medium` (48k)**, so this ADR's output is
+  byte-identical when the flag is omitted. Pinned by a test. The new kinds
+  default to `transparent` (128k) instead; the per-kind default is the
+  load-bearing part, since a menu defaulting to 48k everywhere would still
+  quietly destroy a music library.
+- **The has-a-video-stream guard no longer fires on cover art** (see
+  ADR-0141's amendment). Without that fix this ADR's guard would have
+  rejected essentially every tagged music file.
+- **The truncated-encode guard is corrected.** This ADR's symmetric 0.5 s
+  comparison fails every real-length `.aac`: ADTS carries no container
+  duration, ffprobe estimates it ~1.2% short, and a 180 s source measured
+  177.868 s in against 180.031 s out. The guard becomes one-sided -- only a
+  *shorter* output means truncation -- and its allowance scales with
+  duration.
+
+`transcode_audio`'s `-map 0:a:0`, its Opus-in-Ogg output, `-application
+audio`, and the `.opus` extension reasoning are all unchanged. One
+asymmetry this ADR noted does get resolved: `opus` was an input value
+`parse` rejected, and is now a real input kind -- re-encoded rather than
+copied through, so a mixed library normalizes to one bitrate.

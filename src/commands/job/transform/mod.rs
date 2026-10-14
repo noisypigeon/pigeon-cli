@@ -28,7 +28,7 @@ use std::path::PathBuf;
 
 use crate::core::job::Job;
 
-pub(crate) use format::{InputFileType, VideoQuality};
+pub(crate) use format::{AudioQuality, InputFileType, VideoQuality};
 pub(crate) use worker::{TransformPlan, TransformSummary};
 
 pub(crate) struct TransformJob {
@@ -37,6 +37,7 @@ pub(crate) struct TransformJob {
     pub local_output: PathBuf,
     pub input_file_type: InputFileType,
     pub video_quality: VideoQuality,
+    pub audio_quality: AudioQuality,
     pub download_transfers: usize,
     pub download_checkers: usize,
     pub tpslimit: Option<usize>,
@@ -61,6 +62,7 @@ impl Job for TransformJob {
             local_output: self.local_output.clone(),
             input_file_type: self.input_file_type,
             video_quality: self.video_quality,
+            audio_quality: self.audio_quality,
             download_transfers: self.download_transfers,
             download_checkers: self.download_checkers,
             tpslimit: self.tpslimit,

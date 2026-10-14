@@ -33,6 +33,23 @@ pub(crate) enum InputFileType {
     /// Already CSV: copied through byte-for-byte, the same reasoning
     /// ADR-0112 applies to a `jpeg` input already in the target format.
     Csv,
+    /// AAC in an MP4 container -- the ordinary iTunes-era music file
+    /// (ADR-0153).
+    M4a,
+    Mp3,
+    /// Raw AAC in an ADTS stream, with no container. Worth distinguishing
+    /// from `M4a` in one's head because ADTS carries no duration, which is
+    /// why ADR-0153 had to make the truncated-encode guard one-sided.
+    Aac,
+    /// Uncompressed PCM. The only **lossless** input this job takes, which
+    /// is why it defaults to the top quality tier: the encode is the first
+    /// lossy generation the file has ever had.
+    Wav,
+    /// Already Opus. Deliberately **re-encoded** rather than copied
+    /// through (ADR-0153), so a mixed library normalizes to one bitrate --
+    /// a departure from ADR-0112's jpeg and ADR-0149's csv copy-through,
+    /// at the cost of a second lossy generation.
+    Opus,
 }
 
 impl InputFileType {
@@ -62,6 +79,11 @@ impl InputFileType {
             InputFileType::Xlsx => &["xlsx"],
             InputFileType::Xls => &["xls"],
             InputFileType::Csv => &["csv"],
+            InputFileType::M4a => &["m4a"],
+            InputFileType::Mp3 => &["mp3"],
+            InputFileType::Aac => &["aac"],
+            InputFileType::Wav => &["wav"],
+            InputFileType::Opus => &["opus"],
         }
     }
 
@@ -99,7 +121,12 @@ impl InputFileType {
             | InputFileType::Numbers
             | InputFileType::Xlsx
             | InputFileType::Xls
-            | InputFileType::Csv => self.canonical_extension(),
+            | InputFileType::Csv
+            | InputFileType::M4a
+            | InputFileType::Mp3
+            | InputFileType::Aac
+            | InputFileType::Wav
+            | InputFileType::Opus => self.canonical_extension(),
         }
     }
 
@@ -127,9 +154,14 @@ impl InputFileType {
             "xlsx" => Ok(InputFileType::Xlsx),
             "xls" => Ok(InputFileType::Xls),
             "csv" => Ok(InputFileType::Csv),
+            "m4a" => Ok(InputFileType::M4a),
+            "mp3" => Ok(InputFileType::Mp3),
+            "aac" => Ok(InputFileType::Aac),
+            "wav" => Ok(InputFileType::Wav),
+            "opus" => Ok(InputFileType::Opus),
             other => Err(format!(
                 "unknown --input-file-type '{other}' (expected png, jpeg, heic, mov, m4v, mp4, \
-                 mp4-audio, numbers, xlsx, xls, or csv)"
+                 mp4-audio, m4a, mp3, aac, wav, opus, numbers, xlsx, xls, or csv)"
             )),
         }
     }
@@ -162,7 +194,12 @@ impl InputFileType {
         match self {
             InputFileType::Png | InputFileType::Jpeg | InputFileType::Heic => "jpg",
             InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => "mp4",
-            InputFileType::Mp4Audio => "opus",
+            InputFileType::Mp4Audio
+            | InputFileType::M4a
+            | InputFileType::Mp3
+            | InputFileType::Aac
+            | InputFileType::Wav
+            | InputFileType::Opus => "opus",
             InputFileType::Numbers
             | InputFileType::Xlsx
             | InputFileType::Xls
@@ -179,6 +216,51 @@ impl InputFileType {
     /// branch it selects is structural rather than a choice of encoder --
     /// and a kind added later that forgot to appear in such a list would
     /// silently take the single-output path.
+    /// Whether this kind is transcoded to Opus by `media::transcode_audio`
+    /// (ADR-0153).
+    ///
+    /// Asks what a kind *is*, like `is_video`/`is_spreadsheet`, rather than
+    /// making each call site widen a `match` arm list -- the shape that let
+    /// ADR-0141's audio-only dispatch bug hide in one. It gates the
+    /// `--audio-quality` prompt as well as the converter dispatch.
+    pub(crate) fn is_audio(self) -> bool {
+        matches!(
+            self,
+            InputFileType::Mp4Audio
+                | InputFileType::M4a
+                | InputFileType::Mp3
+                | InputFileType::Aac
+                | InputFileType::Wav
+                | InputFileType::Opus
+        )
+    }
+
+    /// This kind's `--audio-quality` default (ADR-0153). Only consulted
+    /// when `is_audio()`.
+    ///
+    /// The default matters more than the menu: one that defaulted to
+    /// `Medium` everywhere would still quietly destroy a music library,
+    /// which is the whole reason ADR-0142's single fixed bitrate was not
+    /// simply extended to these kinds.
+    pub(crate) fn default_audio_quality(self) -> AudioQuality {
+        match self {
+            // ADR-0142's own choice, kept so its output is byte-identical
+            // when the flag is omitted.
+            InputFileType::Mp4Audio => AudioQuality::Medium,
+            // Lossy sources: the encode is a *second* generation, so the
+            // top tier limits the compounding. `Wav` is lossless, which
+            // makes this the *first* lossy generation it has ever had and
+            // is the strongest case of all for the top tier.
+            InputFileType::M4a
+            | InputFileType::Mp3
+            | InputFileType::Aac
+            | InputFileType::Wav
+            | InputFileType::Opus => AudioQuality::Transparent,
+            // Not an audio kind; never consulted.
+            _ => AudioQuality::Medium,
+        }
+    }
+
     pub(crate) fn is_spreadsheet(self) -> bool {
         matches!(
             self,
@@ -190,6 +272,77 @@ impl InputFileType {
 impl std::fmt::Display for InputFileType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.name())
+    }
+}
+
+/// `--audio-quality` (ADR-0153): a small, vetted Opus bitrate menu,
+/// mirroring `VideoQuality`'s shape so there is one convention for a
+/// quality menu in this job rather than two. Only consulted when
+/// `InputFileType::is_audio()`.
+///
+/// ADR-0142 deliberately shipped one fixed bitrate and deferred this
+/// "if a real need surfaces". It surfaced: that bitrate was chosen for
+/// voice notes of unknown type, and applying it to a music library would
+/// be a severe, irreversible loss in a pipeline whose source may not
+/// survive to redo it from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AudioQuality {
+    Low,
+    Medium,
+    High,
+    /// Deliberately **not** called `Lossless`, unlike `VideoQuality`'s tier
+    /// of that name: Opus has no lossless mode, so the name would be a lie.
+    /// `Transparent` claims only what it delivers -- perceptual
+    /// indistinguishability, the widely-cited threshold for Opus stereo.
+    Transparent,
+}
+
+impl AudioQuality {
+    /// `libopus` target bitrate for this tier, as ffmpeg's `-b:a` takes it.
+    ///
+    /// `Medium`'s `48k` carries ADR-0142's reasoning, which still applies
+    /// to the kind it was chosen for: 32k is the speech-tuned figure, and
+    /// 48k is the lowest rate that stays comfortably transparent for speech
+    /// while remaining acceptable for general audio -- the right call for
+    /// personal archival audio of *unknown* type, deliberately a notch
+    /// better than the conventional default, the same
+    /// archival-over-streaming reasoning as `VideoQuality::Medium`'s CRF.
+    pub(crate) fn bitrate(self) -> &'static str {
+        match self {
+            AudioQuality::Low => "32k",
+            AudioQuality::Medium => "48k",
+            AudioQuality::High => "96k",
+            AudioQuality::Transparent => "128k",
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            AudioQuality::Low => "low",
+            AudioQuality::Medium => "medium",
+            AudioQuality::High => "high",
+            AudioQuality::Transparent => "transparent",
+        }
+    }
+
+    /// Case-insensitive; any other value is a hard error -- same discipline
+    /// as `InputFileType::parse` and `VideoQuality::parse`.
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value.to_ascii_lowercase().as_str() {
+            "low" => Ok(AudioQuality::Low),
+            "medium" => Ok(AudioQuality::Medium),
+            "high" => Ok(AudioQuality::High),
+            "transparent" => Ok(AudioQuality::Transparent),
+            other => Err(format!(
+                "unknown --audio-quality '{other}' (expected low, medium, high, or transparent)"
+            )),
+        }
+    }
+}
+
+impl std::fmt::Display for AudioQuality {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -291,7 +444,9 @@ mod tests {
         assert!(InputFileType::parse("mp4audio").is_err());
         assert!(InputFileType::parse("mp4_audio").is_err());
         assert!(InputFileType::parse("audio").is_err());
-        assert!(InputFileType::parse("opus").is_err());
+        // `opus` was rejected here until ADR-0153, which makes it a real
+        // input kind -- it was only ever an *output* extension before.
+        assert_eq!(InputFileType::parse("opus").unwrap(), InputFileType::Opus);
     }
 
     #[test]
@@ -309,6 +464,11 @@ mod tests {
             InputFileType::Xlsx,
             InputFileType::Xls,
             InputFileType::Csv,
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+            InputFileType::Opus,
         ] {
             assert_eq!(kind.canonical_extension(), kind.to_string());
         }
@@ -342,6 +502,11 @@ mod tests {
             InputFileType::Xlsx,
             InputFileType::Xls,
             InputFileType::Csv,
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+            InputFileType::Opus,
         ] {
             assert_eq!(InputFileType::parse(kind.name()).unwrap(), kind);
         }
@@ -482,6 +647,11 @@ mod tests {
             InputFileType::Xlsx,
             InputFileType::Xls,
             InputFileType::Csv,
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+            InputFileType::Opus,
         ] {
             assert_eq!(
                 kind.extensions().len(),
@@ -524,6 +694,136 @@ mod tests {
         assert_eq!(InputFileType::M4v.output_extension(), "mp4");
         assert_eq!(InputFileType::Mp4.output_extension(), "mp4");
         assert_eq!(InputFileType::Mp4Audio.output_extension(), "opus");
+    }
+
+    // --- ADR-0153: audio kinds ------------------------------------------
+
+    #[test]
+    fn parse_accepts_every_audio_kind_case_insensitively() {
+        for (value, expected) in [
+            ("m4a", InputFileType::M4a),
+            ("M4A", InputFileType::M4a),
+            ("mp3", InputFileType::Mp3),
+            ("MP3", InputFileType::Mp3),
+            ("aac", InputFileType::Aac),
+            ("AAC", InputFileType::Aac),
+            ("wav", InputFileType::Wav),
+            ("WAV", InputFileType::Wav),
+            ("opus", InputFileType::Opus),
+            ("OPUS", InputFileType::Opus),
+        ] {
+            assert_eq!(InputFileType::parse(value).unwrap(), expected, "{value}");
+        }
+    }
+
+    /// Per ADR-0139's rule, an alias is added on evidence of a real miss
+    /// rather than in anticipation -- so none of these is one.
+    #[test]
+    fn parse_rejects_neighbouring_audio_spellings() {
+        for value in [
+            "mpeg3", "mp2", "m4b", "m4p", "oga", "ogg", "wave", "adts", "flac", "aiff", "wma",
+        ] {
+            assert!(InputFileType::parse(value).is_err(), "{value} parsed");
+        }
+    }
+
+    #[test]
+    fn every_audio_kind_outputs_opus_and_is_neither_video_nor_spreadsheet() {
+        for kind in [
+            InputFileType::Mp4Audio,
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+            InputFileType::Opus,
+        ] {
+            assert!(kind.is_audio(), "{kind}");
+            assert_eq!(kind.output_extension(), "opus", "{kind}");
+            // Not video, which is also what suppresses --video-quality.
+            assert!(!kind.is_video(), "{kind}");
+            assert!(!kind.is_spreadsheet(), "{kind}");
+        }
+        for kind in [
+            InputFileType::Png,
+            InputFileType::Jpeg,
+            InputFileType::Heic,
+            InputFileType::Mov,
+            InputFileType::M4v,
+            InputFileType::Mp4,
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
+        ] {
+            assert!(!kind.is_audio(), "{kind}");
+        }
+    }
+
+    /// **The assertion that pins ADR-0142's behaviour as unchanged.** Its
+    /// 48k was chosen for voice notes of unknown type and is still right
+    /// for them; the new kinds are music or lossless and would be badly
+    /// served by it.
+    #[test]
+    fn the_audio_quality_default_varies_by_kind() {
+        assert_eq!(
+            InputFileType::Mp4Audio.default_audio_quality(),
+            AudioQuality::Medium,
+            "ADR-0142's output must be byte-identical when the flag is omitted"
+        );
+        for kind in [
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+            InputFileType::Opus,
+        ] {
+            assert_eq!(
+                kind.default_audio_quality(),
+                AudioQuality::Transparent,
+                "{kind} is music or lossless"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_quality_parse_accepts_every_tier_case_insensitively() {
+        assert_eq!(AudioQuality::parse("low").unwrap(), AudioQuality::Low);
+        assert_eq!(AudioQuality::parse("MEDIUM").unwrap(), AudioQuality::Medium);
+        assert_eq!(AudioQuality::parse("high").unwrap(), AudioQuality::High);
+        assert_eq!(
+            AudioQuality::parse("Transparent").unwrap(),
+            AudioQuality::Transparent
+        );
+    }
+
+    #[test]
+    fn audio_quality_parse_rejects_anything_else() {
+        // Notably `lossless`, which is `VideoQuality`'s top tier but would
+        // be a lie for Opus -- it has no lossless mode.
+        for value in ["lossless", "best", "128k", "", "ultra"] {
+            assert!(AudioQuality::parse(value).is_err(), "{value} parsed");
+        }
+    }
+
+    #[test]
+    fn audio_quality_bitrates_increase_with_the_tier() {
+        assert_eq!(AudioQuality::Low.bitrate(), "32k");
+        assert_eq!(AudioQuality::Medium.bitrate(), "48k");
+        assert_eq!(AudioQuality::High.bitrate(), "96k");
+        assert_eq!(AudioQuality::Transparent.bitrate(), "128k");
+    }
+
+    #[test]
+    fn audio_quality_as_str_and_display_agree_and_round_trip() {
+        for quality in [
+            AudioQuality::Low,
+            AudioQuality::Medium,
+            AudioQuality::High,
+            AudioQuality::Transparent,
+        ] {
+            assert_eq!(quality.as_str(), quality.to_string());
+            assert_eq!(AudioQuality::parse(quality.as_str()).unwrap(), quality);
+        }
     }
 
     #[test]
