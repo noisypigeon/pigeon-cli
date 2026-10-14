@@ -125,7 +125,11 @@ pub enum JobType {
     /// (`mp4-audio`, ADR-0142) or `m4a`/`mp3`/`aac`/`wav`/`opus`
     /// (ADR-0153) -- into Opus `.opus` at a chosen `--audio-quality`, or
     /// spreadsheets
-    /// (`numbers`/`xlsx`/`xls`/`csv`, ADR-0149) into one `.csv` per sheet
+    /// (`numbers`/`xlsx`/`xls`/`csv`, ADR-0149) into one `.csv` per sheet,
+    /// or documents (ADR-0154) -- `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`/
+    /// `epub` into `.pdf` with `pdf` copied through,
+    /// `txt`/`md`/`markdown`/`mkd`/`rst`/`textclipping` into `.txt`, and
+    /// `tsv` into `.csv`
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
     /// pull `--source` into a local staging tree, transcoding/copying each
     /// file locally and pushing it individually via `rclone copyto` the
@@ -148,14 +152,19 @@ pub enum JobType {
     /// local state: "already done" is answered by listing the destination
     /// (ADR-0120 removed the local checkpoint). Requires `rclone` on
     /// `PATH`, plus `ffmpeg`/`ffprobe` for an image, video, or audio input
-    /// kind and `soffice` (LibreOffice) for `numbers`; `xlsx`/`xls`/`csv`
-    /// need neither (ADR-0149).
+    /// kind, `soffice` (LibreOffice) for `numbers` and for
+    /// `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`, `ebook-convert` (Calibre)
+    /// for `epub`, and `pandoc` for `md`/`rst`;
+    /// `xlsx`/`xls`/`csv`/`tsv`/`pdf`/`txt`/`textclipping` need none of
+    /// them (ADR-0149, ADR-0154).
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
         /// `mov`, `m4v`, `mp4`, `mp4-audio`, `m4a`, `mp3`, `aac`, `wav`,
-        /// `opus`, `numbers`, `xlsx`, `xls`, or `csv`. Interactively
-        /// selected when omitted and stdin is a terminal; required
-        /// otherwise.
+        /// `opus`, `numbers`, `xlsx`, `xls`, `csv`, `doc`, `docx`,
+        /// `pages`, `rtf`, `pdf`, `epub`, `pptx`, `key`, `txt`, `md`
+        /// (or `markdown`/`mkd`), `rst`, `textclipping`, or `tsv`.
+        /// Interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
         /// `mp4-audio` is for audio-only recordings carrying an `.mp4`
         /// extension (voice notes), transcoded to `.opus`; a file that
         /// actually has a video stream is refused rather than silently
@@ -163,7 +172,12 @@ pub enum JobType {
         /// (ADR-0153). `opus` input is re-encoded rather than copied
         /// through, so a mixed library normalizes to one bitrate. The four spreadsheet kinds all output `.csv`,
         /// one file per non-empty sheet (ADR-0149); `csv` input is copied
-        /// through byte-for-byte.
+        /// through byte-for-byte, as are `pdf` and `txt` (ADR-0154).
+        /// `key` is sniffed before conversion and a file that is not an
+        /// iWork container is refused -- that extension is also
+        /// conventional for a private key, and LibreOffice would otherwise
+        /// render one into a readable PDF. `md`/`rst` are rendered to
+        /// prose, which **discards link URLs and all inline markup**.
         #[arg(long)]
         input_file_type: Option<String>,
 

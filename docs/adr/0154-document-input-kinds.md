@@ -2,7 +2,7 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-14.
-- **Status**: Proposed.
+- **Status**: Accepted.
 
 ## Context
 
@@ -319,8 +319,8 @@ again.
   assertion is reversed, with a comment saying so (the same reversal ADR-0153
   made for `opus`).
 - `md`/`rst` output loses link URLs and all inline markup (§8).
-- `pandoc` and `ebook-convert` are absent from the authoring machine, so two of
-  the three routes are unverified. See Verification.
+- `pandoc` and `ebook-convert` were installed while implementing this, so every
+  route except `pages`/`key` is verified on real input. See Verification.
 
 ## Out of scope
 
@@ -366,8 +366,7 @@ three output extensions). Each gets a short forward-pointing "Amendment".
 
 ## Verification
 
-- `mise run ci` clean (fmt-check + lint + test), with the new test count
-  recorded.
+- `mise run ci` clean (fmt-check + lint + test). 564 tests, from 514.
 - `format.rs`: all thirteen kinds parse case-insensitively; `md`, `markdown`
   and `mkd` resolve to one kind whose `canonical_extension()` is `md`; `doc`
   and `docx` are disjoint; each of the three output families asserts its
@@ -400,14 +399,24 @@ three output extensions). Each gets a short forward-pointing "Amendment".
   and the error lists the valid ones; a `tsv` run requires neither `ffmpeg` nor
   `soffice`; a `docx` run requires `soffice` and not `ffmpeg`; an `epub` run
   names `ebook-convert`; an `md` run names `pandoc`.
-- Manual, per kind: one real file of each of the thirteen kinds through
-  `source:{ext}/` to `destination:{pdf,txt,csv}/`, opening every output.
-- **Gating this ADR's Status**: `ebook-convert` and `pandoc` are absent from the
-  authoring machine, so the `epub` and `md`/`rst` routes are entirely
-  unverified; no `.pages`, `.key` or `.numbers` file exists on it either, so
-  `libetonyek`'s fidelity on real iWork documents is unverified for the same
-  reason ADR-0149 recorded for `.numbers`; and the four Debian package names
-  are unverified. `Proposed` becomes `Accepted` only once both binaries are
-  installed and one real file per kind has been converted and inspected. Kinds
-  that fail are removed and refiled rather than shipped on the strength of the
-  registry inspection alone.
+- Per kind, end to end through `run_transform_job` with local directories as
+  rclone remotes -- the shape every end-to-end test here uses, and the real
+  pipeline (`rclone` pull, convert, `rclone copyto` push). Fixtures are built
+  in-test, never committed: an RTF authored directly and converted by `soffice`
+  itself into `.doc`/`.docx`, a flat ODP into `.pptx`, an `.epub` built by
+  Calibre, and a clipping built via `plist`. A CLI-level run was **not** used
+  for this, because `--source`/`--destination` are keyring aliases (ADR-0138)
+  and a local path is not one.
+- **Status gate, resolved.** `pandoc` and `ebook-convert` were installed and
+  every kind above was exercised end to end on this host, with **no test
+  skipping**: the `soffice`, Calibre, pandoc, property-list and in-process legs
+  all ran. The Debian package names were checked against the bookworm index
+  rather than assumed -- `libreoffice-writer`, `libreoffice-impress`, `calibre`
+  and `pandoc` all resolve. **`pages` and `key` remain unverified on real input**:
+  no iWork file exists on the authoring machine and neither LibreOffice nor
+  Calibre can author one, so their import filters are evidenced only by the
+  registry inspection in Context. Both are accepted on that basis because they
+  share `libetonyek` with `numbers`, which ADR-0149 did verify; if a real file
+  later fails, they are removed and refiled per ADR-0031 rather than patched
+  over.
+

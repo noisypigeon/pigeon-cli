@@ -67,7 +67,7 @@ use tracing::Instrument;
 
 use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
-use super::{destination, media, placement, push, sheets};
+use super::{destination, documents, media, placement, push, sheets};
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::{Copy, CopyTo};
 
@@ -815,17 +815,26 @@ async fn convert_one(
 
     let scratch_path = scratch.join(format!("{single_name}.scratch"));
     let input = &pending_file.absolute_path;
-    match input_file_type {
-        InputFileType::Jpeg => media::copy_through(input, &scratch_path),
-        InputFileType::Png | InputFileType::Heic => {
-            retry_transcode_unless_fatal(
-                TRANSCODE_RETRIES,
-                TRANSCODE_RETRY_BACKOFF,
-                &pending_file.source_key,
-                || media::transcode_to_jpg(input, &scratch_path),
-            )
-            .await
+
+    // Each arm returns the path it actually produced, rather than writing
+    // to `scratch_path` by convention (ADR-0154 §5). `soffice` and
+    // `ebook-convert` derive their own output name -- the former inside
+    // `--outdir`, the latter from the extension it is given -- so a single
+    // caller-chosen path cannot serve every converter.
+    let produced: PathBuf = match input_file_type {
+        // Already in the target format: copied through byte-for-byte on
+        // ADR-0112's reasoning. `Pdf` and `Txt` joined `Jpeg` in ADR-0154.
+        InputFileType::Jpeg | InputFileType::Pdf | InputFileType::Txt => {
+            media::copy_through(input, &scratch_path).map(|()| scratch_path.clone())
         }
+        InputFileType::Png | InputFileType::Heic => retry_transcode_unless_fatal(
+            TRANSCODE_RETRIES,
+            TRANSCODE_RETRY_BACKOFF,
+            &pending_file.source_key,
+            || media::transcode_to_jpg(input, &scratch_path),
+        )
+        .await
+        .map(|()| scratch_path.clone()),
         InputFileType::Mov | InputFileType::M4v | InputFileType::Mp4 => {
             retry_transcode_unless_fatal(
                 TRANSCODE_RETRIES,
@@ -834,20 +843,53 @@ async fn convert_one(
                 || media::transcode_video(input, &scratch_path, video_quality, transcode_threads),
             )
             .await
+            .map(|()| scratch_path.clone())
         }
         InputFileType::Mp4Audio
         | InputFileType::M4a
         | InputFileType::Mp3
         | InputFileType::Aac
         | InputFileType::Wav
-        | InputFileType::Opus => {
-            retry_transcode_unless_fatal(
-                TRANSCODE_RETRIES,
-                TRANSCODE_RETRY_BACKOFF,
-                &pending_file.source_key,
-                || media::transcode_audio(input, &scratch_path, audio_quality),
-            )
-            .await
+        | InputFileType::Opus => retry_transcode_unless_fatal(
+            TRANSCODE_RETRIES,
+            TRANSCODE_RETRY_BACKOFF,
+            &pending_file.source_key,
+            || media::transcode_audio(input, &scratch_path, audio_quality),
+        )
+        .await
+        .map(|()| scratch_path.clone()),
+        // The six LibreOffice-readable document kinds (ADR-0154). `Key`
+        // is sniffed inside `to_pdf` before soffice sees it.
+        //
+        // Deliberately **not** retried, matching ADR-0149's reasoning for
+        // `.numbers`: a document converter fails deterministically on a
+        // given file, so retrying would burn two extra invocations for a
+        // fixed outcome -- ADR-0141's pathology.
+        InputFileType::Doc
+        | InputFileType::Docx
+        | InputFileType::Pages
+        | InputFileType::Rtf
+        | InputFileType::Pptx
+        | InputFileType::Key => documents::to_pdf(input, input_file_type, scratch).await,
+        // The one kind LibreOffice cannot read: its EPUB filter is
+        // export-only, so this goes to Calibre instead.
+        InputFileType::Epub => documents::epub_to_pdf(input, scratch).await,
+        InputFileType::Md | InputFileType::Rst => {
+            documents::markup_to_text(input, input_file_type, &scratch_path)
+                .await
+                .map(|()| scratch_path.clone())
+        }
+        InputFileType::Textclipping => {
+            documents::clipping_to_text(input, &scratch_path).map(|()| scratch_path.clone())
+        }
+        InputFileType::Tsv => {
+            // CPU-bound and blocking, so it runs off the async runtime
+            // (ADR-0090), as `sheets::split_workbook_to_csv` already does.
+            let (from, to) = (input.clone(), scratch_path.clone());
+            tokio::task::spawn_blocking(move || documents::tsv_to_csv(&from, &to))
+                .await
+                .map_err(|err| format!("tsv conversion task failed: {err}"))?
+                .map(|()| scratch_path.clone())
         }
         InputFileType::Numbers | InputFileType::Xlsx | InputFileType::Xls | InputFileType::Csv => {
             unreachable!("handled by the is_spreadsheet() branch above")
@@ -855,7 +897,7 @@ async fn convert_one(
     }?;
     Ok(vec![PendingOutput {
         destination_name: single_name,
-        scratch_path,
+        scratch_path: produced,
     }])
 }
 
@@ -943,7 +985,9 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         // `Opus` is **not** here despite also arriving in its target
         // format: ADR-0153 re-encodes it to normalize a mixed library to
         // one bitrate, so it is genuinely transcoded.
-        InputFileType::Csv => Outcome::CopiedThrough,
+        //
+        // ADR-0154 adds `Pdf` and `Txt` on the same reasoning.
+        InputFileType::Csv | InputFileType::Pdf | InputFileType::Txt => Outcome::CopiedThrough,
         InputFileType::Png
         | InputFileType::Heic
         | InputFileType::Mov
@@ -957,7 +1001,18 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         | InputFileType::Mp3
         | InputFileType::Aac
         | InputFileType::Wav
-        | InputFileType::Opus => Outcome::Transcoded,
+        | InputFileType::Opus
+        | InputFileType::Doc
+        | InputFileType::Docx
+        | InputFileType::Pages
+        | InputFileType::Rtf
+        | InputFileType::Epub
+        | InputFileType::Pptx
+        | InputFileType::Key
+        | InputFileType::Md
+        | InputFileType::Rst
+        | InputFileType::Textclipping
+        | InputFileType::Tsv => Outcome::Transcoded,
     }
 }
 
@@ -3971,5 +4026,380 @@ c;d
                 retained.display()
             );
         }
+    }
+
+    // --- ADR-0154: documents ---
+
+    /// Asserts the four local trees ADR-0124/0149/0151 each require to be
+    /// empty once every file is durably pushed.
+    fn assert_local_trees_are_clean(local_output: &Path) {
+        for (label, dir) in [
+            ("source/", source_dir(local_output)),
+            ("result/", result_dir(local_output)),
+            ("scratch/", scratch_dir(local_output)),
+            ("push-logs/", push_log_dir(local_output)),
+        ] {
+            if dir.exists() {
+                assert!(
+                    std::fs::read_dir(&dir).unwrap().next().is_none(),
+                    "local {label} should be empty after every file is pushed"
+                );
+            }
+        }
+    }
+
+    /// Deliberately **not** gated on `check_ffmpeg_available`: a `tsv` run
+    /// invokes no `ffmpeg`, so gating it would make this silently never
+    /// run -- the ADR-0139 mistake ADR-0149 named.
+    #[tokio::test]
+    async fn a_tsv_run_converts_and_pushes_a_csv() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(
+            source.join("table.tsv"),
+            "name\tnotes\nWidget\tsmall, red\n",
+        )
+        .unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Tsv);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(summary.outcomes.len(), 1);
+        assert_eq!(summary.outcomes[0].outcome, Outcome::Transcoded);
+
+        let expected =
+            placement::compute_destination_name(&plan.source_path, "table.tsv", InputFileType::Tsv);
+        assert!(expected.ends_with(".csv"), "{expected}");
+        // The comma inside a field is quoted, not left to split the row --
+        // the reason this is a conversion and not a tab-to-comma swap.
+        assert_eq!(
+            std::fs::read_to_string(destination.join(&expected)).unwrap(),
+            "name,notes\nWidget,\"small, red\"\n"
+        );
+
+        assert_local_trees_are_clean(&local_output);
+
+        let rerun = run_transform_job(&plan, 2, 2).await.unwrap();
+        assert_eq!(rerun.pushed, 0);
+        assert_eq!(rerun.skipped_already_done, 1);
+    }
+
+    /// The clipping route is in-process too, so this also always runs.
+    #[tokio::test]
+    async fn a_textclipping_run_extracts_its_text_and_pushes_a_txt() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+
+        let mut inner = plist::Dictionary::new();
+        inner.insert(
+            "public.utf8-plain-text".to_string(),
+            plist::Value::String("a dragged snippet".to_string()),
+        );
+        let mut outer = plist::Dictionary::new();
+        outer.insert("UTI-Data".to_string(), plist::Value::Dictionary(inner));
+        plist::Value::Dictionary(outer)
+            .to_file_binary(source.join("snippet.textclipping"))
+            .unwrap();
+
+        let plan = spreadsheet_plan(
+            &source,
+            &destination,
+            &local_output,
+            InputFileType::Textclipping,
+        );
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1);
+
+        let expected = placement::compute_destination_name(
+            &plan.source_path,
+            "snippet.textclipping",
+            InputFileType::Textclipping,
+        );
+        assert!(expected.ends_with(".txt"), "{expected}");
+        assert_eq!(
+            std::fs::read_to_string(destination.join(&expected)).unwrap(),
+            "a dragged snippet"
+        );
+        assert_local_trees_are_clean(&local_output);
+    }
+
+    /// `pdf` and `txt` join `jpeg` and `csv` as copy-through kinds
+    /// (ADR-0154 §9): byte-identical output, no re-encode.
+    #[tokio::test]
+    async fn a_pdf_input_is_copied_through_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        // Deliberately odd bytes, as the csv copy-through test does.
+        let original: &[u8] = b"%PDF-1.7\n\x80\x81 \r\n%%EOF\n";
+        std::fs::write(source.join("scan.pdf"), original).unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Pdf);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.outcomes[0].outcome, Outcome::CopiedThrough);
+        let expected =
+            placement::compute_destination_name(&plan.source_path, "scan.pdf", InputFileType::Pdf);
+        assert_eq!(
+            std::fs::read(destination.join(&expected)).unwrap(),
+            original,
+            "copy-through must not rewrite the bytes"
+        );
+    }
+
+    #[test]
+    fn outcome_for_treats_pdf_and_txt_as_copied_through() {
+        assert_eq!(outcome_for(InputFileType::Pdf), Outcome::CopiedThrough);
+        assert_eq!(outcome_for(InputFileType::Txt), Outcome::CopiedThrough);
+        for kind in [
+            InputFileType::Docx,
+            InputFileType::Md,
+            InputFileType::Textclipping,
+            InputFileType::Tsv,
+        ] {
+            assert_eq!(outcome_for(kind), Outcome::Transcoded, "{kind}");
+        }
+    }
+
+    /// **The ADR-0154 §2 regression test, end to end.** A private key
+    /// named `.key` must fail rather than reaching the destination, and
+    /// ADR-0143 must drop its local copy so it does not linger on the host.
+    #[tokio::test]
+    async fn a_private_key_named_dot_key_never_reaches_the_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(
+            source.join("id_ed25519.key"),
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n\
+              -----END OPENSSH PRIVATE KEY-----\n",
+        )
+        .unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Key);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(summary.failed, "a private key must not convert");
+        assert_eq!(summary.pushed, 0);
+        assert_eq!(summary.failures.transcode, 1);
+
+        let landed: Vec<_> = std::fs::read_dir(&destination)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name())
+            .collect();
+        assert!(landed.is_empty(), "{landed:?} reached the destination");
+
+        // ADR-0143: the local copy is dropped. The source object is
+        // untouched at `--source`, which is where it already was.
+        assert!(
+            std::fs::read_dir(source_dir(&local_output))
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "the private key's local copy must not linger"
+        );
+    }
+
+    use crate::commands::job::transform::soffice;
+
+    /// A one-slide presentation in OpenDocument's flat XML form, which is
+    /// plain text and so can be written here rather than committed as a
+    /// binary.
+    const FLAT_ODP_FIXTURE: &str = concat!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+        r#"<office:document xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0" "#,
+        r#"xmlns:draw="urn:oasis:names:tc:opendocument:xmlns:drawing:1.0" "#,
+        r#"xmlns:text="urn:oasis:names:tc:opendocument:xmlns:text:1.0" "#,
+        r#"xmlns:svg="urn:oasis:names:tc:opendocument:xmlns:svg-compatible:1.0" "#,
+        r#"office:version="1.3" office:mimetype="application/vnd.oasis.opendocument.presentation">"#,
+        r#"<office:body><office:presentation><draw:page draw:name="One">"#,
+        r#"<draw:frame svg:width="10cm" svg:height="2cm"><draw:text-box>"#,
+        r#"<text:p>Slide one</text:p></draw:text-box></draw:frame>"#,
+        r#"</draw:page></office:presentation></office:body></office:document>"#,
+    );
+
+    /// Builds a real fixture of `kind` by converting an RTF with the same
+    /// `soffice` the job itself uses. Constructed, never committed as a
+    /// binary -- the convention every fixture here follows.
+    async fn soffice_fixture(dir: &Path, kind: InputFileType) -> Option<PathBuf> {
+        if soffice::check_available().await.is_err() {
+            return None;
+        }
+        std::fs::create_dir_all(dir).unwrap();
+        let rtf = dir.join("fixture.rtf");
+        std::fs::write(
+            &rtf,
+            br"{\rtf1\ansi\deff0 Document fixture.\par Second paragraph.\par}",
+        )
+        .unwrap();
+        if kind == InputFileType::Rtf {
+            return Some(rtf);
+        }
+        // An Impress format cannot be made from a Writer document, so a
+        // presentation starts from a flat ODP instead.
+        let seed = if kind == InputFileType::Pptx {
+            let fodp = dir.join("fixture.fodp");
+            std::fs::write(&fodp, FLAT_ODP_FIXTURE).unwrap();
+            fodp
+        } else {
+            rtf
+        };
+        let ext = kind.canonical_extension();
+        let produced = soffice::convert(&seed, dir, ext, "is not a readable document")
+            .await
+            .unwrap_or_else(|err| panic!("building a .{ext} fixture: {err}"));
+        Some(produced)
+    }
+
+    /// Runs one file of `kind` end to end and returns the bytes that landed
+    /// at the destination, asserting the run itself was clean.
+    async fn run_one_document(kind: InputFileType, fixture: &Path) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        let name = format!("fixture.{}", kind.canonical_extension());
+        std::fs::copy(fixture, source.join(&name)).unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, kind);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{kind}: {:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1, "{kind}");
+
+        let expected = placement::compute_destination_name(&plan.source_path, &name, kind);
+        assert!(
+            expected.ends_with(&format!(".{}", kind.output_extension())),
+            "{kind}: {expected}"
+        );
+        assert_local_trees_are_clean(&local_output);
+        std::fs::read(destination.join(&expected)).unwrap()
+    }
+
+    /// The five `soffice`-backed kinds, each converted end to end to a real
+    /// PDF. Gated on `soffice`, never on `ffmpeg`, which none of them
+    /// invoke.
+    #[tokio::test]
+    async fn every_soffice_document_kind_produces_a_pdf() {
+        let dir = tempfile::tempdir().unwrap();
+        for kind in [
+            InputFileType::Rtf,
+            InputFileType::Doc,
+            InputFileType::Docx,
+            InputFileType::Pptx,
+        ] {
+            let work = dir.path().join(kind.canonical_extension());
+            let Some(fixture) = soffice_fixture(&work, kind).await else {
+                eprintln!("skipping: soffice not found on PATH");
+                return;
+            };
+            let landed = run_one_document(kind, &fixture).await;
+            assert!(
+                landed.starts_with(b"%PDF-"),
+                "{kind} did not produce a PDF: {:?}",
+                &landed[..landed.len().min(8)]
+            );
+        }
+    }
+
+    /// `epub` is the one kind LibreOffice cannot read, so it exercises the
+    /// Calibre leg instead. Its fixture is built by Calibre too.
+    #[tokio::test]
+    async fn an_epub_run_produces_a_pdf_via_calibre() {
+        if documents::check_calibre_available().await.is_err() {
+            eprintln!("skipping: ebook-convert not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let markdown = dir.path().join("book.md");
+        std::fs::write(&markdown, "# Chapter One\n\nSome prose.\n").unwrap();
+        let epub = dir.path().join("fixture.epub");
+        let built = tokio::process::Command::new("ebook-convert")
+            .arg(&markdown)
+            .arg(&epub)
+            .output()
+            .await
+            .unwrap();
+        assert!(built.status.success(), "building the epub fixture failed");
+
+        let landed = run_one_document(InputFileType::Epub, &epub).await;
+        assert!(
+            landed.starts_with(b"%PDF-"),
+            "epub did not produce a PDF: {:?}",
+            &landed[..landed.len().min(8)]
+        );
+    }
+
+    /// Markdown end to end, pinning ADR-0154 §8's recorded loss at the
+    /// level that actually ships: the URL does not reach the destination.
+    #[tokio::test]
+    async fn a_markdown_run_pushes_prose_with_its_link_urls_discarded() {
+        if documents::check_pandoc_available().await.is_err() {
+            eprintln!("skipping: pandoc not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("fixture.md");
+        std::fs::write(
+            &fixture,
+            "# Heading\n\nSome **bold** text and [a link](https://example.com).\n",
+        )
+        .unwrap();
+
+        let landed =
+            String::from_utf8(run_one_document(InputFileType::Md, &fixture).await).unwrap();
+        assert!(landed.contains("Heading"), "{landed}");
+        assert!(landed.contains("bold"), "{landed}");
+        assert!(!landed.contains("example.com"), "{landed}");
+        assert!(!landed.contains("**"), "{landed}");
+    }
+
+    #[tokio::test]
+    async fn an_rst_run_pushes_prose() {
+        if documents::check_pandoc_available().await.is_err() {
+            eprintln!("skipping: pandoc not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("fixture.rst");
+        std::fs::write(&fixture, "Title\n=====\n\nSome ``literal`` text.\n").unwrap();
+
+        let landed =
+            String::from_utf8(run_one_document(InputFileType::Rst, &fixture).await).unwrap();
+        assert!(landed.contains("Title"), "{landed}");
+        assert!(landed.contains("literal"), "{landed}");
+    }
+
+    /// `txt` is copy-through, so the bytes must survive verbatim.
+    #[tokio::test]
+    async fn a_txt_input_is_copied_through_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let fixture = dir.path().join("fixture.txt");
+        let original = b"plain text fixture\r\nwith CRLF and \x80 odd bytes\n";
+        std::fs::write(&fixture, original).unwrap();
+
+        let landed = run_one_document(InputFileType::Txt, &fixture).await;
+        assert_eq!(landed, original, "copy-through must not rewrite the bytes");
     }
 }
