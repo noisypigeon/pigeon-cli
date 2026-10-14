@@ -199,3 +199,26 @@ ADR-0132 preserves this ADR's SIGSTOP/SIGCONT backpressure mechanism exactly;
 `StreamHooks` field on the `rclone::Copy` implementor, `Default`-empty for
 every command that does not want it. The split download/upload concurrency
 flags and the pause/resume water marks are unaffected.
+
+## Amendment (2026-10-14): backpressure stops signalling a finished pull (ADR-0151)
+
+The pause/resume block this ADR added had no `pull_finished` guard, so it
+signalled the pull process regardless of whether it still existed. On a real
+run:
+
+```text
+04:08:14.595  rclone: copy complete (transferred 266, errors 0)
+04:08:14.962  WARN transform: failed to pause pull process  "kill SIGSTOP failed"
+04:13:43.677  WARN transform: failed to resume pull process
+```
+
+367 ms after the pull exited, the backlog was still above the high-water
+mark, so the job SIGSTOPped the dead pid -- then believed the pull was paused
+for the next 5 m 29 s and tried to resume it. Two misleading WARNs per run,
+reliably triggered whenever the pull outpaces local work, which small inputs
+guarantee (here: pull 11 s, local work 5 m 35 s).
+
+ADR-0151 guards the block on `!pull_finished` and resets `pull_is_paused`
+when the pull completes -- an exited process is not paused. The water marks,
+the `--max-pending-downloads` default, and the deadlock guard on a tripped
+circuit breaker are unchanged.

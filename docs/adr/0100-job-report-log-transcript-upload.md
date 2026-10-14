@@ -80,3 +80,22 @@ alias form described above unchanged, so both spellings coexist. Decision
 points 2-8 (the run id, the `{date}-{job-name}-{run-id}` prefix, the three
 fixed artifact names, the always-unencrypted stance, and the best-effort
 failure handling) survive untouched on both paths.
+
+## Amendment (2026-10-14): the log artifact is this run's lines (ADR-0151)
+
+This ADR uploads `pigeon.jsonl` **whole, not filtered to this run**, which
+was a reasonable choice at a reasonable file size. The real deployment's log
+reached **326 MB / 696,608 lines** spanning three weeks, and the upload
+stopped completing: a real `transform` run's artifact log ends
+`Signal received: interrupt / Exiting...`, so that run lost its log entirely
+while its report and transcript (87 KB, 199 B) uploaded in under a second
+each. The choice had come to cost a run its artifact rather than merely
+over-supply it.
+
+ADR-0151 uploads only the lines carrying this run's `run_id` -- newly
+available because that ADR adds the field to the `command` span -- matched by
+substring rather than by parsing the whole file. It reads every rotated
+generation, so a run straddling midnight is reassembled rather than
+half-lost. The report and transcript artifacts, the `{date}-{job}-{run-id}/`
+prefix, the best-effort contract, and the `emit_upload_metrics: false`
+decision (ADR-0148) are all unchanged.

@@ -68,9 +68,37 @@ pub fn init(
     let (dir, file_name) = resolve_log_path(log_file)?;
     std::fs::create_dir_all(&dir)
         .map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
-    let _ = LOG_FILE_PATH.set(dir.join(&file_name));
+    let _ = LOG_DIR.set(dir.clone());
+    let _ = LOG_FILE_STEM.set(log_file_stem(&file_name));
 
-    let appender = tracing_appender::rolling::never(&dir, &file_name);
+    // `--log-file` names a file, and is honoured literally: rotating a path
+    // the operator chose would silently write somewhere else (ADR-0151).
+    // Only the default location rotates.
+    let rotate = log_file.is_none();
+
+    // ADR-0151: rotate daily and keep a bounded number of generations.
+    // Before this the log was a single file with no rotation at all
+    // (ADR-0073), which on the real deployment reached **326 MB / 696k
+    // lines** spanning three weeks -- and since ADR-0100 uploads it as every
+    // run's artifact, a real run's upload was interrupted mid-flight and
+    // that run lost its log artifact entirely. Rotation bounds the file; the
+    // per-run extract in `report_upload` bounds the upload.
+    //
+    // The active filename gains a date (`pigeon.2026-10-14.jsonl`), so
+    // `log_extract_sources` globs the directory rather than naming one file.
+    // A pre-rotation `pigeon.jsonl` is deliberately left alone -- it is the
+    // operator's history to keep or delete, not this code's to remove.
+    let appender = if rotate {
+        tracing_appender::rolling::Builder::new()
+            .rotation(tracing_appender::rolling::Rotation::DAILY)
+            .filename_prefix(log_file_stem(&file_name))
+            .filename_suffix("jsonl")
+            .max_log_files(LOG_GENERATIONS)
+            .build(&dir)
+            .map_err(|err| format!("failed to open log file in {}: {err}", dir.display()))?
+    } else {
+        tracing_appender::rolling::never(&dir, &file_name)
+    };
     let (writer, guard) = tracing_appender::non_blocking(appender);
 
     let directive = log_level
@@ -122,13 +150,61 @@ pub(crate) fn instance() -> &'static str {
 /// The durable JSONL log file's resolved path, cached by `init()` (ADR-0100)
 /// -- lets a job upload the shared `pigeon.jsonl` to a report bucket without
 /// recomputing `resolve_log_path`'s `--log-file`-vs-default logic itself.
-static LOG_FILE_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+/// How many daily log generations to keep (ADR-0151).
+const LOG_GENERATIONS: usize = 14;
 
-pub(crate) fn log_file_path() -> Result<PathBuf, String> {
-    LOG_FILE_PATH
+static LOG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+static LOG_FILE_STEM: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// `pigeon.jsonl` -> `pigeon`. Rotation supplies the date and the suffix,
+/// so the configured name contributes only its stem.
+fn log_file_stem(file_name: &str) -> String {
+    file_name
+        .strip_suffix(".jsonl")
+        .unwrap_or(file_name)
+        .to_string()
+}
+
+/// Every rotated log file this process could have written to, newest last
+/// (ADR-0151).
+///
+/// A run that straddles midnight has its lines split across two
+/// generations, so the per-run extract reads all of them rather than
+/// guessing which one is "the" log.
+pub(crate) fn log_extract_sources() -> Result<Vec<PathBuf>, String> {
+    let dir = LOG_DIR
         .get()
-        .cloned()
-        .ok_or_else(|| "log file path not resolved -- observability::init must run first".into())
+        .ok_or("log directory not resolved -- observability::init must run first")?;
+    let stem = LOG_FILE_STEM
+        .get()
+        .ok_or("log file stem not resolved -- observability::init must run first")?;
+    let entries =
+        std::fs::read_dir(dir).map_err(|err| format!("failed to read {}: {err}", dir.display()))?;
+    let mut paths: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    // Matches both the rotated form (`pigeon.2026-10-14.jsonl`)
+                    // and an un-rotated explicit `--log-file` name.
+                    name.starts_with(stem) && name.ends_with(".jsonl")
+                })
+        })
+        .collect();
+    paths.sort();
+    Ok(paths)
+}
+/// Records this run's id onto the ambient `command` span (ADR-0151), so
+/// every subsequent line carries it.
+///
+/// Called from `report_upload::generate_run_id` -- the one chokepoint every
+/// job already funnels through -- rather than from each of the eight
+/// wizards. The few lines emitted before that (notably `"command started"`)
+/// necessarily lack it: the id does not exist yet.
+pub(crate) fn record_run_id(run_id: &str) {
+    tracing::Span::current().record("run_id", run_id);
 }
 
 pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i32) -> i32 {
@@ -137,7 +213,16 @@ pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i
     // the gap a shared, multi-instance Cockpit store otherwise has no way
     // to disambiguate on the logs side (Prometheus's scrape-level `job`/
     // `instance` labels have no log-side equivalent).
-    let span = tracing::info_span!("command", command = command_name, instance = instance());
+    // `run_id` starts `Empty` and is filled in by `record_run_id` once a
+    // job's wizard generates one (ADR-0151) -- it cannot be known here,
+    // because it is generated inside `f`. Declaring it up front is what
+    // makes `Span::record` legal later.
+    let span = tracing::info_span!(
+        "command",
+        command = command_name,
+        instance = instance(),
+        run_id = tracing::field::Empty
+    );
     let _guard = span.enter();
     // Brackets "command finished" below (ADR-0097) -- previously a job that
     // crashed or hung left no trace that it had even started.

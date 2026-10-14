@@ -540,3 +540,38 @@ value, the way Excel displays it, with hours deliberately not wrapped at 24.
   workbook yielding 12 CSVs is one sample. Correct — it detects a systemic
   converter gap — but its 20-sample window now covers fewer output objects
   for a spreadsheet run than for a media one.
+
+## Amendment (2026-10-14): two of this ADR's own fixes were wrong (ADR-0151)
+
+The first real `--input-file-type xlsx` run (266 files → 1318 CSVs, 0
+transcode/place/push failures) worked, and this ADR's naming, resume, and
+RAII scratch guard all behaved as designed. Reading its artifacts found two
+defects in this ADR itself.
+
+**The comma-joined report column is ambiguous.** The amendment above claims
+the join is unambiguous "only because that set excludes `,`", referring to
+`sheet_slug`. That reasoning covers the *slug* half of a destination name
+and misses the *stem*, which comes from `sanitize_filename` -- a function
+that does **no character filtering whatever**. The run produced
+`Budget (Normal, Reduced, Crisis)-ee7a9c8a4c2e5342.csv`: one filename
+containing two commas, in a comma-separated column, reading as three. 5 of
+267 source names in that run contain a comma.
+
+ADR-0151 adds `core::data::strict_stem` and applies it in `group_key` **for
+spreadsheet kinds only** -- sufficient because a separator can only mislead
+where the column holds more than one value, and necessary because
+`group_key` feeds every kind's destination names while this job never
+deletes, so widening it would duplicate ~25,000 objects in the jpg bucket
+rather than rename them.
+
+**The lock-file skip was counted two different wrong ways.**
+`files_needing_pull` added a `~$` stub to `skipped_apple_double`, so the log
+and report called it an AppleDouble sidecar -- that run reported "2
+AppleDouble sidecar(s)" with no way to tell which kind they were. And
+`enqueue` returned `SkippedLockFile` while all three call sites matched only
+on `SkippedAppleDouble`, so a stub reaching that choke point was counted
+nowhere at all. ADR-0151 gives it its own counter on both paths.
+
+Also from that run, and not this ADR's fault: the per-output push logs this
+ADR multiplied ~5× were never cleaned (1318 left behind), which ADR-0151
+fixes under ADR-0124's GC.

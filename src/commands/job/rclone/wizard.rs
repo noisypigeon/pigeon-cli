@@ -283,6 +283,7 @@ async fn dispatch_copy_async(
     report_upload::upload_run_artifacts(
         &report_bucket_config,
         &run_prefix,
+        &run_id,
         &report_path,
         &transcript_path,
     )
@@ -425,6 +426,7 @@ async fn dispatch_delete_async(
     report_upload::upload_run_artifacts(
         &report_bucket_config,
         &run_prefix,
+        &run_id,
         &report_path,
         &transcript_path,
     )

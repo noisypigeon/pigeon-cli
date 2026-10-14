@@ -438,6 +438,11 @@ pub(crate) struct TransformSummary {
     /// from dispatch (ADR-0130). Deliberately not a failure: these carry no
     /// user data, and their absence from the destination is correct.
     pub skipped_apple_double: u64,
+    /// Excel lock stubs (`~$*`) excluded the same way (ADR-0149), counted
+    /// separately since ADR-0151 -- they were folded into the AppleDouble
+    /// tally, so no artifact could say which kind of stub a run had
+    /// actually skipped.
+    pub skipped_lock_file: u64,
     /// `rclone`'s own aggregate transfer-error count for the pull phase,
     /// retained as a cross-check against the reconciled per-file `Pull`
     /// failures rather than being dropped on the floor (ADR-0130).
@@ -566,8 +571,7 @@ async fn process_one(
     push_semaphore: Arc<Semaphore>,
     endpoint_gate: Arc<EndpointGate>,
 ) -> ProcessResult {
-    let output_extension = input_file_type.output_extension();
-    let group = placement::group_key(source_path, &pending_file.relative_path);
+    let group = placement::group_key(source_path, &pending_file.relative_path, input_file_type);
 
     // ADR-0127, extended per-group by ADR-0149: outputs already sitting in
     // `result_dir` survived a prior crash *after* a successful, verified
@@ -610,7 +614,6 @@ async fn process_one(
             transcode_threads,
             source_path,
             &group,
-            output_extension,
             scratch.path(),
         )
         .await;
@@ -663,7 +666,7 @@ async fn process_one(
                     &output.scratch_path,
                     source_path,
                     &pending_file.relative_path,
-                    output_extension,
+                    input_file_type,
                 )
             };
             placed.push(placed_path.map_err(|err| (FailureStage::Place, err))?);
@@ -735,6 +738,12 @@ async fn process_one(
         // pushed -- a partially-pushed workbook must still be re-convertible
         // from it on the next attempt.
         remove_local_copy(final_path);
+        // And so does its push log (ADR-0151). One per *output* object since
+        // ADR-0149, none of them ever cleaned: a single real run left 1318
+        // behind. A *failed* push keeps its log -- that is the one case where
+        // it has diagnostic value, matching ADR-0124's retain-on-failure
+        // rule, and this line is only reached once the push succeeded.
+        remove_local_copy(&push::log_path(push_log_dir, &destination_filename));
     }
 
     // Every output is durably pushed, so the local source is now spent too.
@@ -760,25 +769,17 @@ async fn convert_one(
     transcode_threads: usize,
     source_path: &str,
     group: &str,
-    output_extension: &str,
     scratch: &Path,
 ) -> Result<Vec<PendingOutput>, String> {
     let single_name = placement::compute_destination_name(
         source_path,
         &pending_file.relative_path,
-        output_extension,
+        input_file_type,
     );
 
     if input_file_type.is_spreadsheet() {
-        return convert_spreadsheet(
-            pending_file,
-            input_file_type,
-            group,
-            output_extension,
-            &single_name,
-            scratch,
-        )
-        .await;
+        return convert_spreadsheet(pending_file, input_file_type, group, &single_name, scratch)
+            .await;
     }
 
     let scratch_path = scratch.join(format!("{single_name}.scratch"));
@@ -827,7 +828,6 @@ async fn convert_spreadsheet(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
     group: &str,
-    output_extension: &str,
     single_name: &str,
     scratch: &Path,
 ) -> Result<Vec<PendingOutput>, String> {
@@ -867,7 +867,7 @@ async fn convert_spreadsheet(
                     sheet.index,
                     sheet.total,
                     &sheet.sheet_name,
-                    output_extension,
+                    input_file_type,
                 )
             },
             scratch_path: sheet.path,
@@ -958,7 +958,7 @@ fn enqueue(
     relative_path: String,
     source_dir: &Path,
     source_path: &str,
-    output_extension: &str,
+    input_file_type: InputFileType,
     destination_groups: &placement::DestinationGroups,
     dispatched: &mut HashSet<String>,
     queue: &mut VecDeque<PendingFile>,
@@ -978,8 +978,11 @@ fn enqueue(
     if crate::core::data::is_excel_lock_basename(&relative_path) {
         return EnqueueOutcome::SkippedLockFile;
     }
-    let _ = output_extension;
-    if destination_groups.is_complete(&placement::group_key(source_path, &relative_path)) {
+    if destination_groups.is_complete(&placement::group_key(
+        source_path,
+        &relative_path,
+        input_file_type,
+    )) {
         return EnqueueOutcome::AlreadyDone;
     }
     if !dispatched.insert(relative_path.clone()) {
@@ -993,9 +996,14 @@ fn enqueue(
     EnqueueOutcome::Queued
 }
 
-/// Why `enqueue` did or didn't queue a path. Only `SkippedAppleDouble` is
-/// counted by the caller (ADR-0130); the rest are ordinary, expected
-/// outcomes of the two overlapping dispatch sources.
+/// Why `enqueue` did or didn't queue a path.
+///
+/// Both skip variants are counted by the caller, each into its own tally
+/// (ADR-0130 for AppleDouble, ADR-0151 for the lock file). The rest are
+/// ordinary, expected outcomes of the two overlapping dispatch sources.
+/// ADR-0149 added `SkippedLockFile` but left every call site matching only
+/// on `SkippedAppleDouble`, so a lock file skipped here was counted
+/// nowhere at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EnqueueOutcome {
     Queued,
@@ -1023,7 +1031,7 @@ enum EnqueueOutcome {
 fn files_needing_pull(
     source_relative_paths: Vec<String>,
     source_path: &str,
-    output_extension: &str,
+    input_file_type: InputFileType,
     destination_groups: &placement::DestinationGroups,
 ) -> PullSelection {
     let mut selection = PullSelection::default();
@@ -1039,17 +1047,20 @@ fn files_needing_pull(
         }
         // ADR-0149, the first of the two choke points -- see `enqueue`.
         if crate::core::data::is_excel_lock_basename(&relative_path) {
-            selection.skipped_apple_double += 1;
+            selection.skipped_lock_file += 1;
             continue;
         }
-        let _ = output_extension;
         // ADR-0149: "already done" is a group-completeness question, not
         // single-name membership, because a workbook maps to several
         // destination names. The group key is still a pure forward function
         // of the path alone, which is what keeps ADR-0124's pre-pull filter
         // working at all -- a sheet *count* needs the file, a group key does
         // not.
-        if destination_groups.is_complete(&placement::group_key(source_path, &relative_path)) {
+        if destination_groups.is_complete(&placement::group_key(
+            source_path,
+            &relative_path,
+            input_file_type,
+        )) {
             selection.skipped_already_done += 1;
             continue;
         }
@@ -1125,6 +1136,7 @@ struct PullSelection {
     to_pull: Vec<String>,
     skipped_already_done: u64,
     skipped_apple_double: u64,
+    skipped_lock_file: u64,
     /// Members of `to_pull` that collide with another member under
     /// case-folding, so at most one of them can ever be delivered to a
     /// case-insensitive local volume (ADR-0144). Not a failure in itself --
@@ -1179,8 +1191,6 @@ pub(crate) async fn run_transform_job(
         );
     }
 
-    let output_extension = plan.input_file_type.output_extension();
-
     // The authoritative "already done" source (ADR-0120) -- fetched once,
     // before the pull subprocess exists, since `--destination-path` is the
     // one thing that actually persists across this job's ephemeral VMs.
@@ -1198,18 +1208,20 @@ pub(crate) async fn run_transform_job(
     let mut dispatched: HashSet<String> = HashSet::new();
     let mut queue: VecDeque<PendingFile> = VecDeque::new();
     let mut skipped_apple_double: u64 = 0;
+    let mut skipped_lock_file: u64 = 0;
     for pending_file in already_on_disk {
-        if enqueue(
+        match enqueue(
             pending_file.relative_path,
             &source_dir,
             &plan.source_path,
-            output_extension,
+            plan.input_file_type,
             &destination_groups,
             &mut dispatched,
             &mut queue,
-        ) == EnqueueOutcome::SkippedAppleDouble
-        {
-            skipped_apple_double += 1;
+        ) {
+            EnqueueOutcome::SkippedAppleDouble => skipped_apple_double += 1,
+            EnqueueOutcome::SkippedLockFile => skipped_lock_file += 1,
+            _ => {}
         }
     }
 
@@ -1256,7 +1268,7 @@ pub(crate) async fn run_transform_job(
     let selection = files_needing_pull(
         source_relative_paths,
         &plan.source_path,
-        output_extension,
+        plan.input_file_type,
         &destination_groups,
     );
     let files_to_pull = selection.to_pull;
@@ -1265,6 +1277,7 @@ pub(crate) async fn run_transform_job(
     // The initial on-disk scan above may have found its own AppleDouble
     // stubs; both choke points feed the same counter.
     skipped_apple_double += selection.skipped_apple_double;
+    skipped_lock_file += selection.skipped_lock_file;
 
     // ADR-0130: fail fast before a single byte is downloaded. Nothing has
     // been pulled yet at this point, so there is nothing to salvage -- unlike
@@ -1304,6 +1317,7 @@ pub(crate) async fn run_transform_job(
         files_to_pull = files_to_pull.len(),
         skipped_already_done = selection_skipped_already_done,
         skipped_apple_double,
+        skipped_lock_file,
         case_colliding_keys = case_collisions.len(),
         queued_from_local_scan = queue.len(),
         "transform: pull phase starting"
@@ -1518,8 +1532,17 @@ pub(crate) async fn run_transform_job(
                     }
                 }
 
-                // ADR-0129: dynamic backpressure -- check backlog and adjust pull pause state.
-                if let Some(pid) = pull_pid {
+                // ADR-0129: dynamic backpressure -- check backlog and adjust
+                // pull pause state.
+                //
+                // ADR-0151: only while the pull is still running. Without the
+                // `!pull_finished` guard, a run whose pull outpaces local work
+                // -- which is most of them, and reliably so for small inputs --
+                // signalled the exited pid moments after it finished, then
+                // believed it was paused for the rest of the run and tried to
+                // resume it. Two misleading WARNs, and nothing a dead process
+                // could do about either.
+                if let (Some(pid), false) = (pull_pid, pull_finished) {
                     let backlog = queue.len() + in_flight.len();
                     if pull_is_paused && backlog <= low_water_mark {
                         resume_pull_process(pid);
@@ -1533,18 +1556,20 @@ pub(crate) async fn run_transform_job(
             received = copied_rx.recv(), if !pull_finished && !copied_rx_closed => {
                 match received {
                     Some(relative_path) => {
-                        if !circuit_breaker_tripped
-                            && enqueue(
+                        if !circuit_breaker_tripped {
+                            match enqueue(
                                 relative_path,
                                 &source_dir,
                                 &plan.source_path,
-                                output_extension,
+                                plan.input_file_type,
                                 &destination_groups,
                                 &mut dispatched,
                                 &mut queue,
-                            ) == EnqueueOutcome::SkippedAppleDouble
-                        {
-                            skipped_apple_double += 1;
+                            ) {
+                                EnqueueOutcome::SkippedAppleDouble => skipped_apple_double += 1,
+                                EnqueueOutcome::SkippedLockFile => skipped_lock_file += 1,
+                                _ => {}
+                            }
                         }
                     }
                     None => copied_rx_closed = true,
@@ -1553,22 +1578,26 @@ pub(crate) async fn run_transform_job(
             joined = &mut pull_handle, if !pull_finished => {
                 let result = joined.map_err(|err| format!("rclone pull task join failed: {err}"))?;
                 pull_finished = true;
+                // An exited process is not paused (ADR-0151).
+                pull_is_paused = false;
                 // Drain anything buffered between the last select poll and
                 // the subprocess's exit -- `try_recv` is non-blocking, so
                 // this can't stall the loop.
                 while let Ok(relative_path) = copied_rx.try_recv() {
-                    if !circuit_breaker_tripped
-                        && enqueue(
+                    if !circuit_breaker_tripped {
+                        match enqueue(
                             relative_path,
                             &source_dir,
                             &plan.source_path,
-                            output_extension,
+                            plan.input_file_type,
                             &destination_groups,
                             &mut dispatched,
                             &mut queue,
-                        ) == EnqueueOutcome::SkippedAppleDouble
-                    {
-                        skipped_apple_double += 1;
+                        ) {
+                            EnqueueOutcome::SkippedAppleDouble => skipped_apple_double += 1,
+                            EnqueueOutcome::SkippedLockFile => skipped_lock_file += 1,
+                            _ => {}
+                        }
                     }
                 }
                 pull_result = Some(result);
@@ -1636,13 +1665,36 @@ pub(crate) async fn run_transform_job(
     // The two counts measure subtly different things -- rclone counts
     // transfer *errors*, this counts *undelivered files* -- so a mismatch is
     // surfaced rather than silently reconciled away.
+    // The two counts measure subtly different things, so a mismatch is
+    // surfaced rather than reconciled away -- but ADR-0151 makes it say what
+    // accounts for the gap when the job already knows. A case collision is
+    // the common case: rclone resolves it itself, logs `Duplicate object
+    // found in source - ignoring` at **notice** level, and leaves its error
+    // count at zero, so the disagreement is expected rather than suspicious.
     if pull_summary.errors != failures.pull {
-        tracing::warn!(
-            pigeon_job = "transform",
-            rclone_errors = pull_summary.errors,
-            undelivered_files = failures.pull,
-            "transform: rclone's pull error count disagrees with the number of undelivered files"
-        );
+        let explained_by_collisions =
+            failures.pull <= case_collisions.len() as u64 && !case_collisions.is_empty();
+        if explained_by_collisions {
+            tracing::warn!(
+                pigeon_job = "transform",
+                rclone_errors = pull_summary.errors,
+                undelivered_files = failures.pull,
+                case_colliding_keys = case_collisions.len(),
+                rclone_duplicate_notices = pull_summary.duplicate_notices,
+                "transform: rclone's pull error count disagrees with the number of undelivered \
+                 files, fully accounted for by case-colliding source keys"
+            );
+        } else {
+            tracing::warn!(
+                pigeon_job = "transform",
+                rclone_errors = pull_summary.errors,
+                undelivered_files = failures.pull,
+                case_colliding_keys = case_collisions.len(),
+                rclone_duplicate_notices = pull_summary.duplicate_notices,
+                "transform: rclone's pull error count disagrees with the number of undelivered \
+                 files"
+            );
+        }
     }
 
     tracing::info!(
@@ -1679,6 +1731,7 @@ pub(crate) async fn run_transform_job(
         failed_push = failures.push,
         skipped_already_done = selection_skipped_already_done,
         skipped_apple_double,
+        skipped_lock_file,
         "transform: run complete"
     );
 
@@ -1690,6 +1743,7 @@ pub(crate) async fn run_transform_job(
         failures,
         skipped_already_done: selection_skipped_already_done,
         skipped_apple_double,
+        skipped_lock_file,
         pull_errors: pull_summary.errors,
     })
 }
@@ -1747,8 +1801,9 @@ pub(crate) fn write_report(
     );
     let _ = writeln!(
         body,
-        "skipped: {} already done at the destination, {} AppleDouble sidecar(s).",
-        summary.skipped_already_done, summary.skipped_apple_double
+        "skipped: {} already done at the destination, {} AppleDouble sidecar(s), {} Excel lock \
+         stub(s).",
+        summary.skipped_already_done, summary.skipped_apple_double, summary.skipped_lock_file
     );
     let _ = writeln!(
         body,
@@ -2256,7 +2311,8 @@ mod tests {
         .unwrap();
 
         let source_path = source_for_pull.display().to_string();
-        let destination_name = placement::compute_destination_name(&source_path, "a.heic", "jpg");
+        let destination_name =
+            placement::compute_destination_name(&source_path, "a.heic", InputFileType::Heic);
         std::fs::create_dir_all(result_dir(&local_output)).unwrap();
         std::fs::write(
             result_dir(&local_output).join(&destination_name),
@@ -2314,7 +2370,7 @@ mod tests {
 
         let source_path = source_for_pull.display().to_string();
         let destination_filename =
-            placement::compute_destination_name(&source_path, "a.jpeg", "jpg");
+            placement::compute_destination_name(&source_path, "a.jpeg", InputFileType::Jpeg);
         std::fs::write(destination.join(&destination_filename), b"already pushed").unwrap();
 
         let plan = TransformPlan {
@@ -2577,7 +2633,7 @@ mod tests {
             "a.png".to_string(),
             &source_dir,
             "source:png/",
-            "jpg",
+            InputFileType::Png,
             &destination_groups,
             &mut dispatched,
             &mut queue,
@@ -2589,7 +2645,7 @@ mod tests {
             "a.png".to_string(),
             &source_dir,
             "source:png/",
-            "jpg",
+            InputFileType::Png,
             &destination_groups,
             &mut dispatched,
             &mut queue,
@@ -2609,7 +2665,7 @@ mod tests {
         let names = vec![placement::compute_destination_name(
             source_path,
             "a.png",
-            "jpg",
+            InputFileType::Png,
         )];
         let destination_groups = placement::DestinationGroups::index(&names);
         let mut dispatched = HashSet::new();
@@ -2619,7 +2675,7 @@ mod tests {
             "a.png".to_string(),
             &source_dir,
             source_path,
-            "jpg",
+            InputFileType::Png,
             &destination_groups,
             &mut dispatched,
             &mut queue,
@@ -2637,14 +2693,14 @@ mod tests {
         let names = vec![placement::compute_destination_name(
             source_path,
             "a.png",
-            "jpg",
+            InputFileType::Png,
         )];
         let destination_groups = placement::DestinationGroups::index(&names);
 
         let result = files_needing_pull(
             vec!["a.png".to_string(), "b.png".to_string()],
             source_path,
-            "jpg",
+            InputFileType::Png,
             &destination_groups,
         );
 
@@ -2722,7 +2778,7 @@ mod tests {
         let selection = files_needing_pull(
             vec!["IMG_0260.JPG".to_string(), "IMG_0260.jpg".to_string()],
             "source:jpg",
-            "jpg",
+            InputFileType::Jpeg,
             &placement::DestinationGroups::default(),
         );
 
@@ -2742,8 +2798,10 @@ mod tests {
     /// case-sensitive).
     #[test]
     fn case_colliding_keys_still_map_to_distinct_destination_names() {
-        let upper = placement::compute_destination_name("source:jpg", "IMG_0260.JPG", "jpg");
-        let lower = placement::compute_destination_name("source:jpg", "IMG_0260.jpg", "jpg");
+        let upper =
+            placement::compute_destination_name("source:jpg", "IMG_0260.JPG", InputFileType::Jpeg);
+        let lower =
+            placement::compute_destination_name("source:jpg", "IMG_0260.jpg", InputFileType::Jpeg);
         assert_ne!(upper, lower);
         // Both keep the same stem; only the hash distinguishes them.
         assert!(upper.starts_with("IMG_0260-") && lower.starts_with("IMG_0260-"));
@@ -2780,7 +2838,7 @@ mod tests {
                 "nested/._b.png".to_string(),
             ],
             "source:png/",
-            "jpg",
+            InputFileType::Png,
             &placement::DestinationGroups::default(),
         );
 
@@ -2792,6 +2850,61 @@ mod tests {
     /// The second AppleDouble choke point (ADR-0130): `enqueue` covers the
     /// initial on-disk scan and rclone's live tail, so a stub cannot reach
     /// `ffmpeg` by any dispatch route even if it bypassed the pull filter.
+    /// ADR-0151: `enqueue` returned `SkippedLockFile` from ADR-0149 on, but
+    /// every call site matched only on `SkippedAppleDouble`, so a lock stub
+    /// reaching *this* choke point -- the on-disk scan or rclone's live
+    /// tail -- was counted nowhere at all.
+    #[test]
+    fn enqueue_reports_a_lock_stub_distinctly_from_an_apple_double() {
+        let mut dispatched = HashSet::new();
+        let mut queue = VecDeque::new();
+        assert_eq!(
+            enqueue(
+                "~$Budget.xlsx".to_string(),
+                Path::new("/tmp/source"),
+                "source:xlsx/",
+                InputFileType::Xlsx,
+                &placement::DestinationGroups::default(),
+                &mut dispatched,
+                &mut queue,
+            ),
+            EnqueueOutcome::SkippedLockFile
+        );
+        assert_eq!(
+            enqueue(
+                "._Budget.xlsx".to_string(),
+                Path::new("/tmp/source"),
+                "source:xlsx/",
+                InputFileType::Xlsx,
+                &placement::DestinationGroups::default(),
+                &mut dispatched,
+                &mut queue,
+            ),
+            EnqueueOutcome::SkippedAppleDouble
+        );
+        assert!(queue.is_empty());
+    }
+
+    /// The pull-side choke point keeps them apart too -- it used to add a
+    /// lock stub to `skipped_apple_double`, which is what made a real run
+    /// report "2 AppleDouble sidecar(s)" for stubs of unknown kind.
+    #[test]
+    fn files_needing_pull_counts_lock_stubs_separately() {
+        let selection = files_needing_pull(
+            vec![
+                "Budget.xlsx".to_string(),
+                "~$Budget.xlsx".to_string(),
+                "._Budget.xlsx".to_string(),
+            ],
+            "source:xlsx/",
+            InputFileType::Xlsx,
+            &placement::DestinationGroups::default(),
+        );
+        assert_eq!(selection.to_pull, vec!["Budget.xlsx".to_string()]);
+        assert_eq!(selection.skipped_lock_file, 1);
+        assert_eq!(selection.skipped_apple_double, 1);
+    }
+
     #[test]
     fn enqueue_skips_an_apple_double_sidecar() {
         let mut dispatched = HashSet::new();
@@ -2801,7 +2914,7 @@ mod tests {
             "._a.png".to_string(),
             Path::new("/tmp/source"),
             "source:png/",
-            "jpg",
+            InputFileType::Png,
             &placement::DestinationGroups::default(),
             &mut dispatched,
             &mut queue,
@@ -2822,7 +2935,7 @@ mod tests {
                 "a.png".to_string(),
                 Path::new("/tmp/source"),
                 "source:png/",
-                "jpg",
+                InputFileType::Png,
                 &placement::DestinationGroups::default(),
                 &mut dispatched,
                 &mut queue,
@@ -2834,7 +2947,7 @@ mod tests {
                 "a.png".to_string(),
                 Path::new("/tmp/source"),
                 "source:png/",
-                "jpg",
+                InputFileType::Png,
                 &placement::DestinationGroups::default(),
                 &mut dispatched,
                 &mut queue,
@@ -2941,6 +3054,7 @@ mod tests {
             },
             skipped_already_done: 3,
             skipped_apple_double: 2,
+            skipped_lock_file: 1,
             pull_errors: 0,
         };
 
@@ -2956,7 +3070,10 @@ mod tests {
         );
         // ADR-0130's added lines.
         assert!(contents.contains("failures by stage: 0 pull, 1 transcode, 0 place, 0 push."));
-        assert!(contents.contains("skipped: 3 already done at the destination, 2 AppleDouble"));
+        assert!(contents.contains(
+            "skipped: 3 already done at the destination, 2 AppleDouble sidecar(s), 1 Excel lock \
+             stub(s)."
+        ));
         assert!(contents.contains("pull: 2 transferred, 0 rclone error(s) reported."));
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
     }
@@ -3066,7 +3183,7 @@ mod tests {
         assert_eq!(summary.outcomes[0].relative_path, "Budget.xlsx");
         assert_eq!(summary.outcomes[0].destination_filenames.len(), 2);
 
-        let group = placement::group_key(&plan.source_path, "Budget.xlsx");
+        let group = placement::group_key(&plan.source_path, "Budget.xlsx", InputFileType::Xlsx);
         let mut pushed: Vec<String> = std::fs::read_dir(&destination)
             .unwrap()
             .map(|entry| entry.unwrap().file_name().into_string().unwrap())
@@ -3102,6 +3219,14 @@ mod tests {
                 .unwrap_or(true),
             "scratch/ should hold no leftover per-input directories"
         );
+        // ADR-0151: so does each output's push log. A real run left 1318
+        // behind, one per output object, none of them ever cleaned.
+        assert!(
+            std::fs::read_dir(push_log_dir(&local_output))
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "push-logs/ should be empty once every output is pushed"
+        );
 
         // A rerun is a clean no-op.
         let rerun = run_transform_job(&plan, 2, 2).await.unwrap();
@@ -3129,7 +3254,7 @@ mod tests {
         );
 
         let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Xlsx);
-        let group = placement::group_key(&plan.source_path, "Budget.xlsx");
+        let group = placement::group_key(&plan.source_path, "Budget.xlsx", InputFileType::Xlsx);
 
         // Sheet 1 of 2 landed in a prior run; sheet 2 never did.
         std::fs::write(
@@ -3175,7 +3300,11 @@ mod tests {
 
         assert!(!summary.failed, "{:?}", summary.outcomes);
         assert_eq!(summary.pushed, 1);
-        let expected = placement::compute_destination_name(&plan.source_path, "Solo.xlsx", "csv");
+        let expected = placement::compute_destination_name(
+            &plan.source_path,
+            "Solo.xlsx",
+            InputFileType::Xlsx,
+        );
         assert!(destination.join(&expected).exists(), "expected {expected}");
     }
 
@@ -3201,7 +3330,8 @@ c;d
         assert!(!summary.failed, "{:?}", summary.outcomes);
         assert_eq!(summary.pushed, 1);
         assert_eq!(summary.outcomes[0].outcome, Outcome::CopiedThrough);
-        let expected = placement::compute_destination_name(&plan.source_path, "notes.csv", "csv");
+        let expected =
+            placement::compute_destination_name(&plan.source_path, "notes.csv", InputFileType::Csv);
         assert_eq!(
             std::fs::read(destination.join(&expected)).unwrap(),
             original,
@@ -3231,7 +3361,14 @@ c;d
         assert_eq!(summary.pushed, 1);
         assert_eq!(summary.outcomes.len(), 1);
         assert_eq!(summary.outcomes[0].relative_path, "Real.xlsx");
-        assert_eq!(summary.skipped_apple_double, 1, "the stub is a skip");
+        // ADR-0151: counted as a lock file, not folded into the AppleDouble
+        // tally. ADR-0149 reported "2 AppleDouble sidecar(s)" on a real run
+        // for stubs that may have been either kind, with no way to tell.
+        assert_eq!(summary.skipped_lock_file, 1, "the stub is a lock-file skip");
+        assert_eq!(
+            summary.skipped_apple_double, 0,
+            "a lock stub is not an AppleDouble sidecar"
+        );
     }
 
     /// A misdirected run (a spreadsheet kind pointed at something that is
@@ -3262,6 +3399,14 @@ c;d
         assert!(
             !source_dir(&local_output).join("bogus.xlsx").exists(),
             "ADR-0143: a wrong-input-kind failure drops its local copy"
+        );
+        // ADR-0151's cleanup is keyed to a *successful* push, so a file that
+        // never reached the push leg leaves no push log to clean either.
+        assert!(
+            std::fs::read_dir(push_log_dir(&local_output))
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true),
+            "a file that never pushed should leave no push log"
         );
     }
 

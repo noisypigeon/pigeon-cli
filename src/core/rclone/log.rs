@@ -45,6 +45,17 @@ pub(crate) struct RcloneLogSummary {
     pub errors: u64,
     pub bytes: u64,
     pub deletes: u64,
+    /// `notice`-level "Duplicate object found in source - ignoring" lines
+    /// (ADR-0151).
+    ///
+    /// rclone resolves a case collision itself and reports it here, at a
+    /// level nothing in this crate used to read, while leaving its own
+    /// error count at **zero**. That is exactly why ADR-0130's
+    /// `rclone_errors` vs. undelivered-files cross-check fires on a
+    /// perfectly explicable run (ADR-0144 traced the mechanism but read it
+    /// only out of rclone's *stderr*, never the log). Counting them lets
+    /// the two sides of that comparison be stated rather than inferred.
+    pub duplicate_notices: u64,
 }
 
 /// What changed since the previous `poll()` -- the caller emits metrics
@@ -245,6 +256,15 @@ impl RcloneLogTailer {
             self.pending_copied.push(object.clone());
         }
 
+        // ADR-0151: rclone's own account of a case collision. Not an error
+        // on its side, so it never reaches `stats.errors`, but it is the
+        // other half of ADR-0130's cross-check.
+        if parsed.level.eq_ignore_ascii_case("notice")
+            && parsed.msg.contains("Duplicate object found in source")
+        {
+            self.cumulative.duplicate_notices += 1;
+        }
+
         if parsed.level.eq_ignore_ascii_case("error") {
             return self.record_error(parsed.object, parsed.msg);
         }
@@ -333,6 +353,33 @@ mod tests {
         use std::io::Write;
         let mut file = fs::OpenOptions::new().append(true).open(path).unwrap();
         file.write_all(contents.as_bytes()).unwrap();
+    }
+
+    /// ADR-0151: rclone's own account of a case collision. It is `notice`
+    /// level and leaves `stats.errors` at zero, which is exactly why
+    /// ADR-0130's cross-check fires on a run where nothing is wrong.
+    #[test]
+    fn duplicate_object_notices_are_counted_separately_from_errors() {
+        let (_dir, path) = write_log(&[
+            "{\"level\":\"notice\",\"msg\":\"Duplicate object found in source - ignoring\",\"object\":\"a.xlsx\"}\n",
+            "{\"level\":\"info\",\"msg\":\"progress\",\"stats\":{\"bytes\":10,\"transfers\":1,\"errors\":0}}\n",
+        ].concat());
+        let mut tailer = RcloneLogTailer::new(&path, "pull");
+        tailer.poll();
+        let summary = tailer.summary();
+        assert_eq!(summary.duplicate_notices, 1);
+        // The whole point: rclone does not call this an error.
+        assert_eq!(summary.errors, 0);
+        assert_eq!(summary.transferred, 1);
+    }
+
+    #[test]
+    fn an_unrelated_notice_is_not_counted_as_a_duplicate() {
+        let (_dir, path) =
+            write_log("{\"level\":\"notice\",\"msg\":\"something else entirely\"}\n");
+        let mut tailer = RcloneLogTailer::new(&path, "pull");
+        tailer.poll();
+        assert_eq!(tailer.summary().duplicate_notices, 0);
     }
 
     #[test]

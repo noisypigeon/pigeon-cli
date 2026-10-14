@@ -309,3 +309,18 @@ the shared `RcloneCommand` trait: `on_copied` moves from a trailing
 invocation becomes an `rclone::CopyTo` implementor whose retry and metric
 emission are now declared by the command rather than wrapped around it by
 `push.rs`.
+
+## Amendment (2026-10-14): the per-file push log now has a lifetime (ADR-0151)
+
+This ADR gives each push its own `rclone` log, because many concurrent
+single-file invocations cannot safely share one `--log-file`. Nothing ever
+removed them. A real `transform` run left **1318 files / 5.1 MB** in
+`.staging/push-logs/` -- one per *output* object since ADR-0149 pushed per
+output rather than per input, and ADR-0144's 37,955-object run would have
+left that many.
+
+ADR-0151 deletes each log alongside its output once that push succeeds, in
+the same best-effort spirit as `remove_local_copy`. A **failed** push keeps
+its log, which is the one case where it has diagnostic value -- matching
+ADR-0124's retain-on-failure rule. The per-push log itself, and the reason
+it cannot be shared, are unchanged.

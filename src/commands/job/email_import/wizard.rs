@@ -501,6 +501,7 @@ async fn dispatch_async(
     report_upload::upload_run_artifacts(
         &report_bucket_config,
         &run_prefix,
+        &run_id,
         &report_path,
         &transcript_path,
     )

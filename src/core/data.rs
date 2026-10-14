@@ -308,7 +308,43 @@ const MAX_SHEET_SLUG_LENGTH: usize = 40;
 /// The report's comma-join depends on this excluding `,`. Do not widen the
 /// kept set without revisiting `transform::worker::write_report`.
 pub(crate) fn sheet_slug(name: &str) -> String {
-    let mut slug = String::with_capacity(name.len().min(MAX_SHEET_SLUG_LENGTH));
+    slugify(name, MAX_SHEET_SLUG_LENGTH, "sheet")
+}
+
+/// A filename stem reduced to the same safe character set as `sheet_slug`,
+/// at `MAX_FILENAME_LENGTH`'s larger budget (ADR-0151).
+///
+/// Used by `transform`'s `placement::group_key` for **spreadsheet input
+/// kinds only**. The reason is narrow and worth stating: those are the only
+/// kinds that can produce more than one output per input, so they are the
+/// only ones whose `transform-report.txt` filename column holds a
+/// *multi-value* list -- and a separator can only mislead when there is
+/// more than one value to separate. ADR-0149 secured the sheet-name half of
+/// such a name and missed this half, so a real run produced
+/// `Budget (Normal, Reduced, Crisis)-ee7a9c8a4c2e5342.csv`: one file whose
+/// own name reads as three comma-separated ones.
+///
+/// Deliberately **not** applied to the image, video, or audio kinds.
+/// `group_key` feeds every destination name this job has ever written, and
+/// `transform` never deletes at the destination (ADR-0112), so widening
+/// this would not rename those objects -- it would *duplicate* them.
+pub(crate) fn strict_stem(name: &str) -> String {
+    let base = match Path::new(name).file_name().and_then(|f| f.to_str()) {
+        Some(base) if !base.is_empty() => base,
+        _ => return "file".to_string(),
+    };
+    slugify(base, MAX_FILENAME_LENGTH, "file")
+}
+
+/// Keeps `[A-Za-z0-9._-]`, maps every other character to `-`, collapses
+/// runs, trims, truncates to `max_len` bytes, and falls back to `fallback`
+/// when nothing usable remains.
+///
+/// Truncation is byte-counted but can only cut between kept characters,
+/// every one of which is single-byte ASCII, so the result is always valid
+/// UTF-8 without a char-boundary dance.
+fn slugify(name: &str, max_len: usize, fallback: &str) -> String {
+    let mut slug = String::with_capacity(name.len().min(max_len));
     let mut pending_separator = false;
     for ch in name.chars() {
         if ch.is_ascii_alphanumeric() || ch == '.' || ch == '_' || ch == '-' {
@@ -316,7 +352,7 @@ pub(crate) fn sheet_slug(name: &str) -> String {
                 slug.push('-');
             }
             pending_separator = false;
-            if slug.len() >= MAX_SHEET_SLUG_LENGTH {
+            if slug.len() >= max_len {
                 break;
             }
             slug.push(ch);
@@ -326,7 +362,7 @@ pub(crate) fn sheet_slug(name: &str) -> String {
     }
     let trimmed = slug.trim_matches('-');
     if trimmed.is_empty() {
-        return "sheet".to_string();
+        return fallback.to_string();
     }
     trimmed.to_string()
 }
@@ -344,6 +380,52 @@ mod tests {
         // A `~$` anywhere but the start of the basename is an ordinary name.
         assert!(!is_excel_lock_basename("Budget~$.xlsx"));
         assert!(!is_excel_lock_basename(""));
+    }
+
+    /// ADR-0151: the stem half of a destination name needs the same
+    /// treatment the slug half got, at the larger `MAX_FILENAME_LENGTH`
+    /// budget. The real run that prompted this produced
+    /// `Budget (Normal, Reduced, Crisis)-ee7a9c8a4c2e5342.csv` -- one file
+    /// whose own name reads as three comma-separated ones.
+    #[test]
+    fn strict_stem_removes_what_sanitize_filename_lets_through() {
+        assert_eq!(
+            strict_stem("Budget (Normal, Reduced, Crisis)"),
+            "Budget-Normal-Reduced-Crisis"
+        );
+        // The exact failure: `sanitize_filename` keeps the commas.
+        assert!(sanitize_filename("Budget (Normal, Reduced, Crisis)").contains(','));
+        assert!(!strict_stem("Budget (Normal, Reduced, Crisis)").contains(','));
+
+        for name in ["a,b", "a\tb", "a\nb", "a b", "a/b"] {
+            let stem = strict_stem(name);
+            assert!(!stem.contains(','), "{stem:?}");
+            assert!(!stem.contains('\t'), "{stem:?}");
+            assert!(!stem.contains('\n'), "{stem:?}");
+            assert!(!stem.contains('/'), "{stem:?}");
+        }
+    }
+
+    #[test]
+    fn strict_stem_keeps_an_already_safe_name_unchanged() {
+        for name in [
+            "2021_quebec_inc_td_cc_7652",
+            "money_schema_v3.2",
+            "already-hyphenated",
+        ] {
+            assert_eq!(strict_stem(name), name);
+        }
+    }
+
+    /// A stem gets `MAX_FILENAME_LENGTH`, not the slug's tighter budget --
+    /// the two share a character set, not a length.
+    #[test]
+    fn strict_stem_uses_the_filename_budget_not_the_slug_budget() {
+        let stem = strict_stem(&"x".repeat(300));
+        assert_eq!(stem.len(), MAX_FILENAME_LENGTH);
+        assert!(stem.len() > MAX_SHEET_SLUG_LENGTH);
+        assert_eq!(strict_stem(""), "file");
+        assert_eq!(strict_stem("///"), "file");
     }
 
     #[test]

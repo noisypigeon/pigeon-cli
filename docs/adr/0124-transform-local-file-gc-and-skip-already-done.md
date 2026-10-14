@@ -189,3 +189,16 @@ already-done file is still never downloaded. A workbook's *sheet count* is not
 knowable without opening it, so the filter keys on a group prefix those names
 share and tests the group's completeness against a total embedded in the names,
 rather than testing one name for membership.
+
+## Amendment (2026-10-14): the GC extends to push logs (ADR-0151)
+
+This ADR bounds local disk to the in-flight window by deleting a file's
+source and placed-result copies once it is durably pushed. It did not cover
+ADR-0116's per-push `rclone` logs, which accumulated unbounded in
+`.staging/push-logs/` -- a real `transform` run left 1318 of them, one per
+output object.
+
+ADR-0151 removes each alongside its output, on the same
+delete-once-durably-pushed trigger and with the same best-effort handling.
+The retain-on-failure rule is honoured for them too: a failed push keeps its
+log, which is the only case where it has diagnostic value.
