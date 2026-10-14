@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`pigeon` is a Rust CLI (clap + Mise) that authenticates, syncs, transforms, and optionally encrypts personal email data to local storage or S3-compatible remotes, backed by a unified `keyring` for identities, buckets, and encryption keys. This repo split out of a former personal monorepo (`noisypigeon/noisypigeon`, which still holds this project's terraform infrastructure and blog) via ADR-0084 — that repo's `docs/archived/adr/` holds this repo's own pre-split ADR history too, alongside the terraform/blog ADRs that stayed behind.
+`pigeon` is a Rust CLI (clap + Mise) that authenticates, imports, transcodes, and deduplicates personal data into S3-compatible remotes, backed by a unified `keyring` for identities and buckets. This repo split out of a former personal monorepo (`noisypigeon/noisypigeon`, which still holds this project's terraform infrastructure and blog) via ADR-0084 — that repo's `docs/archived/adr/` holds this repo's own pre-split ADR history too, alongside the terraform/blog ADRs that stayed behind.
 
 ## ADRs govern this project
 

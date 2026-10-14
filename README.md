@@ -1,9 +1,9 @@
 # pigeon
 
-`pigeon`, a Rust CLI that authenticates, syncs, transforms, and optionally
-encrypts personal data to local storage or S3-compatible remotes. It
-provides a job scheduler and keyring for data set batch operations, with
-support for checkpoints, concurrent operations, and file encryption.
+`pigeon`, a Rust CLI that imports, transcodes, and deduplicates personal
+data into S3-compatible remotes. It provides a job runner and a keyring for
+batch operations over data sets, with support for checkpointed resume,
+concurrent operations, and rate-limited transfers.
 
 ## Structure
 
@@ -67,7 +67,7 @@ phases:
    ```sh
    docker run --platform linux/arm64 --rm -v pigeon-data:/data \
      -e PIGEON_SECRET_MY_ALIAS=<secret> \
-     pigeon-cli job run email-sync
+     pigeon-cli job run email import
    ```
 
 How that env var gets populated (a secrets manager, CI variable, etc.)
@@ -102,12 +102,15 @@ machine, not just pigeon's own process tree) — see ADR-0128.
 
 ## Commands
 
-- `pigeon keyring add [email|bucket|encryption-key]` — authenticate an email identity, configure an S3-compatible bucket, or register a symmetric encryption key.
+- `pigeon keyring add [email|bucket]` — authenticate an email identity, or configure an S3-compatible bucket.
 - `pigeon keyring modify [alias]` — edit an existing entry's fields.
 - `pigeon keyring delete <alias>` — remove a configured entry and its secret.
 - `pigeon keyring list` — list every configured entry.
-- `pigeon job run email-sync [flags]` — fetch, transform, deduplicate, and optionally upload mail for one or more authenticated identities.
-- `pigeon job run decrypt-files [flags]` — decrypt every `*.enc` file under an input directory into an output directory.
+- `pigeon job run email import [flags]` — deliver each message's raw `.eml` and unpacked attachments from an authenticated identity to a destination, at a chosen `--messages-per-minute` pace.
+- `pigeon job run deduplicate [flags]` — inflate every zip, content-hash a bucket, keep one copy of each byte-identical file, and upload the result.
+- `pigeon job run transform [flags]` — transcode images, video, or audio-only recordings between a source and destination bucket via `ffmpeg`.
+- `pigeon job run rclone copy [flags]` — copy one configured bucket to another via `rclone`.
+- `pigeon job run rclone delete [flags]` — recursively and permanently purge a configured bucket's contents.
 
 Run `pigeon --help`, `pigeon keyring --help`, or `pigeon job --help` for the full command reference.
 

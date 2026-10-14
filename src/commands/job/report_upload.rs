@@ -199,16 +199,16 @@ mod tests {
         }
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_summary_report(dir.path(), "email-pull", &Summary { processed: 3 }).unwrap();
+            write_summary_report(dir.path(), "deduplicate", &Summary { processed: 3 }).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("processed: 3"));
-        assert_eq!(path.file_name().unwrap(), "email-pull-report.txt");
+        assert_eq!(path.file_name().unwrap(), "deduplicate-report.txt");
     }
 
     #[test]
     fn write_summary_report_also_works_for_an_error_string() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_summary_report(dir.path(), "email-sync", &"boom".to_string()).unwrap();
+        let path = write_summary_report(dir.path(), "transform", &"boom".to_string()).unwrap();
         let contents = fs::read_to_string(&path).unwrap();
         assert!(contents.contains("boom"));
     }
@@ -226,7 +226,8 @@ mod tests {
     /// (ADR-0104) `tracing::info!`/`error!` calls without needing a global
     /// subscriber or an extra test-only crate dependency. Mirrors the
     /// `CapturedEvents`/`CaptureLayer` pattern already established in
-    /// `email_sync/transform.rs`'s test module (ADR-0080); duplicated here
+    /// the since-removed `email_sync/transform.rs`'s test module
+    /// (ADR-0080); duplicated here
     /// per this codebase's "duplicate until the third consumer" precedent.
     #[derive(Clone, Default)]
     struct CapturedEvents(

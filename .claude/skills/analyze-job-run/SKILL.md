@@ -63,7 +63,7 @@ gap. See step 4 and the Known limitations section.
      ```
      jq 'select(.spans[]?.command == "job.transform")' pigeon.jsonl
      ```
-     (swap in `job.email-sync`, `job.decrypt-files`, `keyring.add`,
+     (swap in `job.email-import`, `job.deduplicate`, `keyring.add`,
      `keyring.modify`, `keyring.delete`, or `keyring.list` as needed --
      these are the exact `command_name()` strings, see the cheat sheet
      below.)
@@ -186,8 +186,7 @@ let it go stale silently.
 
 **`command_name()` values** (the `command` field on the outermost
 `"command"` span -- this is what step 2's filter matches on):
-`job.email-sync`, `job.decrypt-files`,
-`job.deduplicate`, `job.email-pull`, `job.transform`,
+`job.email-import`, `job.deduplicate`, `job.transform`,
 `job.rclone-copy`, `job.rclone-delete`, `keyring.add`,
 `keyring.modify`, `keyring.delete`, `keyring.list`.
 
@@ -199,11 +198,16 @@ stderr via `eprintln!`. Don't spend time searching the JSONL for it; ask
 the user for the terminal output instead.
 
 **Per-job `step` vocabulary** (WARN/ERROR events' `fields.step`):
-- `email-sync`: `connect`, `examine`, `batch`, `fetch`, `transform`,
-  `verify` (also `upload`).
+- `email-import`: `connect`, `examine`, `fetch`, `extract`, `push`,
+  `missing_file`, `gate`. No `upload` step -- delivery is its own per-object
+  `rclone copyto` (ADR-0146 §5), and there is no separate upload phase to
+  name. A `gate` event means an endpoint was refusing work and the run
+  paused rather than failed (ADR-0146 §4); `paused_ms` on the matching
+  resume line is how long that cost.
 - `transform`: `pull`, `transcode`, `push` -- note this job does **not**
   share the generic `upload` step, since its push leg is its own per-file
-  `rclone copyto` (ADR-0116), not `upload.rs`. Before ADR-0130 this job
+  `rclone copyto` (ADR-0116) rather than the shared upload phase ADR-0147
+  deleted. Before ADR-0130 this job
   emitted no `tracing::info!` at all, so a run from an older build has no
   phase-boundary or totals lines in the JSONL whatsoever -- only WARN/ERROR.
   From ADR-0130 on, look for `"transform: pull phase starting"`,
@@ -227,13 +231,15 @@ the user for the terminal output instead.
   without repeating download/hash/placement) is available on the
   installed version before suggesting a full rerun.
 
-**`pigeon_upload_attempts_total` metric** (`upload.rs::upload_one`,
-ADR-0093, replaces the old `"upload started"` log event removed in the
-same ADR): no longer in the JSONL at all. Which file was in flight at
-crash time is no longer directly nameable the way the log used to make it
-(the metric only carries a `pigeon_job` label, not a per-file path) --
-the closest available signal is `pigeon_job_macro_phase` reading `1`
-(step 4) telling you *that* the process was mid-upload, not *which* file.
+**`pigeon_upload_attempts_total` and `pigeon_upload_duration_seconds` no
+longer exist** (ADR-0147). Both were emitted only from `upload.rs`, which
+was deleted with the last two jobs that used it, so a run from a current
+build has neither series -- don't read their absence as a fault.
+`pigeon_upload_bytes_total` and `pigeon_upload_outcomes_total` **do** still
+exist, emitted by `core::rclone` for every rclone-backed job. Which file
+was in flight at crash time is not directly nameable from metrics (they
+carry a `pigeon_job` label, not a per-file path); for the jobs that push
+per-object, the last `phase="push"` increment is the closest signal.
 
 **`pigeon_job_macro_phase` has no `pigeon_job="transform"` series** (ADR-0130).
 `transform`'s pipeline pushes each file as soon as it is ready, so it has no
@@ -245,12 +251,13 @@ happens. Don't read its absence as a crash before upload -- use that job's
 **Each job's printed completion summary** (not in the JSONL -- this is
 what step 5 cross-checks the log's tally against; ask for it if the user
 hasn't already pasted it):
-- `email-sync`: `"Synced {synced} message(s), {failed} failed ({connect}
-  connect, {examine} examine, {batch_error} batch-error, {verification}
-  verification, {parse_skipped} parse-skipped, {missing_file}
-  missing-file), {merged_messages} message(s) merged, {deduped_attachments}
-  attachment(s) deduped, {uploaded} uploaded, {unchanged} unchanged,
-  {upload_failed} upload failed."` followed by an attachments-estimate line.
+- `email-import`: `"Delivered {delivered} message(s) and
+  {attachments_pushed} attachment(s) ({objects_pushed} object(s) pushed),
+  {failed} failed ({connect} connect, {examine} examine, {fetch} fetch,
+  {missing_file} missing-file, {push} push)."` -- optionally followed by a
+  line counting messages that could not be parsed (their raw `.eml` was
+  still delivered) and one counting failures that happened after an
+  endpoint stayed unreachable past the recovery budget.
 - `transform`: `"Pulled {pulled} file(s); {transcoded} transcoded,
   {copied_through} copied through, {failed} failed; pushed {pushed}
   file(s)."` -- followed, from ADR-0130 on, by an optional
@@ -260,7 +267,6 @@ hasn't already pasted it):
   to download never arrived -- before ADR-0130 those were silently dropped
   and the run could report success, so a pre-ADR-0130 `transform` run's
   "success" does not rule out missing files.
-- `decrypt-files`: `"Decrypted {decrypted} file(s), {failed} failed."`
 - `deduplicate`: `"Processed {processed} file(s), {failed} failed ({download}
   download, {archive} archive, {hash} hash), {duplicates_skipped}
   duplicate(s) skipped, {dropped_members} zip member(s) dropped (extraction

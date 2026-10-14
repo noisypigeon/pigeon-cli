@@ -45,6 +45,6 @@ pub struct Cli {
 pub enum Commands {
     /// Manage email identities and bucket-configs
     Keyring(KeyringArgs),
-    /// Run job-orchestrated pipelines (e.g. email-sync)
+    /// Run job-orchestrated pipelines (e.g. email import)
     Job(JobArgs),
 }

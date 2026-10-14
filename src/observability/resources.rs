@@ -5,7 +5,7 @@ use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 
 /// Periodically samples this process's CPU/memory/disk-I/O usage into the
 /// tracing sink while a job runs (ADR-0073) -- spawned only inside a job's
-/// own tokio runtime (`email_sync`'s `dispatch_async`), never
+/// own tokio runtime (each job wizard's `dispatch_async`), never
 /// for keyring commands, which finish too fast for periodic sampling to
 /// observe anything. Dropping it aborts the sampling task, so every one of a
 /// job's many early-return paths cleans it up automatically, with no manual

@@ -923,7 +923,8 @@ mod tests {
     }
 
     /// Mirrors the `CapturedEvents`/`CaptureLayer` pattern already
-    /// established in `email_sync/transform.rs`'s test module (ADR-0080);
+    /// established in the since-removed `email_sync/transform.rs`'s test
+    /// module (ADR-0080);
     /// duplicated here per this codebase's "duplicate until the third
     /// consumer" precedent.
     #[derive(Clone, Default)]

@@ -51,7 +51,9 @@ fi
 label_meta() {
   case "$1" in
     out-of-scope) echo "5319e7|Deferred item raised in an ADR's Out of scope section" ;;
-    area:email-sync) echo "1d76db|IMAP sink/transform/sync pipeline" ;;
+    # Name kept rather than renamed to area:email: existing issues carry
+    # it, so a rename is a GitHub-side migration, not a file edit (ADR-0147).
+    area:email-sync) echo "1d76db|IMAP import pipeline (job run email import)" ;;
     area:dataops) echo "0e8a16|S3-compatible remote storage (bucket configs, upload)" ;;
     area:keyring) echo "fbca04|Identities, bucket configs, and encryption keys in the OS keychain" ;;
     area:job-orchestration) echo "d93f0b|pigeon job wizard, concurrency, and phase orchestration" ;;

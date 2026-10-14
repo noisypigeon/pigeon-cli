@@ -96,7 +96,8 @@ impl WizardInput for ReportBucketInput<'_> {
     }
 }
 
-/// Resolves whether (and where) to upload (originally `email_sync`'s
+/// Resolves whether (and where) to upload (originally the since-removed
+/// `email_sync`'s
 /// `RemoteOutputInput`, ADR-0021 §5 amendment): `Some(alias)` if the flag is
 /// given (validated by the caller); on a TTY if omitted, asks whether to
 /// upload at all and, if so, reuses `Store::prompt_select_bucket` (ADR-0022

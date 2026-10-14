@@ -112,9 +112,10 @@ impl ContentIndex {
     /// 4th tab-separated field -- so a later duplicate's report row can
     /// name not just which key was kept, but which of this run's (possibly
     /// several) source buckets it came from. Only `deduplicate::dedup`
-    /// calls this; every other `ContentIndex` consumer (`email_sync`,
-    /// `email_pull`) has no multi-bucket concept and keeps
-    /// writing plain 3-field lines via `commit_with_key`.
+    /// calls this, and since ADR-0147 removed the two email jobs it is the
+    /// only consumer left -- so every line written today carries all four
+    /// fields. The 2- and 3-field forms are still read (see `load`), since
+    /// an index written by an older build is still valid on disk.
     pub(crate) fn commit_with_key_and_bucket(
         &mut self,
         hash: &str,

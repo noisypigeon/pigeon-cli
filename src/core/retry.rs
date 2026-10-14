@@ -6,7 +6,8 @@ use std::time::Duration;
 /// absorbs a transient failure (e.g. a burst of concurrent workers all
 /// connecting within the same instant at job start) instead of failing on
 /// the first timeout. Generic over `f` so it's testable without any real
-/// I/O. Originally `email_sync::worker`'s own helper (ADR-0021 §6 addendum);
+/// I/O. Originally the since-removed `email_sync::worker`'s own helper
+/// (ADR-0021 §6 addendum);
 /// hoisted here once a second (`upload`, ADR-0074) and third consumer
 /// needed the exact same retry shape. Now also used by `transform`'s
 /// `push`/`destination` and by `download`.
