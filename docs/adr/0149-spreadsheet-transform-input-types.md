@@ -575,3 +575,31 @@ nowhere at all. ADR-0151 gives it its own counter on both paths.
 Also from that run, and not this ADR's fault: the per-output push logs this
 ADR multiplied ~5× were never cleaned (1318 left behind), which ADR-0151
 fixes under ADR-0124's GC.
+
+## Amendment (2026-10-14): the `soffice` runner moves, and §7's list gains a fifth (ADR-0154)
+
+ADR-0154 adds document kinds, six of which convert through LibreOffice. Two
+consequences for this ADR.
+
+§4's `convert_numbers_to_xlsx` is parameterized into
+`soffice::convert(input, work_dir, target_ext, signature)` and moves to its own
+`transform/soffice.rs`; this ADR's Numbers route calls it with `"xlsx"` and is
+otherwise unchanged. Two consumers rather than the three this repo's hoisting
+precedent asks for, because it is a parameterization of one function rather
+than a speculative generalization -- the alternative was a byte-for-byte copy
+differing in one string literal.
+
+§7 listed **four** places a new variant must be added that the compiler cannot
+check. There is a fifth, added by this ADR itself and missed at the time:
+`wizard.rs`'s `required_converter_available` ends in
+`_ => check_ffmpeg_available()`, so a variant added without touching it
+silently demands `ffmpeg` and never checks its real converter. ADR-0154 §5
+replaces it with an exhaustive `match`, so that one is now the compiler's
+problem and the list is back to four.
+
+This ADR's observation that `soffice` exits 0 on some conversion failures
+turned out to be more load-bearing than it read: ADR-0154 measured LibreOffice
+converting an OpenSSH private key named `.key` into a valid PDF, exit 0, with
+the key legible in the output. The "non-empty file where one is expected"
+check this ADR substitutes for the exit code passes that case too, which is
+why ADR-0154 guards the input rather than the output.
