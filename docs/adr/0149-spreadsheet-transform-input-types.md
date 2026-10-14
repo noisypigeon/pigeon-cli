@@ -383,6 +383,12 @@ Filed per ADR-0031 where genuinely deferred rather than a permanent boundary:
 - **Cell formatting, styles, merged-cell geometry, charts, and embedded
   images.** CSV cannot express any of it; this is a data extraction, and saying
   so is more honest than a partial attempt.
+- **Making `media::check_ffmpeg_available` check the exit status**, not
+  merely that the process spawned, so a present-but-broken `ffmpeg` fails
+  the preflight rather than every file later. §4's new
+  `check_soffice_available` deliberately does not copy that shape, but
+  fixing the existing one is orthogonal to spreadsheets and would widen this
+  change into the path every media run depends on ([#100](https://github.com/noisypigeon/pigeon-cli/issues/100)).
 - Pulling both members of a case-colliding key pair -- already
   [#83](https://github.com/noisypigeon/pigeon-cli/issues/83), unchanged by this
   ADR.
