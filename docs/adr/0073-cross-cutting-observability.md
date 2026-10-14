@@ -303,3 +303,25 @@ behavior.
   `jq`/`grep`" — no new `pigeon logs ...` subcommand.
 - Fixing the pre-existing, unrelated risk that a raw panic mid-render can
   garble a live `indicatif` bar.
+
+## Amendment (2026-10-14): rotation, and a `run_id` in the schema (ADR-0151)
+
+Two gaps this ADR left, both found when the real deployment's log reached
+**326 MB / 696,608 lines** spanning three weeks.
+
+**No rotation.** The log was one unbounded append-only file. Since ADR-0100
+uploads it as every run's artifact, that upload stopped completing -- a real
+run's was interrupted mid-flight, so the run lost its log artifact entirely.
+ADR-0151 rotates daily and keeps 14 generations, so the default log path
+becomes `pigeon.<date>.jsonl`. A path given explicitly via `--log-file` is
+deliberately exempt and still written literally: that flag names a file, and
+rotating a path the operator chose would silently write somewhere else. An
+existing `pigeon.jsonl` is neither migrated nor removed.
+
+**No `run_id`.** Nothing in this schema identified an *invocation* -- the
+`command` span names which command, not which run -- so isolating one run
+meant bounding by timestamp and hoping, which the `analyze-job-run` runbook
+recorded as a known limitation. ADR-0151 adds `run_id` to the `command`
+span, recorded by `report_upload::generate_run_id`, the chokepoint every job
+already funnels through. Lines emitted before a wizard generates the id
+(notably `"command started"`) cannot carry it.

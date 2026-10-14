@@ -542,7 +542,7 @@ async fn dispatch_async(
         download_checkers,
         tpslimit,
         max_pending_downloads,
-        run_id,
+        run_id: run_id.clone(),
     };
     let plan = match job.gather().await {
         Ok(plan) => plan,
@@ -609,6 +609,7 @@ async fn dispatch_async(
     report_upload::upload_run_artifacts(
         &report_bucket_config,
         &run_prefix,
+        &run_id,
         &report_path,
         &transcript_path,
     )

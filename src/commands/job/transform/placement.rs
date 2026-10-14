@@ -15,8 +15,9 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+use super::format::InputFileType;
 use crate::commands::job::local;
-use crate::core::data::sanitize_filename;
+use crate::core::data::{sanitize_filename, strict_stem};
 
 /// How many hex characters (of the full SHA-256 digest) to keep in a
 /// destination name -- 64 bits, a collision probability negligible at this
@@ -39,11 +40,12 @@ const NAME_HASH_HEX_LEN: usize = 16;
 pub(crate) fn compute_destination_name(
     source_path: &str,
     original_relative_path: &str,
-    output_extension: &str,
+    input_file_type: InputFileType,
 ) -> String {
     format!(
-        "{}.{output_extension}",
-        group_key(source_path, original_relative_path)
+        "{}.{}",
+        group_key(source_path, original_relative_path, input_file_type),
+        input_file_type.output_extension()
     )
 }
 
@@ -60,13 +62,26 @@ pub(crate) fn compute_destination_name(
 ///   sheet count is not knowable without opening it, but its group key is.
 /// - Every sheet of one workbook shares it, which is what makes the outputs
 ///   recognizably related.
-pub(crate) fn group_key(source_path: &str, original_relative_path: &str) -> String {
-    let stem = sanitize_filename(
-        Path::new(original_relative_path)
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .unwrap_or("file"),
-    );
+pub(crate) fn group_key(
+    source_path: &str,
+    original_relative_path: &str,
+    input_file_type: InputFileType,
+) -> String {
+    let raw_stem = Path::new(original_relative_path)
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("file");
+    // ADR-0151: a spreadsheet kind gets the strict character set, because
+    // only those kinds produce several outputs per input and so only their
+    // report column is a multi-value list a stray comma can misread. Every
+    // other kind keeps `sanitize_filename` and therefore keeps its existing
+    // destination names byte-for-byte -- this job never deletes at the
+    // destination, so changing them would duplicate rather than migrate.
+    let stem = if input_file_type.is_spreadsheet() {
+        strict_stem(raw_stem)
+    } else {
+        sanitize_filename(raw_stem)
+    };
     let digest =
         local::sha256_hex(format!("{source_path}\u{1}{original_relative_path}").as_bytes());
     format!("{stem}-{}", &digest[..NAME_HASH_HEX_LEN])
@@ -89,11 +104,12 @@ pub(crate) fn sheet_destination_name(
     index: usize,
     total: usize,
     sheet_name: &str,
-    output_extension: &str,
+    input_file_type: InputFileType,
 ) -> String {
     format!(
-        "{group}-{index:02}of{total:02}-{}.{output_extension}",
-        crate::core::data::sheet_slug(sheet_name)
+        "{group}-{index:02}of{total:02}-{}.{}",
+        crate::core::data::sheet_slug(sheet_name),
+        input_file_type.output_extension()
     )
 }
 
@@ -110,14 +126,14 @@ pub(crate) fn place_one(
     scratch_path: &Path,
     source_path: &str,
     original_relative_path: &str,
-    output_extension: &str,
+    input_file_type: InputFileType,
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(result_dir)
         .map_err(|err| format!("failed to create {}: {err}", result_dir.display()))?;
     let final_path = result_dir.join(compute_destination_name(
         source_path,
         original_relative_path,
-        output_extension,
+        input_file_type,
     ));
     if final_path.exists() {
         return Err(format!(
@@ -312,6 +328,93 @@ fn parse_sheet_marker(remainder: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
+    // --- ADR-0151 -------------------------------------------------------
+
+    /// The reported bug: one filename reading as three comma-separated
+    /// ones, in a comma-joined report column.
+    #[test]
+    fn a_spreadsheet_destination_name_carries_no_report_breaking_character() {
+        let name = compute_destination_name(
+            "source:xlsx/",
+            "Budget (Normal, Reduced, Crisis).xlsx",
+            InputFileType::Xlsx,
+        );
+        assert_eq!(name, "Budget-Normal-Reduced-Crisis-ee7a9c8a4c2e5342.csv");
+        for forbidden in [',', '\t', '\n', ' ', '(', ')'] {
+            assert!(!name.contains(forbidden), "{name} contains {forbidden:?}");
+        }
+    }
+
+    /// **The property that scopes ADR-0151 §1.** `group_key` feeds every
+    /// destination name this job has ever written, and `transform` never
+    /// deletes at the destination -- so applying the strict stem to the
+    /// media kinds would not rename those objects, it would *duplicate*
+    /// them. Measured on the run that prompted this: 67% of inputs would
+    /// rename, which at ADR-0144's 37,955-object jpg bucket is ~25,000
+    /// duplicates.
+    #[test]
+    fn a_media_destination_name_is_unaffected_by_the_strict_stem() {
+        for (relative, kind, expected_ext) in [
+            (
+                "Budget (Normal, Reduced, Crisis).png",
+                InputFileType::Png,
+                "jpg",
+            ),
+            ("My Photo (1).jpeg", InputFileType::Jpeg, "jpg"),
+            ("Holiday Video, final.mov", InputFileType::Mov, "mp4"),
+            ("Voice Note (3).mp4", InputFileType::Mp4Audio, "opus"),
+        ] {
+            let name = compute_destination_name("source:x/", relative, kind);
+            // The stem survives verbatim -- spaces, parens, commas and all.
+            let stem = std::path::Path::new(relative)
+                .file_stem()
+                .unwrap()
+                .to_str()
+                .unwrap();
+            assert!(
+                name.starts_with(stem),
+                "{kind} name {name} must still start with the raw stem {stem}"
+            );
+            assert!(name.ends_with(&format!(".{expected_ext}")), "{name}");
+        }
+    }
+
+    /// The digest is unchanged by the stem treatment -- it hashes the raw
+    /// relative path, so two kinds over the same path share a digest even
+    /// when their stems render differently. That is what keeps the hash
+    /// input "byte-for-byte unchanged" as ADR-0149 promised.
+    #[test]
+    fn the_digest_does_not_depend_on_how_the_stem_is_rendered() {
+        let strict = group_key("source:x/", "A B,C.xlsx", InputFileType::Xlsx);
+        let lenient = group_key("source:x/", "A B,C.png", InputFileType::Png);
+        let digest_of = |key: &str| key.rsplit('-').next().unwrap().to_string();
+        // Different relative paths, so different digests -- but both are
+        // 16 hex characters derived the same way.
+        for key in [&strict, &lenient] {
+            let digest = digest_of(key);
+            assert_eq!(digest.len(), NAME_HASH_HEX_LEN);
+            assert!(digest.bytes().all(|b| b.is_ascii_hexdigit()));
+        }
+        assert!(strict.starts_with("A-B-C-"));
+        assert!(lenient.starts_with("A B,C-"));
+    }
+
+    /// A strict stem must still be recognised by the group index, or the
+    /// resume check would stop seeing already-done spreadsheets.
+    #[test]
+    fn a_strict_stem_group_is_still_recognised_by_the_index() {
+        let group = group_key(
+            "source:xlsx/",
+            "Budget (Normal, Reduced, Crisis).xlsx",
+            InputFileType::Xlsx,
+        );
+        let names = vec![
+            sheet_destination_name(&group, 1, 2, "Summary", InputFileType::Xlsx),
+            sheet_destination_name(&group, 2, 2, "Detail", InputFileType::Xlsx),
+        ];
+        assert!(DestinationGroups::index(&names).is_complete(&group));
+    }
+
     // --- ADR-0149 -------------------------------------------------------
 
     /// The regression check that matters most: splitting
@@ -320,9 +423,9 @@ mod tests {
     /// unmodified for the same reason.
     #[test]
     fn a_single_output_name_is_the_group_key_plus_its_extension() {
-        let group = group_key("source:png/", "a/b/c.png");
+        let group = group_key("source:png/", "a/b/c.png", InputFileType::Png);
         assert_eq!(
-            compute_destination_name("source:png/", "a/b/c.png", "jpg"),
+            compute_destination_name("source:png/", "a/b/c.png", InputFileType::Png),
             format!("{group}.jpg")
         );
         // 16 hex digits of digest, after a `-`.
@@ -337,9 +440,9 @@ mod tests {
     /// ask about them collectively.
     #[test]
     fn every_sheet_of_one_input_shares_its_group_key() {
-        let group = group_key("source:xlsx/", "Budget.xlsx");
-        let first = sheet_destination_name(&group, 1, 3, "Summary", "csv");
-        let second = sheet_destination_name(&group, 2, 3, "Q1 Detail", "csv");
+        let group = group_key("source:xlsx/", "Budget.xlsx", InputFileType::Xlsx);
+        let first = sheet_destination_name(&group, 1, 3, "Summary", InputFileType::Xlsx);
+        let second = sheet_destination_name(&group, 2, 3, "Q1 Detail", InputFileType::Xlsx);
         assert!(first.starts_with(&format!("{group}-")));
         assert!(second.starts_with(&format!("{group}-")));
         assert_ne!(first, second);
@@ -353,8 +456,12 @@ mod tests {
     #[test]
     fn a_worst_case_sheet_name_stays_within_the_filename_budget() {
         let long_stem = "x".repeat(300);
-        let group = group_key("source:xlsx/", &format!("{long_stem}.xlsx"));
-        let name = sheet_destination_name(&group, 100, 120, &"y".repeat(300), "csv");
+        let group = group_key(
+            "source:xlsx/",
+            &format!("{long_stem}.xlsx"),
+            InputFileType::Xlsx,
+        );
+        let name = sheet_destination_name(&group, 100, 120, &"y".repeat(300), InputFileType::Xlsx);
         assert!(name.len() <= 255, "{} bytes: {name}", name.len());
     }
 
@@ -390,7 +497,7 @@ mod tests {
     /// that yields one output.
     #[test]
     fn a_plain_name_completes_its_group() {
-        let group = group_key("source:png/", "a.png");
+        let group = group_key("source:png/", "a.png", InputFileType::Png);
         let names = vec![format!("{group}.jpg")];
         assert!(DestinationGroups::index(&names).is_complete(&group));
     }
@@ -400,10 +507,10 @@ mod tests {
     /// of treating it as done and losing that sheet forever.
     #[test]
     fn a_partial_sheet_group_is_incomplete_until_every_member_is_present() {
-        let group = group_key("source:xlsx/", "Budget.xlsx");
-        let first = sheet_destination_name(&group, 1, 3, "Summary", "csv");
-        let second = sheet_destination_name(&group, 2, 3, "Detail", "csv");
-        let third = sheet_destination_name(&group, 3, 3, "Notes", "csv");
+        let group = group_key("source:xlsx/", "Budget.xlsx", InputFileType::Xlsx);
+        let first = sheet_destination_name(&group, 1, 3, "Summary", InputFileType::Xlsx);
+        let second = sheet_destination_name(&group, 2, 3, "Detail", InputFileType::Xlsx);
+        let third = sheet_destination_name(&group, 3, 3, "Notes", InputFileType::Xlsx);
 
         let partial = vec![first.clone(), second.clone()];
         assert!(!DestinationGroups::index(&partial).is_complete(&group));
@@ -414,7 +521,7 @@ mod tests {
 
     #[test]
     fn an_unseen_group_is_never_complete() {
-        let group = group_key("source:xlsx/", "Budget.xlsx");
+        let group = group_key("source:xlsx/", "Budget.xlsx", InputFileType::Xlsx);
         assert!(!DestinationGroups::default().is_complete(&group));
         let other = vec!["something-else.csv".to_string()];
         assert!(!DestinationGroups::index(&other).is_complete(&group));
@@ -425,10 +532,10 @@ mod tests {
     /// self-correcting.
     #[test]
     fn a_group_whose_members_disagree_about_the_total_is_incomplete() {
-        let group = group_key("source:xlsx/", "Budget.xlsx");
+        let group = group_key("source:xlsx/", "Budget.xlsx", InputFileType::Xlsx);
         let names = vec![
-            sheet_destination_name(&group, 1, 2, "A", "csv"),
-            sheet_destination_name(&group, 2, 3, "B", "csv"),
+            sheet_destination_name(&group, 1, 2, "A", InputFileType::Xlsx),
+            sheet_destination_name(&group, 2, 3, "B", InputFileType::Xlsx),
         ];
         assert!(!DestinationGroups::index(&names).is_complete(&group));
     }
@@ -436,10 +543,10 @@ mod tests {
     /// Duplicate indices must not count twice toward the total.
     #[test]
     fn a_repeated_member_index_does_not_complete_a_group() {
-        let group = group_key("source:xlsx/", "Budget.xlsx");
+        let group = group_key("source:xlsx/", "Budget.xlsx", InputFileType::Xlsx);
         let names = vec![
-            sheet_destination_name(&group, 1, 2, "A", "csv"),
-            sheet_destination_name(&group, 1, 2, "A", "csv"),
+            sheet_destination_name(&group, 1, 2, "A", InputFileType::Xlsx),
+            sheet_destination_name(&group, 1, 2, "A", InputFileType::Xlsx),
         ];
         assert!(!DestinationGroups::index(&names).is_complete(&group));
     }
@@ -465,11 +572,11 @@ mod tests {
     #[test]
     fn a_hex_looking_stem_or_slug_does_not_shadow_the_real_group() {
         // A stem that is itself 16 hex characters, ahead of the real digest.
-        let group = group_key("source:xlsx/", "deadbeefdeadbeef.xlsx");
+        let group = group_key("source:xlsx/", "deadbeefdeadbeef.xlsx", InputFileType::Xlsx);
         assert!(group.starts_with("deadbeefdeadbeef-"));
         let names = vec![
-            sheet_destination_name(&group, 1, 2, "cafebabecafebabe", "csv"),
-            sheet_destination_name(&group, 2, 2, "Notes", "csv"),
+            sheet_destination_name(&group, 1, 2, "cafebabecafebabe", InputFileType::Xlsx),
+            sheet_destination_name(&group, 2, 2, "Notes", InputFileType::Xlsx),
         ];
         let groups = DestinationGroups::index(&names);
         assert!(
@@ -542,15 +649,27 @@ mod tests {
 
     #[test]
     fn compute_destination_name_is_deterministic() {
-        let first = compute_destination_name("source:png/", "screenshots/IMG_0001.png", "jpg");
-        let second = compute_destination_name("source:png/", "screenshots/IMG_0001.png", "jpg");
+        let first = compute_destination_name(
+            "source:png/",
+            "screenshots/IMG_0001.png",
+            InputFileType::Png,
+        );
+        let second = compute_destination_name(
+            "source:png/",
+            "screenshots/IMG_0001.png",
+            InputFileType::Png,
+        );
         assert_eq!(first, second);
     }
 
     #[test]
     fn compute_destination_name_differs_for_relative_paths_sharing_a_basename() {
-        let a = compute_destination_name("source:png/", "screenshots/IMG_0001.png", "jpg");
-        let b = compute_destination_name("source:png/", "photos/IMG_0001.png", "jpg");
+        let a = compute_destination_name(
+            "source:png/",
+            "screenshots/IMG_0001.png",
+            InputFileType::Png,
+        );
+        let b = compute_destination_name("source:png/", "photos/IMG_0001.png", InputFileType::Png);
         assert_ne!(a, b);
         // Both still carry the shared basename as a readable prefix.
         assert!(a.starts_with("IMG_0001-"));
@@ -559,17 +678,17 @@ mod tests {
 
     #[test]
     fn compute_destination_name_differs_across_source_paths_with_an_identical_relative_path() {
-        let a = compute_destination_name("source-a:png/", "IMG_0001.png", "jpg");
-        let b = compute_destination_name("source-b:png/", "IMG_0001.png", "jpg");
+        let a = compute_destination_name("source-a:png/", "IMG_0001.png", InputFileType::Png);
+        let b = compute_destination_name("source-b:png/", "IMG_0001.png", InputFileType::Png);
         assert_ne!(a, b);
     }
 
     #[test]
     fn compute_destination_name_uses_the_given_output_extension() {
-        let jpg = compute_destination_name("source:heic/", "a/b/c.heic", "jpg");
+        let jpg = compute_destination_name("source:heic/", "a/b/c.heic", InputFileType::Heic);
         assert!(jpg.ends_with(".jpg"));
 
-        let mp4 = compute_destination_name("source:mov/", "a/b/c.mov", "mp4");
+        let mp4 = compute_destination_name("source:mov/", "a/b/c.mov", InputFileType::Mov);
         assert!(mp4.ends_with(".mp4"));
     }
 
@@ -580,8 +699,14 @@ mod tests {
         let scratch_path = dir.path().join("scratch.jpg");
         std::fs::write(&scratch_path, b"jpeg bytes").unwrap();
 
-        let final_path =
-            place_one(&result_dir, &scratch_path, "source:png/", "a.png", "jpg").unwrap();
+        let final_path = place_one(
+            &result_dir,
+            &scratch_path,
+            "source:png/",
+            "a.png",
+            InputFileType::Png,
+        )
+        .unwrap();
 
         assert!(final_path.exists());
         assert!(!scratch_path.exists());
@@ -593,13 +718,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result_dir = dir.path().join("result");
         std::fs::create_dir_all(&result_dir).unwrap();
-        let colliding_name = compute_destination_name("source:png/", "a.png", "jpg");
+        let colliding_name = compute_destination_name("source:png/", "a.png", InputFileType::Png);
         std::fs::write(result_dir.join(&colliding_name), b"already here").unwrap();
 
         let scratch_path = dir.path().join("scratch.jpg");
         std::fs::write(&scratch_path, b"new content").unwrap();
 
-        let result = place_one(&result_dir, &scratch_path, "source:png/", "a.png", "jpg");
+        let result = place_one(
+            &result_dir,
+            &scratch_path,
+            "source:png/",
+            "a.png",
+            InputFileType::Png,
+        );
         assert!(result.is_err());
         // The pre-existing file must be untouched -- this is a hard error,
         // not a silent overwrite or a `-2` suffix fallback.

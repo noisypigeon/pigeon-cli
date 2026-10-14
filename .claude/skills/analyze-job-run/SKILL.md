@@ -31,16 +31,21 @@ gap. See step 4 and the Known limitations section.
 
 ## Steps
 
-1. **Locate the log.** Default path:
-   `~/Library/Application Support/pigeon/logs/pigeon.jsonl` (macOS) or
-   `~/.local/share/pigeon/logs/pigeon.jsonl` (Linux -- `directories`'
+1. **Locate the log.** Default path, **rotated daily since ADR-0151**:
+   `~/Library/Application Support/pigeon/logs/pigeon.<YYYY-MM-DD>.jsonl`
+   (macOS) or `~/.local/share/pigeon/logs/pigeon.<YYYY-MM-DD>.jsonl` (Linux -- `directories`'
    `data_local_dir()`, i.e. `$XDG_DATA_HOME` or `~/.local/share` by
    default; this is the path a headless Linux box running a long `job run
    deduplicate`/`transform` will actually have, ADR-0089). Overridable two
    ways -- check both before assuming the default: the `PIGEON_LOG_DIR`
    environment variable, or a `--log-file <path>` flag passed to the
    command itself. If the user pasted a terminal transcript, look for
-   either of these before reading anything.
+   either of these before reading anything. 14 generations are kept; a run
+   that straddled midnight has its lines split across two of them, so glob
+   rather than naming one file. An **explicit `--log-file <path>` is not
+   rotated** -- that path is written literally. A pre-ADR-0151
+   `pigeon.jsonl` with no date may also still be sitting there; it is not
+   migrated or removed, and holds everything before the rotation cutover.
 
    **If the symptom is a SIGKILL/crash with no graceful exit, check for an
    OOM kill before reading the JSONL at all**: `dmesg | grep -i oom` or
@@ -51,13 +56,23 @@ gap. See step 4 and the Known limitations section.
    you have it (ADR-0089 -- this is exactly how a real `deduplicate` OOM mid-upload
    was first confirmed, back when this signal still lived in the log itself).
 
-2. **Isolate the run.** The log is **append-only across every past
-   invocation** -- one file accumulates lines from every run of every
-   command, interleaved in chronological order, forever (no rotation, per
-   ADR-0073). There is **no run-ID or PID field anywhere in the schema** --
-   confirmed by grepping the whole crate for `process::id`/`run_id`/`Uuid`,
-   zero hits. The only two signals available to isolate "the run I care
-   about":
+2. **Isolate the run.** Each generation still accumulates lines from every
+   run of every command, interleaved in chronological order.
+
+   **Since ADR-0151 there is a `run_id`** on the outer `command` span, so
+   isolating one invocation is a direct filter rather than a timestamp
+   guess:
+   ```
+   jq 'select(.spans[]?.run_id == "18de49d4e714ce98-pigeon-5ece")' pigeon.*.jsonl
+   ```
+   It is the same id as that run's ADR-0100 artifact prefix
+   (`{date}-{job}-{run_id}/`), so a report-bucket object name hands you the
+   filter directly. Caveat: lines emitted *before* the job's wizard
+   generates the id -- notably `"command started"` -- carry no `run_id`, so
+   bound those by timestamp as below. A pre-ADR-0151 log has the field on no
+   line at all.
+
+   The two older signals still apply, and are what you need on such a log:
    - The outer span's `command` field identifies *which command*, not
      *which invocation* -- filter to it first:
      ```
@@ -214,11 +229,17 @@ the user for the terminal output instead.
   `"transform: pull phase complete"`, and `"transform: run complete"`
   (which carries the full per-stage breakdown: `failed_pull`,
   `failed_transcode`, `failed_place`, `failed_push`, plus
-  `skipped_already_done` and `skipped_apple_double`).
+  `skipped_already_done`, `skipped_apple_double`, and -- since ADR-0151 --
+  `skipped_lock_file` for Excel `~$` stubs, which ADR-0149 had folded into
+  the AppleDouble count on one path and dropped entirely on the other).
   A `"rclone's pull error count disagrees with the number of undelivered
   files"` WARN means rclone's own aggregate error tally and the job's
   per-file reconciliation diverged -- worth reporting, not necessarily a
-  fault in either.
+  fault in either. Since ADR-0151 it says **"fully accounted for by
+  case-colliding source keys"** when that is the whole explanation, and
+  carries `case_colliding_keys` and `rclone_duplicate_notices` either way;
+  the latter counts rclone's own `notice`-level `Duplicate object found in
+  source` lines -- the signal ADR-0144 traced but nothing read.
 - `deduplicate`: `download`, `archive` (zip expansion), `hash` (SHA-256
   content hashing), `place` (also `upload`). The fetch+hash phase is
   CPU-bound (ADR-0088) -- a slow `deduplicate` run with normal-looking
@@ -261,7 +282,8 @@ hasn't already pasted it):
 - `transform`: `"Pulled {pulled} file(s); {transcoded} transcoded,
   {copied_through} copied through, {failed} failed; pushed {pushed}
   file(s)."` -- followed, from ADR-0130 on, by an optional
-  `"Skipped {n} already done, {m} AppleDouble sidecar(s)."` and, when the
+  `"Skipped {n} already done, {m} AppleDouble sidecar(s)."` (plus an Excel
+  lock-stub count since ADR-0151) and, when the
   run failed, `"Failures by stage: {p} pull, {t} transcode, {pl} place,
   {pu} push."`. A non-zero `pull` stage count means files this run intended
   to download never arrived -- before ADR-0130 those were silently dropped
@@ -285,10 +307,11 @@ exited with `FAILURE_EXIT_CODE`, not `0`.
 
 ## Known limitations
 
-- **No way to disambiguate two concurrent runs of the same command** --
-  nothing in the schema separates them; if this matters, narrow by
-  timestamp as tightly as possible and say so explicitly in the takeaway
-  rather than presenting a guess as certain.
+- **Two concurrent runs of the same command** are separable by `run_id`
+  since ADR-0151 (step 2), **except** for each run's pre-wizard lines,
+  which carry no id. On a pre-ADR-0151 log nothing in the schema separates
+  them at all; narrow by timestamp as tightly as possible and say so
+  explicitly in the takeaway rather than presenting a guess as certain.
 - **A very fast crash may have 0-1 resource/progress metric samples** (the
   sampler runs every 5s, Alloy's own scrape interval is a separate,
   independently-configured cadence on top of that) -- don't expect a smooth
