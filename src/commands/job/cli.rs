@@ -121,8 +121,10 @@ pub enum JobType {
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
     /// maximum-quality `.jpg`, video files (`mov`/`m4v`/`mp4`, ADR-0122)
     /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`,
-    /// audio-only recordings carrying an `.mp4` extension (`mp4-audio`,
-    /// ADR-0142) into Opus `.opus`, or spreadsheets
+    /// audio files -- an audio-only recording carrying an `.mp4` extension
+    /// (`mp4-audio`, ADR-0142) or `m4a`/`mp3`/`aac`/`wav`/`opus`
+    /// (ADR-0153) -- into Opus `.opus` at a chosen `--audio-quality`, or
+    /// spreadsheets
     /// (`numbers`/`xlsx`/`xls`/`csv`, ADR-0149) into one `.csv` per sheet
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
     /// pull `--source` into a local staging tree, transcoding/copying each
@@ -150,13 +152,16 @@ pub enum JobType {
     /// need neither (ADR-0149).
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
-        /// `mov`, `m4v`, `mp4`, `mp4-audio`, `numbers`, `xlsx`, `xls`, or
-        /// `csv`. Interactively selected when omitted and stdin is a
-        /// terminal; required otherwise.
+        /// `mov`, `m4v`, `mp4`, `mp4-audio`, `m4a`, `mp3`, `aac`, `wav`,
+        /// `opus`, `numbers`, `xlsx`, `xls`, or `csv`. Interactively
+        /// selected when omitted and stdin is a terminal; required
+        /// otherwise.
         /// `mp4-audio` is for audio-only recordings carrying an `.mp4`
         /// extension (voice notes), transcoded to `.opus`; a file that
         /// actually has a video stream is refused rather than silently
-        /// losing its video. The four spreadsheet kinds all output `.csv`,
+        /// losing its video -- embedded cover art does not count as video
+        /// (ADR-0153). `opus` input is re-encoded rather than copied
+        /// through, so a mixed library normalizes to one bitrate. The four spreadsheet kinds all output `.csv`,
         /// one file per non-empty sheet (ADR-0149); `csv` input is copied
         /// through byte-for-byte.
         #[arg(long)]
@@ -172,6 +177,19 @@ pub enum JobType {
         #[arg(long)]
         video_quality: Option<String>,
 
+        /// Opus bitrate for an audio input kind (`mp4-audio`, `m4a`,
+        /// `mp3`, `aac`, `wav`, `opus`): `low` (32k, speech), `medium`
+        /// (48k), `high` (96k), or `transparent` (128k) -- a small vetted
+        /// menu (ADR-0153), never a raw bitrate. Ignored for every other
+        /// input kind. Interactively selected when omitted, stdin is a
+        /// terminal, and the input kind is audio; otherwise it defaults
+        /// **per kind**: `medium` for `mp4-audio`, preserving ADR-0142's
+        /// choice for voice notes, and `transparent` for the rest, which
+        /// are music or (for `wav`) lossless and would be badly served by
+        /// a speech bitrate.
+        #[arg(long)]
+        audio_quality: Option<String>,
+
         /// Where to pull from: a configured bucket-config alias, optionally
         /// composed with a prefix inside it -- `media` is the whole bucket,
         /// `media:mp4/` its `mp4/` directory (ADR-0138). An omitted prefix
@@ -186,7 +204,8 @@ pub enum JobType {
         /// Where to push to, same `alias[:prefix/]` form as `--source`
         /// (ADR-0138). An omitted prefix defaults to `--input-file-type`'s
         /// *output* extension (`jpg` for an image kind, `mp4` for a video
-        /// one, `opus` for `mp4-audio`, `csv` for every spreadsheet kind),
+        /// one, `opus` for every audio kind, `csv` for every spreadsheet
+        /// kind),
         /// so one bucket can serve as both source and destination when the
         /// prefixes differ.
         #[arg(long)]

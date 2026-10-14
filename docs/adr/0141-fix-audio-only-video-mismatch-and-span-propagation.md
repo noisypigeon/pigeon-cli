@@ -183,3 +183,24 @@ non-retryably, which is the correct outcome for a run that asked for video;
 the two kinds' opposite treatment of the same file is the intended
 distinction. ADR-0142 reuses this ADR's `has_video_stream` helper inverted,
 as the guard that refuses to strip video off a file that has it.
+
+## Amendment (2026-10-14): `has_video_stream` now distinguishes cover art (ADR-0153)
+
+This ADR's `has_video_stream` counts any stream matching
+`-select_streams v`, which was exactly right for the problem it solved --
+telling an audio-only `.mp4` from a real video. It is wrong for a *music*
+file, because ffmpeg models embedded cover art as a video stream too.
+
+ADR-0153 found this before shipping the `m4a`/`mp3`/`aac` kinds, and
+measured it: an `.m4a` with an attached picture reports stream index 1 under
+this probe. Had it shipped unchanged, essentially every tagged file in a real
+library would have hit ADR-0142's has-a-video-stream guard, been classified
+wrong-input-kind so ADR-0143 deleted its local copy, and tripped ADR-0121's
+circuit breaker into aborting the run.
+
+The probe now also reads `stream_disposition=attached_pic` and ignores
+streams where it is set. The field defaults to `0` when absent, so an
+unexpected probe shape reads as real video and *preserves* this ADR's guard
+rather than disarming it. Both of this ADR's own behaviours -- an audio-only
+input rejected by `transcode_video`, a real video accepted -- are unchanged
+and still pinned by its tests.

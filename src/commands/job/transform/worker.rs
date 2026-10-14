@@ -65,7 +65,7 @@ use tokio::sync::{Semaphore, mpsc, watch};
 use tokio::task::JoinSet;
 use tracing::Instrument;
 
-use super::format::{InputFileType, VideoQuality};
+use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
 use super::{destination, media, placement, push, sheets};
 use crate::core::rclone::RcloneCommand as _;
@@ -316,6 +316,11 @@ pub(crate) struct TransformPlan {
     /// Only consulted when `input_file_type.is_video()` (ADR-0122); an
     /// unused, harmless `VideoQuality::Medium` default on an image run.
     pub video_quality: VideoQuality,
+    /// Only consulted when `input_file_type.is_audio()` (ADR-0153); its
+    /// default varies by kind (`InputFileType::default_audio_quality`), so
+    /// `mp4-audio` keeps ADR-0142's 48k while a music kind gets the top
+    /// tier.
+    pub audio_quality: AudioQuality,
     pub download_transfers: usize,
     pub download_checkers: usize,
     pub tpslimit: Option<usize>,
@@ -588,6 +593,7 @@ async fn process_one(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
     video_quality: VideoQuality,
+    audio_quality: AudioQuality,
     transcode_threads: usize,
     source_path: &str,
     destination_path: &str,
@@ -637,6 +643,7 @@ async fn process_one(
             pending_file,
             input_file_type,
             video_quality,
+            audio_quality,
             transcode_threads,
             source_path,
             &group,
@@ -792,6 +799,7 @@ async fn convert_one(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
     video_quality: VideoQuality,
+    audio_quality: AudioQuality,
     transcode_threads: usize,
     source_path: &str,
     group: &str,
@@ -827,12 +835,17 @@ async fn convert_one(
             )
             .await
         }
-        InputFileType::Mp4Audio => {
+        InputFileType::Mp4Audio
+        | InputFileType::M4a
+        | InputFileType::Mp3
+        | InputFileType::Aac
+        | InputFileType::Wav
+        | InputFileType::Opus => {
             retry_transcode_unless_fatal(
                 TRANSCODE_RETRIES,
                 TRANSCODE_RETRY_BACKOFF,
                 &pending_file.source_key,
-                || media::transcode_audio(input, &scratch_path),
+                || media::transcode_audio(input, &scratch_path, audio_quality),
             )
             .await
         }
@@ -926,6 +939,10 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         InputFileType::Jpeg => Outcome::CopiedThrough,
         // ADR-0149: `csv` is already in the target format, so it is copied
         // through on exactly ADR-0112's reasoning for `jpeg`.
+        //
+        // `Opus` is **not** here despite also arriving in its target
+        // format: ADR-0153 re-encodes it to normalize a mixed library to
+        // one bitrate, so it is genuinely transcoded.
         InputFileType::Csv => Outcome::CopiedThrough,
         InputFileType::Png
         | InputFileType::Heic
@@ -935,7 +952,12 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         | InputFileType::Mp4Audio
         | InputFileType::Numbers
         | InputFileType::Xlsx
-        | InputFileType::Xls => Outcome::Transcoded,
+        | InputFileType::Xls
+        | InputFileType::M4a
+        | InputFileType::Mp3
+        | InputFileType::Aac
+        | InputFileType::Wav
+        | InputFileType::Opus => Outcome::Transcoded,
     }
 }
 
@@ -1581,12 +1603,14 @@ pub(crate) async fn run_transform_job(
             let endpoint_gate = endpoint_gate.clone();
             let input_file_type = plan.input_file_type;
             let video_quality = plan.video_quality;
+            let audio_quality = plan.audio_quality;
             in_flight.spawn(
                 async move {
                     let outcome = process_one(
                         &pending_file,
                         input_file_type,
                         video_quality,
+                        audio_quality,
                         transcode_threads,
                         &source_path,
                         &destination_path,
@@ -2162,6 +2186,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2242,6 +2267,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2300,6 +2326,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2351,6 +2378,7 @@ mod tests {
             download_transfers: 3,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2412,6 +2440,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2475,6 +2504,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2528,6 +2558,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2585,6 +2616,7 @@ mod tests {
             download_transfers: 5,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2629,6 +2661,7 @@ mod tests {
             download_transfers: 5,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -2741,6 +2774,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Low,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -3245,6 +3279,89 @@ mod tests {
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
     }
 
+    // --- ADR-0153: audio kinds -------------------------------------------
+
+    /// End-to-end for a `wav` run. `wav` is chosen because ffmpeg can
+    /// generate the fixture natively with no external codec, and because it
+    /// is the one *lossless* input kind -- the case whose quality default
+    /// matters most.
+    #[tokio::test]
+    async fn a_wav_run_transcodes_and_pushes_opus() {
+        if media::check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+
+        let generated = tokio::process::Command::new("ffmpeg")
+            .args([
+                "-y",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:a",
+                "pcm_s16le",
+            ])
+            .arg(source.join("tone.wav"))
+            .output()
+            .await;
+        if generated.map(|out| !out.status.success()).unwrap_or(true) {
+            eprintln!("skipping: this ffmpeg build can't generate a wav fixture");
+            return;
+        }
+
+        let mut plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Wav);
+        plan.audio_quality = InputFileType::Wav.default_audio_quality();
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.pushed, 1);
+        assert_eq!(summary.outcomes.len(), 1);
+        // Transcoded, not copied through -- ADR-0153 re-encodes.
+        assert_eq!(summary.outcomes[0].outcome, Outcome::Transcoded);
+
+        let expected =
+            placement::compute_destination_name(&plan.source_path, "tone.wav", InputFileType::Wav);
+        assert!(expected.ends_with(".opus"), "{expected}");
+        assert!(destination.join(&expected).exists(), "missing {expected}");
+
+        // ADR-0124: both local trees empty once it is pushed.
+        assert!(
+            std::fs::read_dir(source_dir(&local_output))
+                .map(|mut entries| entries.next().is_none())
+                .unwrap_or(true)
+        );
+    }
+
+    /// `opus` input is re-encoded rather than copied through, so its
+    /// outcome is `Transcoded` -- the one place ADR-0153 departs from
+    /// ADR-0112's and ADR-0149's treatment of an input already in the
+    /// target format.
+    #[test]
+    fn outcome_for_treats_opus_as_transcoded_not_copied_through() {
+        assert_eq!(outcome_for(InputFileType::Opus), Outcome::Transcoded);
+        // The two kinds that genuinely are copied through.
+        assert_eq!(outcome_for(InputFileType::Jpeg), Outcome::CopiedThrough);
+        assert_eq!(outcome_for(InputFileType::Csv), Outcome::CopiedThrough);
+        for kind in [
+            InputFileType::Mp4Audio,
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+        ] {
+            assert_eq!(outcome_for(kind), Outcome::Transcoded, "{kind}");
+        }
+    }
+
     // --- ADR-0152: case-colliding source keys ----------------------------
 
     #[test]
@@ -3414,6 +3531,7 @@ mod tests {
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -3727,6 +3845,7 @@ c;d
             download_transfers: 2,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),
@@ -3816,6 +3935,7 @@ c;d
             download_transfers: 3,
             download_checkers: 4,
             video_quality: VideoQuality::Medium,
+            audio_quality: AudioQuality::Medium,
             tpslimit: None,
             max_pending_downloads: 100,
             run_id: "test-run".to_string(),

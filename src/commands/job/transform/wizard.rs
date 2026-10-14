@@ -19,7 +19,7 @@ use crate::core::job::Job;
 use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
-use super::format::{InputFileType, VideoQuality};
+use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::{TransformJob, media, sheets, worker};
 
 /// Resolves `--input-file-type` -- mandatory, a small vetted menu
@@ -45,6 +45,11 @@ impl WizardInput for InputFileTypeInput {
             "m4v",
             "mp4",
             "mp4-audio",
+            "m4a",
+            "mp3",
+            "aac",
+            "wav",
+            "opus",
             "numbers",
             "xlsx",
             "xls",
@@ -95,6 +100,48 @@ impl WizardInput for VideoQualityInput {
 
     fn non_interactive_fallback(&self) -> Result<VideoQuality, String> {
         Ok(VideoQuality::Medium)
+    }
+}
+
+/// Resolves `--audio-quality` (ADR-0153) -- only consulted when
+/// `input_file_type.is_audio()`, exactly as `VideoQualityInput` is gated on
+/// `is_video()`, so an image or spreadsheet run is never prompted.
+///
+/// Unlike the video menu, the fallback is **not** a single constant: it is
+/// `input_file_type.default_audio_quality()`, so `mp4-audio` keeps
+/// ADR-0142's 48k while a music kind gets the top tier. The default is the
+/// load-bearing part -- a menu that defaulted to 48k everywhere would still
+/// quietly destroy a music library, which is the whole reason this flag
+/// exists.
+struct AudioQualityInput<'a> {
+    flag: Option<String>,
+    input_file_type: &'a InputFileType,
+}
+
+impl WizardInput for AudioQualityInput<'_> {
+    type Value = AudioQuality;
+
+    fn flag_value(&self) -> Option<Result<AudioQuality, String>> {
+        self.flag.as_deref().map(AudioQuality::parse)
+    }
+
+    fn prompt(&self) -> Result<AudioQuality, String> {
+        let options = ["low", "medium", "high", "transparent"];
+        let default_index = options
+            .iter()
+            .position(|option| *option == self.input_file_type.default_audio_quality().as_str())
+            .unwrap_or(1);
+        let selected = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("Audio quality")
+            .items(options)
+            .default(default_index)
+            .interact()
+            .map_err(|err| format!("failed to read audio quality: {err}"))?;
+        AudioQuality::parse(options[selected])
+    }
+
+    fn non_interactive_fallback(&self) -> Result<AudioQuality, String> {
+        Ok(self.input_file_type.default_audio_quality())
     }
 }
 
@@ -310,6 +357,7 @@ impl WizardInput for LocalOutputInput {
 pub fn dispatch(
     input_file_type: Option<String>,
     video_quality: Option<String>,
+    audio_quality: Option<String>,
     source: Option<String>,
     destination: Option<String>,
     local_output: Option<PathBuf>,
@@ -333,6 +381,7 @@ pub fn dispatch(
     runtime.block_on(dispatch_async(
         input_file_type,
         video_quality,
+        audio_quality,
         source,
         destination,
         local_output,
@@ -368,6 +417,7 @@ async fn required_converter_available(input_file_type: InputFileType) -> Result<
 async fn dispatch_async(
     input_file_type: Option<String>,
     video_quality: Option<String>,
+    audio_quality: Option<String>,
     source: Option<String>,
     destination: Option<String>,
     local_output: Option<PathBuf>,
@@ -430,6 +480,21 @@ async fn dispatch_async(
         }
     } else {
         VideoQuality::Medium
+    };
+    // Only consulted for an audio input kind (ADR-0153); every other kind
+    // is never prompted and the value goes unused.
+    let audio_quality = if input_file_type.is_audio() {
+        match (AudioQualityInput {
+            flag: audio_quality,
+            input_file_type: &input_file_type,
+        })
+        .resolve(non_interactive)
+        {
+            Ok(value) => value,
+            Err(err) => return fail(err),
+        }
+    } else {
+        input_file_type.default_audio_quality()
     };
     let source_path = match (SourceBucketInput {
         flag: source,
@@ -506,6 +571,9 @@ async fn dispatch_async(
     if input_file_type.is_video() {
         println!("Video quality:   {video_quality}");
     }
+    if input_file_type.is_audio() {
+        println!("Audio quality:   {audio_quality}");
+    }
     println!("Source:          {source_path}");
     println!("Destination:     {destination_path}");
 
@@ -538,6 +606,8 @@ async fn dispatch_async(
         local_output: local_output.clone(),
         input_file_type,
         video_quality,
+        audio_quality,
+
         download_transfers,
         download_checkers,
         tpslimit,

@@ -245,3 +245,24 @@ each new kind to choose its extension explicitly rather than inherit one, which
 is the first time that change paid off. This ADR's one-input-kind-per-run
 constraint (as restated by ADR-0139) is unaffected; what ADR-0149 changes is the
 number of *outputs* per input file, not the number of input kinds per run.
+
+## Amendment (2026-10-14): a second quality menu, for audio (ADR-0153)
+
+ADR-0153 adds `AudioQuality` beside this ADR's `VideoQuality`, copying its
+shape exactly -- `parse`/`as_str`/`Display`/a value accessor, a small vetted
+menu rather than a raw bitrate, and a `--audio-quality` flag gated on an
+`is_audio()` predicate the way `--video-quality` is gated on `is_video()`.
+One convention for a quality menu in this job rather than two.
+
+Two differences worth noting. This ADR's `Lossless` tier has **no audio
+counterpart**: Opus has no lossless mode, so a tier of that name would be a
+lie, and the top audio tier is `transparent` — which claims only perceptual
+indistinguishability. And where `--video-quality` falls back to a single
+`Medium` constant, `--audio-quality`'s default varies by input kind, because
+48 kbps is right for the voice notes ADR-0142 chose it for and wrong for a
+music library.
+
+ADR-0153 also changes the truncated-encode guard this ADR's
+`transcode_video` relies on: it becomes one-sided (only a *shorter* output
+is evidence of truncation) and scales with duration. A video whose output is
+longer than its container duration now passes where it previously failed.

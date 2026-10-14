@@ -725,6 +725,14 @@ fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_fl
         .stdout(predicate::str::contains("`xlsx`"))
         .stdout(predicate::str::contains("`xls`"))
         .stdout(predicate::str::contains("`csv`"))
+        // ADR-0153: the five audio input kinds and their quality menu.
+        .stdout(predicate::str::contains("`m4a`"))
+        .stdout(predicate::str::contains("`mp3`"))
+        .stdout(predicate::str::contains("`aac`"))
+        .stdout(predicate::str::contains("`wav`"))
+        .stdout(predicate::str::contains("`opus`"))
+        .stdout(predicate::str::contains("--audio-quality"))
+        .stdout(predicate::str::contains("`transparent`"))
         // ADR-0136: bucket-config aliases, not raw rclone path strings, and
         // no separate upload phase of the shape --upload-concurrency sizes.
         .stdout(predicate::str::contains("--source-path").not())
@@ -1140,6 +1148,46 @@ fn job_run_transform_rejects_an_unknown_kind_and_lists_the_spreadsheet_ones() {
         .code(1)
         .stderr(predicate::str::contains("unknown --input-file-type 'xlsm'"))
         .stderr(predicate::str::contains("numbers, xlsx, xls, or csv"));
+}
+
+/// ADR-0153: an invalid `--audio-quality` fails fast and never falls
+/// through to an interactive prompt, the same discipline
+/// `--input-file-type` and `--video-quality` already have.
+#[test]
+fn job_run_transform_with_an_invalid_audio_quality_fails_fast() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "transform",
+            "--input-file-type",
+            "mp3",
+            "--audio-quality",
+            "lossless",
+            "--source",
+            "source",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--concurrency",
+            "4",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        // `lossless` is `--video-quality`'s top tier, deliberately absent
+        // here: Opus has no lossless mode, so the name would be a lie.
+        .stderr(predicate::str::contains(
+            "unknown --audio-quality 'lossless'",
+        ))
+        .stderr(predicate::str::contains(
+            "expected low, medium, high, or transparent",
+        ));
 }
 
 // --- ADR-0145: --keyring-path -------------------------------------------
