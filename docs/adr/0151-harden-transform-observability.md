@@ -291,3 +291,10 @@ widening `group_key`'s charset does not rename already-written objects, it
 duplicates them, at the 67%-of-inputs rate measured here. ADR-0154 pins the
 property with a test asserting a document destination name is byte-identical to
 today's media naming.
+
+## Amendment (2026-10-15): collision notices no longer regrow the log (ADR-0156)
+
+ADR-0152's one-INFO-per-colliding-group notice put back the per-run log volume
+this ADR cut (428 of one run's 430 lines). ADR-0156 collapses it to one
+aggregate line and moves the full list into `transform-report.txt`, and adds
+per-file failure WARNs plus 60 s progress lines, both bounded.

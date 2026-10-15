@@ -187,3 +187,14 @@ Closes [#83](https://github.com/noisypigeon/pigeon-cli/issues/83).
   `"case-variant pull complete"` line with `failed: 0`, and
   `bookkeeping.xlsx`'s own CSVs at the destination beside
   `Bookkeeping-d09d24e1eb67da86.csv`. Then a second rerun as a clean no-op.
+
+## Amendment (2026-10-15): slot-batched variant pulls (ADR-0156)
+
+The "inherently tiny" premise behind §2's sequential per-key `copyto` pass did
+not hold at scale: a real `md` run had 428 colliding groups (870 keys) and
+spent 19m45s in that pass with the whole pipeline stalled behind it. ADR-0156
+replaces per-key directories with per-*slot* directories
+(`.staging/case-variants/slot{k}/<key>`), each holding at most one spelling of
+any key or directory prefix, and pulls each slot with one bulk `rclone copy`,
+all slots concurrently. The per-group INFO notice becomes one aggregate line;
+the full group list moves to `transform-report.txt`.
