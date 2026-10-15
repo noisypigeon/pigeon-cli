@@ -250,6 +250,23 @@ the user for the terminal output instead.
   **INFO** rather than WARN -- it describes what was done, not data about to
   be lost. A non-zero `failed` there, or a `Pull`-stage failure whose detail
   names a failed individual pull, is the real signal.
+
+  **Since ADR-0156** the variants are pulled by one bulk `copy` per
+  collision-free *slot* (`case-variant pull complete` gains `slots`/`keys`;
+  expect it seconds after `pull phase starting`, not minutes), and the
+  collision notice is **one** line with `groups`/`keys`/`largest_group` and
+  ten `examples` -- the full group list is at the end of
+  `transform-report.txt`. Three more lines make a run readable while it is
+  still going: `"transform: file failed"` (WARN, one per failed file, every
+  kind and stage, with `relative_path`/`stage`/`error`; pull-stage ones cap at
+  50 named plus one `not_named` aggregate), `"transform: progress"` (INFO,
+  every 60 s, unconditional: `queued`, `in_flight`, `dispatched`,
+  `completed`, `pushed`, per-stage failures, `pull_finished`,
+  `pull_is_paused` -- identical consecutive lines mean a stall), and, for
+  every job's streamed rclone leg, `"rclone: copy progress"` (INFO, at most
+  every 60 s and only when cumulative `transferred`/`errors`/`bytes` moved --
+  a gap is expected while ADR-0129 has the pull paused). Before ADR-0156 a
+  non-`ffmpeg` kind's failures appeared **only** in the report.
 - `deduplicate`: `download`, `archive` (zip expansion), `hash` (SHA-256
   content hashing), `place` (also `upload`). The fetch+hash phase is
   CPU-bound (ADR-0088) -- a slow `deduplicate` run with normal-looking

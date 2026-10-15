@@ -25,6 +25,10 @@ pub(crate) use log::{RcloneLogSummary, RcloneLogTailer, TailDelta};
 /// (ADR-0102) -- independent of rclone's own fixed `--stats 30s` interval.
 const LOG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
+/// A `Streamed` command's cumulative progress line fires at most once per
+/// this many polls -- every 60s at `LOG_POLL_INTERVAL` (ADR-0156).
+const PROGRESS_EVERY_POLLS: u32 = 6;
+
 /// Per-object completion/PID channels a `Streamed` command may carry
 /// (ADR-0116/ADR-0129). `Default`-empty for every command that doesn't need
 /// them -- cheap to carry on every implementor via `..Default::default()`.
@@ -253,6 +257,13 @@ async fn execute_streamed<C: RcloneCommand + ?Sized>(
     // harmless -- `RcloneLogTailer::poll` treats a missing file as "no new
     // data," not an error.
     poll_interval.tick().await;
+    // ADR-0156: a cumulative progress line every `PROGRESS_EVERY_POLLS`
+    // polls, but only when the totals moved since the last one, so a
+    // SIGSTOPped (ADR-0129) or idle transfer stays quiet. Until this, the
+    // live figures computed every poll reached only Prometheus -- which is
+    // best-effort, and absent for any run that lost the port race.
+    let mut polls_since_progress: u32 = 0;
+    let mut last_progress: Option<(u64, u64, u64)> = None;
 
     let exit_status = loop {
         tokio::select! {
@@ -265,6 +276,23 @@ async fn execute_streamed<C: RcloneCommand + ?Sized>(
                 let delta = tailer.poll();
                 emit_delta_metrics(labels, &delta);
                 forward_copied(&hooks.on_copied, delta.copied_objects);
+
+                polls_since_progress += 1;
+                if polls_since_progress >= PROGRESS_EVERY_POLLS {
+                    polls_since_progress = 0;
+                    let cumulative = tailer.summary();
+                    let totals = (cumulative.transferred, cumulative.errors, cumulative.bytes);
+                    if last_progress != Some(totals) {
+                        last_progress = Some(totals);
+                        tracing::info!(
+                            transferred = cumulative.transferred,
+                            errors = cumulative.errors,
+                            bytes = cumulative.bytes,
+                            step = labels.step,
+                            "rclone: {subcommand} progress"
+                        );
+                    }
+                }
             }
         }
     };
