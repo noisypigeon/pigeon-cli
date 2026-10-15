@@ -10,7 +10,8 @@
 //! `compute_destination_name`'s output extension was hardcoded to `.jpg`
 //! until ADR-0122 added video input kinds, which output `.mp4` instead --
 //! it now takes that extension as an explicit parameter
-//! (`InputFileType::output_extension`).
+//! (`InputFileType::output_extension`), which since ADR-0154 spans six
+//! extensions across five input families.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

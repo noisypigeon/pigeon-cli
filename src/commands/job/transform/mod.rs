@@ -1,18 +1,40 @@
 //! `pigeon job run transform` (ADR-0112, pipeline reworked by ADR-0116, video
-//! input kinds added by ADR-0122, `mp4-audio` by ADR-0142): shells out to
-//! `rclone` to pull source files matching `--input-file-type`
-//! (`png`/`jpeg`/`heic`/`mov`/`m4v`/`mp4`/`mp4-audio`)
-//! into a local staging tree, transcodes or copies them locally into a
-//! destination filename unique by construction (never collision-detected-
-//! and-fixed, and never deduplicated -- duplicate source content is
-//! deliberately retained at separate destination names) -- full-size,
-//! maximum-quality `.jpg` for image kinds, `.mp4` (H.265/HEVC at the chosen
-//! `--video-quality`) for video kinds, Opus `.opus` for `mp4-audio` -- then
-//! pushes each file individually
-//! via `rclone copyto` the moment it's ready rather than waiting for the
-//! whole batch. See `worker`'s module doc comment for the per-file
-//! pipeline's full shape, `push`'s for the per-file push leg, and
-//! `placement`'s for the naming scheme.
+//! input kinds added by ADR-0122, `mp4-audio` by ADR-0142, spreadsheets by
+//! ADR-0149, the audio family by ADR-0153, documents by ADR-0154): shells out
+//! to `rclone` to pull source files matching `--input-file-type` into a local
+//! staging tree, transcodes or copies them locally into a destination filename
+//! unique by construction (never collision-detected-and-fixed, and never
+//! deduplicated -- duplicate source content is deliberately retained at
+//! separate destination names), then pushes each file individually via
+//! `rclone copyto` the moment it's ready rather than waiting for the whole
+//! batch.
+//!
+//! Five input families, and since ADR-0154 they no longer share one output
+//! extension apiece -- documents fan out to three, which is why
+//! `format::InputFileType::output_extension` rather than any `is_*()`
+//! predicate is the authority on where a kind's output lands:
+//!
+//! | Output | Kinds |
+//! |---|---|
+//! | `.jpg` | `png`, `jpeg`, `heic` |
+//! | `.mp4` | `mov`, `m4v`, `mp4` (H.265 at the chosen `--video-quality`) |
+//! | `.opus` | `mp4-audio`, `m4a`, `mp3`, `aac`, `wav`, `opus` (at `--audio-quality`) |
+//! | `.csv` | `numbers`, `xlsx`, `xls`, `csv`, `tsv` -- one file per non-empty sheet |
+//! | `.pdf` | `doc`, `docx`, `pages`, `rtf`, `pdf`, `epub`, `pptx`, `key` |
+//! | `.txt` | `txt`, `md`/`markdown`/`mkd`, `rst`, `textclipping` |
+//!
+//! `jpeg`, `csv`, `pdf` and `txt` arrive already in their target format and are
+//! copied through byte-for-byte; `opus` is the one kind that is deliberately
+//! re-encoded anyway (ADR-0153 §6).
+//!
+//! Converters: `ffmpeg`/`ffprobe` for image/video/audio, `soffice` for
+//! `numbers` and the six LibreOffice-readable document kinds, `ebook-convert`
+//! for `epub` alone (LibreOffice's EPUB filter is export-only), and `pandoc`
+//! for `md`/`rst`. The spreadsheet, text and tabular kinds that need none of
+//! them are read in-process.
+//!
+//! See `worker`'s module doc for the per-file pipeline's full shape, `push`'s
+//! for the per-file push leg, and `placement`'s for the naming scheme.
 
 mod destination;
 mod documents;

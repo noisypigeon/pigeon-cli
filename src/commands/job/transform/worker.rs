@@ -147,7 +147,7 @@ enum GateDecision {
 /// This is the push-leg analogue of ADR-0121/0143's transcode circuit
 /// breaker, with one deliberate difference: it **pauses and resumes**
 /// rather than aborting the run. A transient network fault is not the
-/// systemic ffmpeg-capability gap that breaker exists for, so the response
+/// systemic converter-capability gap that breaker exists for, so the response
 /// to it is patience, not abandonment -- and only after
 /// `PUSH_ENDPOINT_RECOVERY_ROUNDS` fruitless rounds does it let files start
 /// failing.
@@ -1701,7 +1701,7 @@ pub(crate) async fn run_transform_job(
                     // ADR-0130: require the failure to have actually come from
                     // the transcode stage, not merely to carry a string that
                     // matches. A place/push error is never evidence of the
-                    // systemic ffmpeg-capability gap this breaker exists for.
+                    // systemic converter-capability gap this breaker exists for.
                     if let Err((stage, err)) = &result
                         && *stage == FailureStage::Transcode
                         && media::is_non_retryable_transcode_error(err)
@@ -1844,11 +1844,15 @@ pub(crate) async fn run_transform_job(
              files, so the run is being aborted instead of grinding through every remaining file \
              with a guaranteed-identical failure. The two usual causes: (1) the wrong \
              --input-file-type for what this source actually holds -- e.g. a mp4-audio run \
-             pointed at real video, or vice versa (ADR-0143), or a spreadsheet kind pointed at \
-             something that is not a workbook (ADR-0149); or (2) an environment/capability gap, \
-             the converter on this job's host (`ffmpeg` for media, `soffice` for Apple Numbers) \
-             lacking support for this input's format or a feature it uses. The example error \
-             below distinguishes them. Example error: {example}"
+             pointed at real video, or vice versa (ADR-0143); a spreadsheet kind pointed at \
+             something that is not a workbook (ADR-0149); or a document kind pointed at \
+             something unreadable, which for `key` specifically means a file that is not an \
+             iWork container at all, often a private key (ADR-0154); or (2) an \
+             environment/capability gap, the converter on this job's host lacking support for \
+             this input's format or a feature it uses -- `ffmpeg` for image/video/audio kinds, \
+             `soffice` for numbers/doc/docx/pages/rtf/pptx/key, `ebook-convert` for epub, and \
+             `pandoc` for md/rst. The example error below distinguishes them. \
+             Example error: {example}"
         ));
     }
 
