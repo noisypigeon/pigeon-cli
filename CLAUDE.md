@@ -107,7 +107,7 @@ Single-contributor repo, but every substantive change goes through a real PR. Wh
 5. **Changelog.** Once the PR exists, append one bullet in the same follow-up commit to `CHANGELOG.md`'s `[Unreleased]` section (top of file; create it if missing): `- ADR-XXXX: <one-line description> ([#N](PR URL))`.
 6. **Merge.** `gh pr merge --squash --delete-branch` once CI is clean — no further confirmation needed.
 
-Releases stay manual: cutting one means hand-retitling `[Unreleased]` to `[x.y.z] - date` and starting a fresh empty `[Unreleased]` section — not part of this pipeline.
+7. **Release — automatic, nothing to do.** ADR-0117 made this a workflow: every push to `main` that is not itself a `chore(release): v` commit triggers `.github/workflows/release.yml`, which bumps the patch version, retitles `[Unreleased]` to `[x.y.z] - date`, starts a fresh empty `[Unreleased]`, commits, tags, pushes, and *then* publishes to crates.io (push-before-publish per ADR-0150, with a sparse-index pre-check making a retry idempotent). So a merged PR ships on its own — do not hand-edit versions or cut a release, and expect the bot's `chore(release):` commit to land on `main` shortly after yours.
 
 When an ADR's `## Out of scope` section has a genuinely-deferred item (not a permanent design boundary), file it via `mise run adr-issue` while landing that ADR — reuse an existing `out-of-scope`-labeled issue with `--issue N` if the same gap was already raised elsewhere. See ADR-0031.
 
