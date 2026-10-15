@@ -160,10 +160,12 @@ shared log is not.
   prefix check protects the *slots* from this, but not the bulk pull. This is
   latent: no affected source has been seen, and the reported one is flat.
   Filed per ADR-0031.
-- **Flagged, not changed:** `transform`'s wizard still takes `--report-bucket` as
-  a keyring alias (`report_upload::resolve`), while CLAUDE.md's ADR-0132
-  summary says `transform` moved to `--report-path` and is keyring-free. One of
-  the two is wrong, and it needs its own look.
+- **Flagged, then resolved separately:** `transform`'s wizard takes
+  `--report-bucket` as a keyring alias (`report_upload::resolve`), while
+  CLAUDE.md's ADR-0132 summary said `transform` had moved to `--report-path`.
+  The code is right. ADR-0136 dropped ADR-0132 §10 before it landed, so every
+  job still uses `--report-bucket`. CLAUDE.md and the ADR texts that repeated
+  the claim (0112, 0130, 0133) were corrected on 2026-10-15.
 
 ## Amends
 

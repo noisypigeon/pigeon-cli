@@ -349,7 +349,8 @@ sites name only the fields they need instead of trailing a run of bare
 `None`s. The hoist's intent -- one shared implementation of the copy
 mechanics -- is what ADR-0132 completes; this ADR's three-phase pipeline,
 flags, and metric labels are unaffected. Decision point 1's `--report-bucket`
-becomes `--report-path`.
+becomes `--report-path`. (Never landed: ADR-0136 dropped ADR-0132 §10, so
+`--report-bucket` remains -- corrected 2026-10-15.)
 
 ## Amendment (2026-10-12): the `jpg` alias finally reaches file matching (ADR-0139)
 
