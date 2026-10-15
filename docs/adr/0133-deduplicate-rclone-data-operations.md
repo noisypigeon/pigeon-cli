@@ -469,3 +469,15 @@ Two things this ADR proposed do **not** happen:
   already carries a keyring alias, the same bounded-cardinality value every
   other job's `source_bucket` label already carries, so no exception to
   ADR-0102/ADR-0130's raw-path-label rule is needed.
+
+## Amendment (2026-10-15): `--report-path` never landed either (ADR-0136)
+
+The amendment above retracts §1's data-leg rename but says nothing about the
+report flag, and this ADR's Context (point 2), point 3, and §1's flag table
+all describe `--report-path` as already done by ADR-0132. It never was:
+ADR-0136 dropped ADR-0132 §10 before it landed, so `deduplicate` still takes
+`--report-bucket`, a keyring bucket-config alias, like every other job. With
+`--source-bucket`/`--destination-bucket` also unchanged, `deduplicate`
+remains keyring-dependent. The rclone-on-`PATH` dependency point 2 argues
+from still holds, because the report upload does go through `rclone copyto`
+(ADR-0148), just addressed by alias.

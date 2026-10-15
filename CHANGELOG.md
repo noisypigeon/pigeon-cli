@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0136 (record): corrects documentation that still described ADR-0132 §10's `--report-bucket` → `--report-path` rename as done. ADR-0136 dropped that rename before it landed, so all five job types (`deduplicate`, `transform`, `email import`, `rclone copy`, `rclone delete`) still take `--report-bucket`, a keyring bucket-config alias, and none of them is keyring-free. Fixes CLAUDE.md's ADR-0132/0133 summaries and the same claim in ADR-0112, 0130 and 0133, and records the resolution of the item ADR-0156 flagged ([#119](https://github.com/noisypigeon/pigeon-cli/pull/119)).
+
 ## [0.4.40] - 2026-10-15
 
 - ADR-0156: `job run transform` pulls case-colliding source keys with one concurrent bulk `rclone copy` per collision-free slot instead of one sequential `copyto` per key (a real `md` run's 870 keys took 19m45s with the whole pipeline stalled; now 4 processes). Every per-file failure now logs a `"transform: file failed"` WARN for every kind and stage; before, only the `ffmpeg` kinds did. A 60 s `"transform: progress"` line and a change-gated `"rclone: {subcommand} progress"` line give long runs live telemetry. The one-INFO-per-collision-group notice is collapsed to one aggregate line, and the full list is in `transform-report.txt` ([#118](https://github.com/noisypigeon/pigeon-cli/pull/118)).

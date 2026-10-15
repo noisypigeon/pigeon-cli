@@ -236,7 +236,9 @@ one place rather than from whichever caller remembered to add them. The
 `is_apple_double_basename` filtering, per-file pull reconciliation, and
 disk-space preflight this ADR added are unaffected. Separately, `transform`'s
 `--report-bucket` becomes `--report-path`, leaving this job with no keyring
-dependency at all.
+dependency at all. (Never landed: ADR-0136 dropped ADR-0132 §10, so
+`--report-bucket` remains and this job still depends on the keyring --
+corrected 2026-10-15.)
 
 ## Amendment (2026-10-13): the undelivered-file message was false for one class (ADR-0144)
 
