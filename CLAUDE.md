@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`pigeon` is a Rust CLI (clap + Mise) that authenticates, imports, transcodes, and deduplicates personal data into S3-compatible remotes, backed by a unified `keyring` for identities and buckets. This repo split out of a former personal monorepo (`noisypigeon/noisypigeon`, which still holds this project's terraform infrastructure and blog) via ADR-0084 — that repo's `docs/archived/adr/` holds this repo's own pre-split ADR history too, alongside the terraform/blog ADRs that stayed behind.
+`pigeon` is a Rust CLI (clap + Mise) that authenticates, imports, transcodes, and deduplicates personal data into S3-compatible remotes, backed by a unified `keyring` for identities and buckets. This repo split out of a former personal monorepo (`noisypigeon/noisypigeon`) via ADR-0084. This project's Terraform infrastructure now lives in [`noisypigeon/willowgraysen.com`](https://github.com/noisypigeon/willowgraysen.com) under `terraform/pigeon-cli/` (RUN-0001), and the blog in [`noisypigeon/noisypigeon.com`](https://github.com/noisypigeon/noisypigeon.com). The monorepo's own infrastructure and blog ADRs are now `DEV-` records in `noisypigeon/pigeon.dev`'s `adr/`; this repo's pre-split ADRs were deleted from the monorepo (noisypigeon/noisypigeon#102) and survive only in its git history.
 
 ## ADRs govern this project
 
