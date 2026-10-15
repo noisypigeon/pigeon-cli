@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.40] - 2026-10-15
+
 - ADR-0156: `job run transform` pulls case-colliding source keys with one concurrent bulk `rclone copy` per collision-free slot instead of one sequential `copyto` per key (a real `md` run's 870 keys took 19m45s with the whole pipeline stalled; now 4 processes). Every per-file failure now logs a `"transform: file failed"` WARN for every kind and stage; before, only the `ffmpeg` kinds did. A 60 s `"transform: progress"` line and a change-gated `"rclone: {subcommand} progress"` line give long runs live telemetry. The one-INFO-per-collision-group notice is collapsed to one aggregate line, and the full list is in `transform-report.txt` ([#118](https://github.com/noisypigeon/pigeon-cli/pull/118)).
 
 ## [0.4.39] - 2026-10-15
