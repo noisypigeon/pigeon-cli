@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.41] - 2026-10-15
+
 - ADR-0136 (record): corrects documentation that still described ADR-0132 §10's `--report-bucket` → `--report-path` rename as done. ADR-0136 dropped that rename before it landed, so all five job types (`deduplicate`, `transform`, `email import`, `rclone copy`, `rclone delete`) still take `--report-bucket`, a keyring bucket-config alias, and none of them is keyring-free. Fixes CLAUDE.md's ADR-0132/0133 summaries and the same claim in ADR-0112, 0130 and 0133, and records the resolution of the item ADR-0156 flagged ([#119](https://github.com/noisypigeon/pigeon-cli/pull/119)).
 
 ## [0.4.40] - 2026-10-15
