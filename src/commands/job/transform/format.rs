@@ -1,15 +1,26 @@
-//! `--input-file-type` (ADR-0112, extended to video by ADR-0122): a small,
-//! vetted menu, not an arbitrary string -- mirrors
+//! `--input-file-type` (ADR-0112, extended to video by ADR-0122, audio by
+//! ADR-0142/0153, spreadsheets by ADR-0149 and documents by ADR-0154): a
+//! small, vetted menu, not an arbitrary string -- mirrors
 //! `rclone::cli::RcloneAction`'s precedent. Named `InputFileType`, not
-//! `ImageInputType`, and the job
-//! itself named `transform`, not `image-transform`, so a later iteration
-//! could add a non-image input kind to this same enum/command without a
-//! rename -- ADR-0122's `Mov`/`M4v`/`Mp4` variants are that iteration.
+//! `ImageInputType`, and the job itself named `transform`, not
+//! `image-transform`, so later iterations could add non-image kinds to this
+//! same enum/command without a rename -- which is exactly what the five
+//! families here became.
 
-/// Which input format this run transcodes. Image kinds (ADR-0112) always
-/// output full-size, maximum-quality `.jpg`; video kinds (ADR-0122) always
-/// output `.mp4` (H.265/HEVC) at the chosen `VideoQuality`; `Mp4Audio`
-/// (ADR-0142) outputs `.opus`. See `output_extension`.
+/// Which input format this run transcodes.
+///
+/// The output extension is **not** derivable from any one predicate: image
+/// kinds output `.jpg` (ADR-0112), video kinds `.mp4` at the chosen
+/// `VideoQuality` (ADR-0122), audio kinds `.opus` at the chosen
+/// `AudioQuality` (ADR-0142, ADR-0153), spreadsheet kinds one `.csv` per
+/// non-empty sheet (ADR-0149), and document kinds -- the first family whose
+/// members disagree -- `.pdf`, `.txt` or `.csv` (ADR-0154). See
+/// `output_extension`, which is the single authority on this and is
+/// deliberately an exhaustive `match`.
+///
+/// `Jpeg`, `Csv`, `Pdf` and `Txt` are copy-through: already in the target
+/// format, so the bytes are preserved untouched. `Opus` is the one kind that
+/// arrives in its target format and is re-encoded anyway (ADR-0153 §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputFileType {
     Png,

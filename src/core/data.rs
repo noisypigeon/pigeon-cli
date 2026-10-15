@@ -324,7 +324,8 @@ pub(crate) fn sheet_slug(name: &str) -> String {
 /// `Budget (Normal, Reduced, Crisis)-ee7a9c8a4c2e5342.csv`: one file whose
 /// own name reads as three comma-separated ones.
 ///
-/// Deliberately **not** applied to the image, video, or audio kinds.
+/// Deliberately **not** applied to the image, video, audio, or document
+/// kinds.
 /// `group_key` feeds every destination name this job has ever written, and
 /// `transform` never deletes at the destination (ADR-0112), so widening
 /// this would not rename those objects -- it would *duplicate* them.

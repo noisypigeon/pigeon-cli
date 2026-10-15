@@ -38,9 +38,10 @@ This installs a binary named `pigeon`.
 
 ## Run via Docker
 
-An alternative to installing Rust/ffmpeg locally: build and run `pigeon`
-in a container that bundles everything it needs (see ADR-0087). Image
-targets `linux/arm64` only.
+An alternative to installing the converters locally: build and run `pigeon`
+in a container that bundles everything it needs (see ADR-0087) — `ffmpeg`,
+LibreOffice, Calibre and pandoc between them are a substantial install, so
+this route is usually the easier one. Image targets `linux/arm64` only.
 
 ```sh
 mise run docker-build                       # docker build --platform linux/arm64 -t pigeon-cli .
@@ -108,7 +109,7 @@ machine, not just pigeon's own process tree) — see ADR-0128.
 - `pigeon keyring list` — list every configured entry.
 - `pigeon job run email import [flags]` — deliver each message's raw `.eml` and unpacked attachments from an authenticated identity to a destination, at a chosen `--messages-per-minute` pace.
 - `pigeon job run deduplicate [flags]` — inflate every zip, content-hash a bucket, keep one copy of each byte-identical file, and upload the result.
-- `pigeon job run transform [flags]` — transcode images or video via `ffmpeg`, audio (`.mp4`-audio/`.m4a`/`.mp3`/`.aac`/`.wav`/`.opus`) to Opus at a chosen `--audio-quality`, or convert spreadsheets (`.numbers`/`.xlsx`/`.xls`/`.csv`) to one `.csv` per sheet, between a source and destination bucket.
+- `pigeon job run transform [flags]` — normalize one input family per run between a source and destination bucket: images (`png`/`jpeg`/`heic`) and video (`mov`/`m4v`/`mp4`) via `ffmpeg` at a chosen `--video-quality`; audio (`mp4-audio`/`m4a`/`mp3`/`aac`/`wav`/`opus`) to Opus at a chosen `--audio-quality`; spreadsheets (`numbers`/`xlsx`/`xls`/`csv`/`tsv`) to one `.csv` per non-empty sheet; documents (`doc`/`docx`/`pages`/`rtf`/`pdf`/`epub`/`pptx`/`key`) to `.pdf`; and text (`txt`/`md`/`markdown`/`mkd`/`rst`/`textclipping`) to `.txt`. Needs `soffice` for the LibreOffice-readable kinds, `ebook-convert` for `epub` and `pandoc` for `md`/`rst`; a file already in its target format (`jpeg`, `csv`, `pdf`, `txt`) is copied through byte-for-byte. A `.key` that is not an iWork container — that extension is also conventional for a private key — is refused rather than converted.
 - `pigeon job run rclone copy [flags]` — copy one configured bucket to another via `rclone`.
 - `pigeon job run rclone delete [flags]` — recursively and permanently purge a configured bucket's contents.
 

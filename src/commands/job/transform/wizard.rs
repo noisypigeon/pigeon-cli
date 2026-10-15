@@ -120,7 +120,8 @@ impl WizardInput for VideoQualityInput {
 
 /// Resolves `--audio-quality` (ADR-0153) -- only consulted when
 /// `input_file_type.is_audio()`, exactly as `VideoQualityInput` is gated on
-/// `is_video()`, so an image or spreadsheet run is never prompted.
+/// `is_video()`, so an image, spreadsheet or document run is never
+/// prompted.
 ///
 /// Unlike the video menu, the fallback is **not** a single constant: it is
 /// `input_file_type.default_audio_quality()`, so `mp4-audio` keeps
@@ -512,9 +513,10 @@ async fn dispatch_async(
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
     // ADR-0149 §6: the input kind resolves *first*, because which external
-    // binaries this run needs depends on it -- a `csv`/`xlsx`/`xls` run
-    // needs neither `ffmpeg` nor `soffice`, and a `numbers` run needs
-    // `soffice` rather than `ffmpeg`. Resolving it here rather than after
+    // binaries this run needs depends on it -- an in-process kind needs
+    // none, a `numbers`/document kind needs `soffice` rather than `ffmpeg`,
+    // and since ADR-0154 `epub` needs `ebook-convert` and `md`/`rst` need
+    // `pandoc`. `converter_for` is the authority. Resolving it here rather than after
     // `load_keyring` keeps the property the original ordering protected:
     // the binary check still happens before any prompt that could block on
     // a long pipeline. (`InputFileTypeInput` reads no keyring state, so

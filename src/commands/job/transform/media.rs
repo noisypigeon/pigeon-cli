@@ -1,6 +1,15 @@
 //! `ffmpeg`/`ffprobe`-backed png/heic -> jpg transcoding (ADR-0112 Decision
-//! §4), mov/m4v/mp4 -> H.265 mp4 (ADR-0122), audio-only mp4 -> Opus
-//! (ADR-0142), and the jpeg copy-through path that skips both entirely. Where the
+//! §4), mov/m4v/mp4 -> H.265 mp4 (ADR-0122), the six audio kinds -> Opus
+//! (ADR-0142, ADR-0153), and `media::copy_through`, the path that skips
+//! conversion entirely for an input already in its target format -- `jpeg`,
+//! and since ADR-0149/0154 also `csv`, `pdf` and `txt`.
+//!
+//! This module stays `ffmpeg`-only; `sheets`, `soffice` and `documents` hold
+//! the other converters. It does, however, own every wrong-input-kind error
+//! *signature* regardless of which module produces it (see
+//! `NOT_A_WORKBOOK_SIGNATURE` and the three ADR-0154 consts beside it),
+//! because `NON_RETRYABLE_SIGNATURES` is a function-local const that can only
+//! be appended to here. Where the
 //! since-removed `pull_transform::media` defaulted to `-q:v 3` (tuned for
 //! screenshots, not "no quality loss"), this always uses ffmpeg's highest
 //! JPEG quality

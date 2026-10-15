@@ -412,11 +412,46 @@ three output extensions). Each gets a short forward-pointing "Amendment".
   skipping**: the `soffice`, Calibre, pandoc, property-list and in-process legs
   all ran. The Debian package names were checked against the bookworm index
   rather than assumed -- `libreoffice-writer`, `libreoffice-impress`, `calibre`
-  and `pandoc` all resolve. **`pages` and `key` remain unverified on real input**:
-  no iWork file exists on the authoring machine and neither LibreOffice nor
-  Calibre can author one, so their import filters are evidenced only by the
-  registry inspection in Context. Both are accepted on that basis because they
-  share `libetonyek` with `numbers`, which ADR-0149 did verify; if a real file
-  later fails, they are removed and refiled per ADR-0031 rather than patched
-  over.
+  and `pandoc` all resolve. `pages` and `key` were the one gap
+  here and are **now closed against real iWork input** -- see this ADR's
+  2026-10-15 Amendment, which supersedes this sentence.
 
+## Amendment (2026-10-15): the `pages`/`key` gap is closed, and measured
+
+This ADR shipped with exactly one unverified claim -- Verification's Status
+note recorded that `pages` and `key` were evidenced only by the filter-registry
+inspection in Context, because no iWork file existed on the authoring machine
+and neither LibreOffice nor Calibre can author one.
+
+That premise was wrong, not the conclusion: `Keynote.app`, `Pages.app` and
+`Numbers.app` were installed all along. Both bundles ship an `.sdef`, so a real
+`.pages` was authored by **Pages itself** via `osascript` -- a 95,160-byte zip
+whose members are genuine `Index/*.iwa` streams.
+
+Converted through this job's exact `soffice --convert-to pdf` call:
+
+```text
+convert fixture.pages as a Writer  document -> fixture.pdf  using filter : writer_pdf_Export
+convert fixture.key   as a Impress document -> fixture.pdf  using filter : impress_pdf_Export
+```
+
+**The filter selection is the evidence, more than the exit code is.** A `.pages`
+routed to *Writer* and a `.key` to *Impress* can only happen through
+`writer_ApplePages` and `impress_AppleKeynote`, i.e. `libetonyek` genuinely
+parsed them. Contrast §2's private key, which also converted "as a Writer
+document" and exited 0 -- but as **plain text**, which is precisely why that
+guard inspects the input rather than the output. Rendering the Pages-derived
+PDF back to an image confirms the authored body text survives verbatim.
+
+One honest caveat, recorded rather than smoothed over. The `.key` fixture is a
+Keynote **theme document** (`.kth`) shipped inside `Keynote.app` -- the same IWA
+zip container, 21 `.iwa` members, read by the same filter -- not a user-saved
+presentation. Keynote's scripting interface blocks on its theme chooser when
+driven headlessly, and that was not worth defeating for a format whose import
+filter the Pages result already demonstrates.
+
+Deliberately **not** added as tests. A test gated on `Pages.app` could never run
+in CI or in this project's Linux image, and a test that always skips is the
+ADR-0139 mistake ADR-0149 named -- the one this ADR's own tests were careful to
+avoid. The evidence belongs here, where it is read, rather than in a test that
+would silently never execute.
