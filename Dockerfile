@@ -20,6 +20,44 @@ COPY src ./src
 COPY tests ./tests
 RUN cargo build --release
 
+# ADR-0155: `rclone` is the one dependency *every* job needs -- transform
+# pulls and pushes with it, deduplicate lists and copies with it, email
+# import delivers with it, `rclone copy`/`delete` are it, and ADR-0100's
+# report upload uses CopyTo. The image shipped without it until now (#96).
+#
+# A pinned upstream binary rather than Debian's: bookworm has 1.60.1 (2022)
+# and this project is developed against 1.72+. Every flag the code passes
+# predates 1.60, so apt would *work* -- but a 15-version skew between where
+# behaviour is verified and where it runs is the exact shape of defect this
+# project is worst at seeing (ADR-0139, ADR-0140: something resolved to
+# nothing and exited 0).
+#
+# Fetched in a builder stage so curl/unzip never reach the runtime image,
+# and verified against upstream's SHA256SUMS -- a substituted or corrupted
+# archive must fail the build, not silently ship.
+FROM debian:bookworm-slim AS rclone
+# Deliberately NOT named RCLONE_VERSION. rclone configures itself from
+# RCLONE_<FLAG> environment variables, so a build arg by that name is read
+# as `--version` and every rclone invocation in this stage dies with
+# `strconv.ParseBool: parsing "1.75.2"`. Found by the smoke test below,
+# which is the reason it is there.
+ARG PIGEON_RCLONE_VERSION=1.75.2
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl unzip \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /rclone
+RUN set -eux; \
+    archive="rclone-v${PIGEON_RCLONE_VERSION}-linux-arm64.zip"; \
+    base="https://downloads.rclone.org/v${PIGEON_RCLONE_VERSION}"; \
+    curl -fsSL -o "$archive" "$base/$archive"; \
+    curl -fsSL -o SHA256SUMS "$base/SHA256SUMS"; \
+    grep " \*\?$archive\$" SHA256SUMS > expected.sha256; \
+    test -s expected.sha256; \
+    sha256sum -c expected.sha256; \
+    unzip -j "$archive" "*/rclone" -d /rclone/bin; \
+    chmod +x /rclone/bin/rclone; \
+    /rclone/bin/rclone version
+
 FROM debian:bookworm-slim
 
 # The three LibreOffice packages back `job run transform`'s `soffice`
@@ -38,8 +76,8 @@ FROM debian:bookworm-slim
 # it is deployed. The in-process kinds -- `xlsx`/`xls`/`csv`/`tsv`/`pdf`/
 # `txt`/`textclipping` -- need none of them.
 #
-# Still missing and still open: `rclone`, which *every* job requires on
-# PATH -- https://github.com/noisypigeon/pigeon-cli/issues/96.
+# `rclone` itself comes from the pinned builder stage above (ADR-0155), not
+# from apt.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        ffmpeg \
@@ -50,6 +88,7 @@ RUN apt-get update \
 
 RUN useradd --create-home --shell /usr/sbin/nologin pigeon
 COPY --from=builder /build/target/release/pigeon /usr/local/bin/pigeon
+COPY --from=rclone /rclone/bin/rclone /usr/local/bin/rclone
 
 ENV PIGEON_CONFIG_DIR=/data/config
 ENV PIGEON_LOG_DIR=/data/logs

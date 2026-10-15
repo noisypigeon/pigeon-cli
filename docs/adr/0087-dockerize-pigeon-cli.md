@@ -88,3 +88,18 @@ Adds a "Run via Docker" section covering the build/run commands, the `/data` vol
 - CI wiring for the Docker build — this repo has no `.github/workflows/` at all; `mise run docker-build` stays a manual, locally-gated task like every other `mise run` task in this project.
 
 Implementation lands in the same PR as this ADR.
+
+## Amendment (2026-10-15): the image gains `rclone`, from a pinned binary (ADR-0155)
+
+This image shipped without `rclone` -- the one dependency *every* job needs
+since ADR-0132/0133 routed all data operations through it -- so a container
+built from this repo failed on the first rclone invocation of any job.
+ADR-0155 fixes that with a pinned, checksum-verified upstream binary rather
+than Debian's (bookworm has 1.60.1 against upstream's 1.75.2), fetched in a
+dedicated builder stage so `curl`/`unzip` never reach the runtime image.
+
+Two consequences for this ADR's image: the build now reaches
+`downloads.rclone.org` in addition to the Debian and crates.io mirrors, so a
+strict egress policy needs that host; and the single-architecture decision
+recorded here is what lets ADR-0155 hardcode one `linux-arm64` asset name with
+no selection logic.

@@ -455,3 +455,14 @@ in CI or in this project's Linux image, and a test that always skips is the
 ADR-0139 mistake ADR-0149 named -- the one this ADR's own tests were careful to
 avoid. The evidence belongs here, where it is read, rather than in a test that
 would silently never execute.
+
+## Amendment (2026-10-15): §11's deferral of #96 is taken up (ADR-0155)
+
+§11 added four packages to the runtime image and re-noted, without fixing,
+that it still installed no `rclone` -- deliberately declining to widen this
+ADR's scope. ADR-0155 takes that up, installing a pinned, checksum-verified
+upstream binary and closing
+[#96](https://github.com/noisypigeon/pigeon-cli/issues/96).
+
+Nothing in this ADR changes. The note in §11 that the gap is "still open" is
+now historical.
