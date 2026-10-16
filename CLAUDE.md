@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`pigeon` is a Rust CLI (clap + Mise) that authenticates, imports, transcodes, and deduplicates personal data into S3-compatible remotes, backed by a unified `keyring` for identities and buckets. This repo split out of a former personal monorepo (`noisypigeon/noisypigeon`) via ADR-0084. This project's Terraform infrastructure now lives in [`noisypigeon/willowgraysen.com`](https://github.com/noisypigeon/willowgraysen.com) under `terraform/pigeon-cli/` (RUN-0001), and the blog in [`noisypigeon/noisypigeon.com`](https://github.com/noisypigeon/noisypigeon.com). The monorepo's own infrastructure and blog ADRs are now `DEV-` records in `noisypigeon/pigeon.dev`'s `adr/`; this repo's pre-split ADRs were deleted from the monorepo (noisypigeon/noisypigeon#102) and survive only in its git history.
+`pigeon` is a Rust CLI (clap + Mise) that authenticates, imports, transcodes, and deduplicates personal data into S3-compatible remotes, backed by a unified `keyring` for identities and buckets. This project's Terraform infrastructure lives in [`noisypigeon/willowgraysen`](https://github.com/noisypigeon/willowgraysen): its `scaleway/{iam-application,cockpit-observability,iam-api-key,iam-policy,object-bucket,pigeon-cluster}` leaves named `pigeon-cli*`, and `grafana/dashboard/pigeon-cli`. The blog is in [`noisypigeon/noisypigeon.com`](https://github.com/noisypigeon/noisypigeon.com). The family's infrastructure ADRs are `DEV-` records in [`noisypigeon/garden`](https://github.com/noisypigeon/garden)'s `adr/`.
 
 ## ADRs govern this project
 

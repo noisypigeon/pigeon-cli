@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Docs: `CLAUDE.md` names the renamed repos, [`noisypigeon/willowgraysen`](https://github.com/noisypigeon/willowgraysen) for this project's Terraform leaves and [`noisypigeon/garden`](https://github.com/noisypigeon/garden) for the family's `DEV-` records, in place of `noisypigeon/willowgraysen.com`, `noisypigeon/pigeon.dev` and a retired `terraform/pigeon-cli/` path ([#122](https://github.com/noisypigeon/pigeon-cli/pull/122)).
+
 ## [0.4.42] - 2026-10-15
 
 - Docs: `CLAUDE.md`'s opening paragraph pointed at the wrong places. It said `noisypigeon/noisypigeon` "still holds this project's terraform infrastructure and blog", and that its `docs/archived/adr/` held this repo's pre-split ADRs. Both were stale. The job, report and cold buckets, the cluster, Cockpit, Grafana and the IAM application now live in [`noisypigeon/willowgraysen.com`](https://github.com/noisypigeon/willowgraysen.com) under `terraform/pigeon-cli/` (its RUN-0001). The blog is in `noisypigeon/noisypigeon.com`. The monorepo's infrastructure and blog ADRs are `DEV-` records in `noisypigeon/pigeon.dev`. The pre-split ADRs were deleted in noisypigeon/noisypigeon#102 and survive only in that repo's history ([#120](https://github.com/noisypigeon/pigeon-cli/pull/120)). This bullet arrives one PR late: #120 skipped step 5 of the dev cycle, the rule [#116](https://github.com/noisypigeon/pigeon-cli/pull/116) wrote for exactly this case. `release.sh` failed that push's release as designed, and this PR is what lets the release go out.
