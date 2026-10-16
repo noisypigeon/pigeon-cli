@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Docs: `CLAUDE.md` links the blog's repo by its new name, [`noisypigeon/blog`](https://github.com/noisypigeon/blog), in place of `noisypigeon/noisypigeon.com` ([#123](https://github.com/noisypigeon/pigeon-cli/pull/123)).
+
 ## [0.4.43] - 2026-10-16
 
 - Docs: `CLAUDE.md` names the renamed repos, [`noisypigeon/willowgraysen`](https://github.com/noisypigeon/willowgraysen) for this project's Terraform leaves and [`noisypigeon/garden`](https://github.com/noisypigeon/garden) for the family's `DEV-` records, in place of `noisypigeon/willowgraysen.com`, `noisypigeon/pigeon.dev` and a retired `terraform/pigeon-cli/` path ([#122](https://github.com/noisypigeon/pigeon-cli/pull/122)).
