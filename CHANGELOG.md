@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.45] - 2026-10-17
+
 - ADR-0157: `job run transform --input-file-type md` will skip email-shaped Markdown (renderings of `.eml` messages), detected from file content, as a counted non-failure skip ([#124](https://github.com/noisypigeon/pigeon-cli/pull/124)).
 
 ## [0.4.44] - 2026-10-16
