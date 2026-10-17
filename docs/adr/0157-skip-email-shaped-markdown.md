@@ -109,7 +109,7 @@ leading `---` line through the next `---` line.
 | Family | Matches when |
 |---|---|
 | **Frontmatter headers** | frontmatter has a `sender_domain:` key, or at least two of `from:`/`to:`/`cc:`/`subject:` |
-| **Provenance** | frontmatter has `has_attachments:`, `uid:`, `also-in:`, or `source:` with a value ending `.eml`, or a tag starting `mailbox/` or `identity/`; **or** the body has an `Original File` table row whose value names a `.eml` |
+| **Provenance** | frontmatter has `has_attachments:`, `uid:`, `also-in:`, or `source:` with a value ending `.eml`, or a tag starting `mailbox/` or `identity/`; **or** a body line names both `Original File` and a `.eml` (the table row, or a bold `**Original File:**` line) |
 | **Header table** | within the first 100 lines after the frontmatter, at least three of From/To/Subject/Date appear as a `\| **X** \|` table row or a `**X:**` line |
 | **Raw RFC 5322 headers** | at least three *distinct* header names from `Message-ID`, `Received`, `Return-Path`, `MIME-Version`, `DKIM-Signature`, `Delivered-To`, `ARC-Seal`, `X-Gmail-Labels` each start some line (case-insensitive) |
 

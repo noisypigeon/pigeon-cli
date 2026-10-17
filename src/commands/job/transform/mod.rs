@@ -38,6 +38,7 @@
 
 mod destination;
 mod documents;
+mod email_shape;
 mod format;
 mod manifest;
 mod media;
