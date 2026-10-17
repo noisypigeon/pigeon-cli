@@ -231,7 +231,12 @@ the user for the terminal output instead.
   `failed_transcode`, `failed_place`, `failed_push`, plus
   `skipped_already_done`, `skipped_apple_double`, and -- since ADR-0151 --
   `skipped_lock_file` for Excel `~$` stubs, which ADR-0149 had folded into
-  the AppleDouble count on one path and dropped entirely on the other).
+  the AppleDouble count on one path and dropped entirely on the other,
+  and -- since ADR-0157 -- `skipped_email_shaped` for `md` files recognized
+  as rendered `.eml` messages, which were pulled but deliberately not
+  converted; it is also on the 60 s `"transform: progress"` line, and each
+  such file is a `skipped_email_shaped` row in `transform-report.txt`
+  naming the signal families that matched).
   A `"rclone's pull error count disagrees with the number of undelivered
   files"` WARN means rclone's own aggregate error tally and the job's
   per-file reconciliation diverged -- worth reporting, not necessarily a

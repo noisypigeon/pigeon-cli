@@ -67,7 +67,7 @@ use tracing::Instrument;
 
 use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
-use super::{destination, documents, media, placement, push, sheets};
+use super::{destination, documents, email_shape, media, placement, push, sheets};
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::Copy;
 
@@ -333,6 +333,9 @@ pub(crate) enum Outcome {
     Transcoded,
     CopiedThrough,
     Failed,
+    /// A Markdown rendering of an `.eml` message (ADR-0157). Deliberately
+    /// not a failure: nothing is pushed, and that is the intended result.
+    SkippedEmailShaped,
 }
 
 impl Outcome {
@@ -341,6 +344,7 @@ impl Outcome {
             Outcome::Transcoded => "transcoded",
             Outcome::CopiedThrough => "copied_through",
             Outcome::Failed => "failed",
+            Outcome::SkippedEmailShaped => "skipped_email_shaped",
         }
     }
 }
@@ -377,7 +381,18 @@ impl FailureStage {
 ///
 /// A `Vec` since ADR-0149: a workbook yields one output per non-empty
 /// sheet. Every other input kind yields a one-element vector.
-type ProcessResult = Result<Vec<PathBuf>, (FailureStage, String)>;
+type ProcessResult = Result<Processed, (FailureStage, String)>;
+
+/// What a file's pipeline produced when it did not fail.
+///
+/// A skip is its own variant (ADR-0157) rather than an empty `Pushed`, so
+/// "done, nothing to push" can never be confused with a converter that
+/// silently produced no output.
+#[derive(Debug)]
+enum Processed {
+    Pushed(Vec<PathBuf>),
+    SkippedEmailShaped(email_shape::EmailSignals),
+}
 
 /// Per-stage failure tally (ADR-0130), reusing the field names
 /// `metrics::record_phase`'s doc comment already expects a job's breakdown
@@ -448,6 +463,10 @@ pub(crate) struct TransformSummary {
     /// tally, so no artifact could say which kind of stub a run had
     /// actually skipped.
     pub skipped_lock_file: u64,
+    /// Markdown renderings of `.eml` messages, pulled but not converted
+    /// (ADR-0157). Unlike the two counts above these were downloaded,
+    /// since only their content identifies them.
+    pub skipped_email_shaped: u64,
     /// `rclone`'s own aggregate transfer-error count for the pull phase,
     /// retained as a cross-check against the reconciled per-file `Pull`
     /// failures rather than being dropped on the floor (ADR-0130).
@@ -702,6 +721,28 @@ async fn process_one(
     {
         existing
     } else {
+        // ADR-0157: a Markdown rendering of an `.eml` message is left at
+        // the source instead of converted. Checked here, after the pull,
+        // because nothing in its key identifies it. A read error is not a
+        // verdict: the file goes on to `pandoc`, which reports it properly.
+        if input_file_type == InputFileType::Md
+            && let Some(signals) = email_shape::read_window(&pending_file.absolute_path)
+                .ok()
+                .and_then(|text| email_shape::classify(&text))
+        {
+            crate::observability::metrics::record_phase_count(
+                "transform",
+                "transcode",
+                Outcome::SkippedEmailShaped.as_str(),
+                1,
+                None,
+            );
+            // Undamaged and still at `--source`, so the local copy has no
+            // value -- ADR-0143's reasoning for a wrong-input-kind failure.
+            remove_local_copy(&pending_file.absolute_path);
+            return Ok(Processed::SkippedEmailShaped(signals));
+        }
+
         let scratch = ScratchDir::create(scratch_dir, &group)
             .map_err(|err| (FailureStage::Transcode, err))?;
 
@@ -858,7 +899,7 @@ async fn process_one(
     // paths.
     remove_local_copy(&pending_file.absolute_path);
 
-    Ok(final_paths)
+    Ok(Processed::Pushed(final_paths))
 }
 
 /// Converts one input into its output(s) inside `scratch`, retrying a
@@ -1765,6 +1806,7 @@ pub(crate) async fn run_transform_job(
     let mut copied_rx_closed = false;
     let mut pull_result = None;
     let mut failures = FailureBreakdown::default();
+    let mut skipped_email_shaped: u64 = 0;
 
     // Circuit breaker (ADR-0121): if the first `CIRCUIT_BREAKER_SAMPLE_SIZE`
     // per-file completions (in completion order, not dispatch order -- see
@@ -1853,6 +1895,7 @@ pub(crate) async fn run_transform_job(
                     dispatched = dispatched.len(),
                     completed = outcomes.len(),
                     pushed,
+                    skipped_email_shaped,
                     failed_transcode = failures.transcode,
                     failed_place = failures.place,
                     failed_push = failures.push,
@@ -1870,7 +1913,15 @@ pub(crate) async fn run_transform_job(
                 let Some(joined) = joined else { continue; };
                 let (relative_path, result) = joined.expect("transform pipeline task panicked");
 
-                if !circuit_breaker_tripped && circuit_breaker_samples < CIRCUIT_BREAKER_SAMPLE_SIZE {
+                // ADR-0157: an email-shaped skip says something about the
+                // input, not the converter, so it takes no breaker sample --
+                // a mostly-email bucket would otherwise fill the window with
+                // non-evidence.
+                let is_skip = matches!(result, Ok(Processed::SkippedEmailShaped(_)));
+                if !is_skip
+                    && !circuit_breaker_tripped
+                    && circuit_breaker_samples < CIRCUIT_BREAKER_SAMPLE_SIZE
+                {
                     circuit_breaker_samples += 1;
                     // ADR-0130: require the failure to have actually come from
                     // the transcode stage, not merely to carry a string that
@@ -1903,7 +1954,17 @@ pub(crate) async fn run_transform_job(
                 }
 
                 match result {
-                    Ok(final_paths) => {
+                    Ok(Processed::SkippedEmailShaped(signals)) => {
+                        skipped_email_shaped += 1;
+                        outcomes.push(FileOutcome {
+                            relative_path,
+                            destination_filenames: Vec::new(),
+                            outcome: Outcome::SkippedEmailShaped,
+                            stage: None,
+                            detail: format!("email-shaped: {}", signals.describe()),
+                        });
+                    }
+                    Ok(Processed::Pushed(final_paths)) => {
                         // Counts output *objects* (ADR-0149): a workbook
                         // pushing three sheets is three pushes.
                         pushed += final_paths.len() as u64;
@@ -2181,6 +2242,7 @@ pub(crate) async fn run_transform_job(
         skipped_already_done = selection_skipped_already_done,
         skipped_apple_double,
         skipped_lock_file,
+        skipped_email_shaped,
         "transform: run complete"
     );
 
@@ -2193,6 +2255,7 @@ pub(crate) async fn run_transform_job(
         skipped_already_done: selection_skipped_already_done,
         skipped_apple_double,
         skipped_lock_file,
+        skipped_email_shaped,
         pull_errors: pull_summary.errors,
         case_collision_groups,
     })
@@ -2222,6 +2285,9 @@ pub(crate) fn write_report(
             Outcome::Transcoded => transcoded += 1,
             Outcome::CopiedThrough => copied_through += 1,
             Outcome::Failed => failed += 1,
+            // Tallied from `summary.skipped_email_shaped` on the `skipped:`
+            // line below, beside the other skips.
+            Outcome::SkippedEmailShaped => {}
         }
         let _ = writeln!(
             body,
@@ -2252,8 +2318,11 @@ pub(crate) fn write_report(
     let _ = writeln!(
         body,
         "skipped: {} already done at the destination, {} AppleDouble sidecar(s), {} Excel lock \
-         stub(s).",
-        summary.skipped_already_done, summary.skipped_apple_double, summary.skipped_lock_file
+         stub(s), {} email-shaped Markdown file(s).",
+        summary.skipped_already_done,
+        summary.skipped_apple_double,
+        summary.skipped_lock_file,
+        summary.skipped_email_shaped
     );
     let _ = writeln!(
         body,
@@ -3537,8 +3606,15 @@ mod tests {
                     stage: Some(FailureStage::Transcode),
                     detail: "ffmpeg: boom".to_string(),
                 },
+                FileOutcome {
+                    relative_path: "mail.md".to_string(),
+                    destination_filenames: Vec::new(),
+                    outcome: Outcome::SkippedEmailShaped,
+                    stage: None,
+                    detail: "email-shaped: provenance, raw-headers".to_string(),
+                },
             ],
-            pulled: 2,
+            pulled: 3,
             pushed: 1,
             failed: true,
             failures: FailureBreakdown {
@@ -3548,6 +3624,7 @@ mod tests {
             skipped_already_done: 3,
             skipped_apple_double: 2,
             skipped_lock_file: 1,
+            skipped_email_shaped: 1,
             pull_errors: 0,
             case_collision_groups: Vec::new(),
         };
@@ -3566,9 +3643,15 @@ mod tests {
         assert!(contents.contains("failures by stage: 0 pull, 1 transcode, 0 place, 0 push."));
         assert!(contents.contains(
             "skipped: 3 already done at the destination, 2 AppleDouble sidecar(s), 1 Excel lock \
-             stub(s)."
+             stub(s), 1 email-shaped Markdown file(s)."
         ));
-        assert!(contents.contains("pull: 2 transferred, 0 rclone error(s) reported."));
+        // ADR-0157: a skip is its own row, naming why, and is not a failure.
+        assert!(
+            contents.contains(
+                "mail.md\tskipped_email_shaped\t\t\temail-shaped: provenance, raw-headers"
+            )
+        );
+        assert!(contents.contains("pull: 3 transferred, 0 rclone error(s) reported."));
         assert_eq!(path.file_name().unwrap(), "transform-report.txt");
         // No collisions, no listing.
         assert!(!contents.contains("case-colliding"));
@@ -3588,6 +3671,7 @@ mod tests {
             skipped_already_done: 0,
             skipped_apple_double: 0,
             skipped_lock_file: 0,
+            skipped_email_shaped: 0,
             pull_errors: 0,
             case_collision_groups: vec![
                 vec!["A.md".to_string(), "a.md".to_string()],
@@ -4722,6 +4806,89 @@ c;d
         assert!(landed.contains("bold"), "{landed}");
         assert!(!landed.contains("example.com"), "{landed}");
         assert!(!landed.contains("**"), "{landed}");
+    }
+
+    /// ADR-0157: an email-shaped file in an `md` run is skipped -- not
+    /// pushed, not a failure, its local copy gone -- while an ordinary note
+    /// in the same batch still converts.
+    #[tokio::test]
+    async fn a_markdown_run_skips_email_shaped_files_and_converts_the_rest() {
+        if documents::check_pandoc_available().await.is_err() {
+            eprintln!("skipping: pandoc not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        std::fs::write(source.join("mail.md"), email_shape::CONVERTER_SAMPLE).unwrap();
+        std::fs::write(source.join("note.md"), "# Groceries\n\n- eggs\n").unwrap();
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Md);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.skipped_email_shaped, 1);
+        assert_eq!(summary.pushed, 1);
+        let outcome_of = |key: &str| {
+            summary
+                .outcomes
+                .iter()
+                .find(|outcome| outcome.relative_path == key)
+                .unwrap_or_else(|| panic!("no outcome for {key}: {:?}", summary.outcomes))
+        };
+        let mail = outcome_of("mail.md");
+        assert_eq!(mail.outcome, Outcome::SkippedEmailShaped);
+        assert_eq!(mail.stage, None);
+        assert!(mail.destination_filenames.is_empty());
+        assert!(mail.detail.starts_with("email-shaped: "), "{}", mail.detail);
+        assert_eq!(outcome_of("note.md").outcome, Outcome::Transcoded);
+
+        let mail_name =
+            placement::compute_destination_name(&plan.source_path, "mail.md", InputFileType::Md);
+        assert!(!destination.join(&mail_name).exists());
+        assert!(
+            destination
+                .join(placement::compute_destination_name(
+                    &plan.source_path,
+                    "note.md",
+                    InputFileType::Md
+                ))
+                .exists()
+        );
+        // The skipped file's local copy is gone along with the pushed one's.
+        assert_local_trees_are_clean(&local_output);
+    }
+
+    /// The skip needs no converter at all, so a batch of nothing but
+    /// email-shaped files completes cleanly even where `pandoc` is absent.
+    #[tokio::test]
+    async fn an_all_email_markdown_run_pushes_nothing_and_does_not_fail() {
+        let dir = tempfile::tempdir().unwrap();
+        let local_output = dir.path().join("work");
+        let source = dir.path().join("pull-source");
+        let destination = dir.path().join("destination");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&destination).unwrap();
+        for index in 0..3 {
+            std::fs::write(
+                source.join(format!("mail-{index}.md")),
+                email_shape::CONVERTER_SAMPLE,
+            )
+            .unwrap();
+        }
+
+        let plan = spreadsheet_plan(&source, &destination, &local_output, InputFileType::Md);
+        let summary = run_transform_job(&plan, 2, 2).await.unwrap();
+
+        assert!(!summary.failed, "{:?}", summary.outcomes);
+        assert_eq!(summary.skipped_email_shaped, 3);
+        assert_eq!(summary.pushed, 0);
+        assert_eq!(summary.failures.total(), 0);
+        assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
+        assert_local_trees_are_clean(&local_output);
     }
 
     #[tokio::test]
