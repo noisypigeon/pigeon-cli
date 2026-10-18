@@ -466,14 +466,24 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Mp3
         | InputFileType::Aac
         | InputFileType::Wav
-        | InputFileType::Opus => Converter::Ffmpeg,
+        | InputFileType::Opus
+        // ADR-0159: `icns` too -- its image is extracted in-process, but
+        // ffmpeg still does the conversion.
+        | InputFileType::Avif
+        | InputFileType::Tif
+        | InputFileType::Tiff
+        | InputFileType::Webp
+        | InputFileType::Ico
+        | InputFileType::Icns => Converter::Ffmpeg,
         InputFileType::Numbers
         | InputFileType::Doc
         | InputFileType::Docx
         | InputFileType::Pages
         | InputFileType::Rtf
         | InputFileType::Pptx
-        | InputFileType::Key => Converter::Soffice,
+        | InputFileType::Key
+        | InputFileType::Ai
+        | InputFileType::Emz => Converter::Soffice,
         InputFileType::Epub => Converter::Calibre,
         InputFileType::Md | InputFileType::Rst => Converter::Pandoc,
         // Read and written in-process: `sheets` via `calamine`/`csv`,
@@ -485,7 +495,11 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Tsv
         | InputFileType::Pdf
         | InputFileType::Txt
-        | InputFileType::Textclipping => Converter::None,
+        | InputFileType::Textclipping
+        | InputFileType::Svg
+        // ADR-0159: zip, plist, LZO and PNG all in-process.
+        | InputFileType::Procreate
+        | InputFileType::Procreate2 => Converter::None,
     }
 }
 

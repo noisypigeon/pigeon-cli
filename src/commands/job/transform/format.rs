@@ -121,6 +121,46 @@ pub(crate) enum InputFileType {
     /// consulted by three unrelated concerns and this kind is
     /// single-output, so it would be right for only one of them.
     Tsv,
+    /// AV1 Image File Format, decoded by ffmpeg's `libdav1d` (ADR-0159).
+    /// Tile-grid AVIFs (stored as a stream group) are reassembled by
+    /// ffmpeg at full size, which the pixel-area guard checks.
+    Avif,
+    /// TIFF under its three-letter spelling. A separate kind from `Tiff`
+    /// only because the bucket keeps the two spellings under two prefixes,
+    /// and ADR-0138 infers the prefix from `canonical_extension()`
+    /// (ADR-0159). Only the first page of a multi-page TIFF is kept.
+    Tif,
+    /// TIFF under its four-letter spelling (ADR-0159).
+    Tiff,
+    /// WebP. An animated one keeps only its first frame, and a `.webp`
+    /// whose content is really JPEG is re-encoded rather than copied
+    /// through (ADR-0159).
+    Webp,
+    /// A Windows icon, output as **PNG** so its transparency survives
+    /// (ADR-0159). ffmpeg's default stream selection takes the largest of
+    /// the images it holds.
+    Ico,
+    /// A macOS icon, output as PNG. ffmpeg cannot open the container, so
+    /// `icns::largest_entry` extracts the biggest embedded PNG or JPEG 2000
+    /// image first (ADR-0159).
+    Icns,
+    /// A Procreate document, output as a **full-resolution** PNG of the
+    /// composite Procreate maintains itself (ADR-0159, `procreate.rs`).
+    Procreate,
+    /// The same format as `Procreate`, under the extension macOS's
+    /// " 2" duplicate naming gave some copies: `name.procreate 2`. A kind
+    /// of its own, like `Mp4Audio`, because its files live under their own
+    /// `procreate 2/` prefix (ADR-0159).
+    Procreate2,
+    /// An Adobe Illustrator file. PDF-compatible ones (every modern one)
+    /// are read by `soffice`'s PDF import and exported as SVG (ADR-0159).
+    Ai,
+    /// A gzip-compressed Windows Enhanced Metafile, exported as SVG by
+    /// `soffice`. The drawing keeps soffice's page around it rather than
+    /// being cropped to its own bounds (ADR-0159).
+    Emz,
+    /// Already SVG: copied through byte-for-byte (ADR-0159).
+    Svg,
 }
 
 impl InputFileType {
@@ -170,6 +210,19 @@ impl InputFileType {
             InputFileType::Rst => &["rst"],
             InputFileType::Textclipping => &["textclipping"],
             InputFileType::Tsv => &["tsv"],
+            InputFileType::Avif => &["avif"],
+            InputFileType::Tif => &["tif"],
+            InputFileType::Tiff => &["tiff"],
+            InputFileType::Webp => &["webp"],
+            InputFileType::Ico => &["ico"],
+            InputFileType::Icns => &["icns"],
+            InputFileType::Procreate => &["procreate"],
+            // The space is real: it is the extension `Path::extension`
+            // reports for `name.procreate 2`, and the bucket prefix.
+            InputFileType::Procreate2 => &["procreate 2"],
+            InputFileType::Ai => &["ai"],
+            InputFileType::Emz => &["emz"],
+            InputFileType::Svg => &["svg"],
         }
     }
 
@@ -198,6 +251,8 @@ impl InputFileType {
     pub(crate) fn name(self) -> &'static str {
         match self {
             InputFileType::Mp4Audio => "mp4-audio",
+            // A spelling with no space, so it can be typed unquoted.
+            InputFileType::Procreate2 => "procreate-2",
             InputFileType::Png
             | InputFileType::Jpeg
             | InputFileType::Heic
@@ -225,7 +280,17 @@ impl InputFileType {
             | InputFileType::Md
             | InputFileType::Rst
             | InputFileType::Textclipping
-            | InputFileType::Tsv => self.canonical_extension(),
+            | InputFileType::Tsv
+            | InputFileType::Avif
+            | InputFileType::Tif
+            | InputFileType::Tiff
+            | InputFileType::Webp
+            | InputFileType::Ico
+            | InputFileType::Icns
+            | InputFileType::Procreate
+            | InputFileType::Ai
+            | InputFileType::Emz
+            | InputFileType::Svg => self.canonical_extension(),
         }
     }
 
@@ -271,12 +336,25 @@ impl InputFileType {
             "rst" => Ok(InputFileType::Rst),
             "textclipping" => Ok(InputFileType::Textclipping),
             "tsv" => Ok(InputFileType::Tsv),
+            "avif" => Ok(InputFileType::Avif),
+            "tif" => Ok(InputFileType::Tif),
+            "tiff" => Ok(InputFileType::Tiff),
+            "webp" => Ok(InputFileType::Webp),
+            "ico" => Ok(InputFileType::Ico),
+            "icns" => Ok(InputFileType::Icns),
+            "procreate" => Ok(InputFileType::Procreate),
+            "procreate-2" | "procreate 2" => Ok(InputFileType::Procreate2),
+            "ai" => Ok(InputFileType::Ai),
+            "emz" => Ok(InputFileType::Emz),
+            "svg" => Ok(InputFileType::Svg),
             // Grouped by output family rather than listed flat: at 29
             // spellings a single run-on list is unreadable, and the
             // grouping is the thing a reader actually needs -- which
             // extension they will find their output under (ADR-0154).
             other => Err(format!(
-                "unknown --input-file-type '{other}' (expected an image kind png, jpeg or heic; \
+                "unknown --input-file-type '{other}' (expected an image kind png, jpeg, heic, \
+                 avif, tif, tiff or webp; an icon or artwork kind ico, icns, procreate or \
+                 procreate-2; a vector kind ai, emz or svg; \
                  a video kind mov, m4v or mp4; an audio kind mp4-audio, m4a, mp3, aac, wav or \
                  opus; a spreadsheet kind numbers, xlsx, xls or csv; a document kind doc, docx, \
                  pages, rtf, pdf, epub, pptx or key; a text kind txt, md, markdown, mkd, rst or \
@@ -344,6 +422,18 @@ impl InputFileType {
             | InputFileType::Md
             | InputFileType::Rst
             | InputFileType::Textclipping => "txt",
+            // ADR-0159: still raster images become JPEG, flattened onto
+            // white where transparent.
+            InputFileType::Avif
+            | InputFileType::Tif
+            | InputFileType::Tiff
+            | InputFileType::Webp => "jpg",
+            // Kinds that routinely carry transparency keep it, as PNG.
+            InputFileType::Ico
+            | InputFileType::Icns
+            | InputFileType::Procreate
+            | InputFileType::Procreate2 => "png",
+            InputFileType::Ai | InputFileType::Emz | InputFileType::Svg => "svg",
         }
     }
 
@@ -1183,6 +1273,55 @@ mod tests {
         }
     }
 
+    /// ADR-0159's eleven kinds: each spelling parses, round-trips through
+    /// its display name, and lands in the right output family.
+    #[test]
+    fn adr_0159_kinds_parse_and_map_to_their_outputs() {
+        for (spelling, kind, prefix, output) in [
+            ("avif", InputFileType::Avif, "avif", "jpg"),
+            ("tif", InputFileType::Tif, "tif", "jpg"),
+            ("tiff", InputFileType::Tiff, "tiff", "jpg"),
+            ("WEBP", InputFileType::Webp, "webp", "jpg"),
+            ("ico", InputFileType::Ico, "ico", "png"),
+            ("icns", InputFileType::Icns, "icns", "png"),
+            ("procreate", InputFileType::Procreate, "procreate", "png"),
+            (
+                "procreate-2",
+                InputFileType::Procreate2,
+                "procreate 2",
+                "png",
+            ),
+            (
+                "Procreate 2",
+                InputFileType::Procreate2,
+                "procreate 2",
+                "png",
+            ),
+            ("ai", InputFileType::Ai, "ai", "svg"),
+            ("emz", InputFileType::Emz, "emz", "svg"),
+            ("svg", InputFileType::Svg, "svg", "svg"),
+        ] {
+            assert_eq!(InputFileType::parse(spelling), Ok(kind), "{spelling}");
+            assert_eq!(InputFileType::parse(kind.name()), Ok(kind), "{kind}");
+            assert_eq!(kind.canonical_extension(), prefix, "{kind}");
+            assert_eq!(kind.output_extension(), output, "{kind}");
+            assert!(!kind.is_video() && !kind.is_audio() && !kind.is_spreadsheet());
+        }
+    }
+
+    /// `procreate 2` is a real extension with a space in it -- what
+    /// `Path::extension` reports for macOS's duplicate naming -- so it must
+    /// match as one, while displaying without the space.
+    #[test]
+    fn procreate_2_matches_its_spaced_extension_and_displays_without_it() {
+        let ext = std::path::Path::new("Art.procreate 2").extension().unwrap();
+        assert!(InputFileType::Procreate2.matches_extension(ext.to_str().unwrap()));
+        assert!(!InputFileType::Procreate2.matches_extension("procreate"));
+        assert!(!InputFileType::Procreate.matches_extension("procreate 2"));
+        assert_eq!(InputFileType::Procreate2.name(), "procreate-2");
+        assert_eq!(InputFileType::Procreate2.to_string(), "procreate-2");
+    }
+
     /// The error text is grouped by output family rather than listed flat
     /// (ADR-0154): at 29 spellings a run-on list is unreadable, and the
     /// grouping is what a reader actually needs.
@@ -1190,6 +1329,8 @@ mod tests {
     fn the_parse_error_names_every_family() {
         let err = InputFileType::parse("nonsense").expect_err("rejected");
         for fragment in [
+            "icon or artwork kind",
+            "vector kind",
             "image kind",
             "video kind",
             "audio kind",

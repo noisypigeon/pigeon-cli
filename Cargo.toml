@@ -49,6 +49,9 @@ metrics-exporter-prometheus = "0.18.3"
 # only needs `Value` for; `quick-xml` comes along but was already in the
 # lockfile transitively via `calamine`.
 plist = { version = "1.7", default-features = false }
+# ADR-0159: decodes a Procreate document's QuickLook thumbnail (to verify the
+# composite against it) and encodes the full-resolution composite as PNG.
+png = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"

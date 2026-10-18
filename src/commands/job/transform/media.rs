@@ -147,20 +147,51 @@ async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
 /// abort, amending ADR-0112 Decision §7); there is no separate
 /// HEIC-capability preflight probe.
 pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), String> {
+    transcode_still(input, output, JPG_ARGS).await
+}
+
+/// The encoder half of `transcode_to_jpg`, shared with ADR-0159's two new
+/// still-image paths so all three keep identical quality settings.
+const JPG_ARGS: &[&str] = &["-q:v", "1", "-pix_fmt", "yuvj444p", "-f", "mjpeg"];
+
+/// Composites any transparency onto opaque white before encoding
+/// (ADR-0159). JPEG has no alpha, and without this ffmpeg simply drops the
+/// channel, so a transparent icon's corners come out black -- measured on
+/// a real `.icns`. An opaque input passes through unchanged, and the
+/// canvas is the input's own size, so the pixel-area guard still holds.
+const FLATTEN_ONTO_WHITE: &str = "format=rgba,split[fg][bg0];[bg0]drawbox=t=fill:c=white@1,\
+                                  format=rgb24[bg];[bg][fg]overlay=format=auto:shortest=1";
+
+/// `transcode_to_jpg` for the ADR-0159 raster kinds (avif, tif, tiff,
+/// webp): identical, except that transparency is flattened onto white.
+///
+/// Deliberately **not** applied to `png`/`heic`: their already-pushed
+/// outputs were encoded the old way, and a rerun never rewrites an
+/// existing destination name, so changing it would leave one bucket
+/// holding both renderings.
+pub(crate) async fn transcode_to_jpg_flattened(input: &Path, output: &Path) -> Result<(), String> {
+    let mut args = vec!["-filter_complex", FLATTEN_ONTO_WHITE];
+    args.extend_from_slice(JPG_ARGS);
+    transcode_still(input, output, &args).await
+}
+
+/// Transcodes a still image to PNG, keeping its alpha channel (ADR-0159),
+/// for the icon kinds. Lossless, so the only thing that can go wrong is
+/// the wrong frame or size, which the pixel-area guard catches.
+pub(crate) async fn transcode_to_png(input: &Path, output: &Path) -> Result<(), String> {
+    transcode_still(input, output, &["-c:v", "png", "-f", "image2"]).await
+}
+
+/// One frame of `input` to `output` with `encode_args`, then the
+/// full-size guard. `-f` must be among `encode_args`: the scratch path ends
+/// in `.scratch`, which ffmpeg cannot infer a muxer from (ADR-0115).
+async fn transcode_still(input: &Path, output: &Path, encode_args: &[&str]) -> Result<(), String> {
     let result = tokio::process::Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error"])
         .arg("-i")
         .arg(input)
-        .args([
-            "-frames:v",
-            "1",
-            "-q:v",
-            "1",
-            "-pix_fmt",
-            "yuvj444p",
-            "-f",
-            "mjpeg",
-        ])
+        .args(["-frames:v", "1"])
+        .args(encode_args)
         .arg(output)
         .output()
         .await
@@ -328,6 +359,21 @@ pub(crate) const NOT_A_WORKBOOK_SIGNATURE: &str = "is not a readable spreadsheet
 /// `NOT_A_WORKBOOK_SIGNATURE` is.
 pub(crate) const NOT_A_DOCUMENT_SIGNATURE: &str = "is not a readable document";
 
+/// `icns::largest_entry`'s rejection of a file that is not an icon
+/// container it can take an image from (ADR-0159).
+pub(crate) const NOT_AN_ICNS_SIGNATURE: &str = "is not a readable icns icon";
+
+/// `procreate`'s rejection of a file that is not a Procreate document it
+/// can read a composite from (ADR-0159).
+pub(crate) const NOT_A_PROCREATE_SIGNATURE: &str = "is not a readable Procreate document";
+
+/// `procreate`'s refusal of a composite that does not match the document's
+/// own thumbnail (ADR-0159). Non-retryable -- the same file decodes the
+/// same way every time -- but **not** wrong-input-kind: the file is a real
+/// Procreate document whose export this job could not verify, so its local
+/// copy is kept for diagnosis.
+pub(crate) const PROCREATE_UNVERIFIED_SIGNATURE: &str = "does not match its own thumbnail";
+
 /// `soffice` dying by signal rather than exiting (ADR-0158).
 ///
 /// Non-retryable, so a systemic crash still trips the circuit breaker, but
@@ -366,6 +412,8 @@ pub(crate) fn is_wrong_input_kind_error(err: &str) -> bool {
         NOT_A_DOCUMENT_SIGNATURE,
         NOT_A_KEYNOTE_SIGNATURE,
         NOT_A_TEXTCLIPPING_SIGNATURE,
+        NOT_AN_ICNS_SIGNATURE,
+        NOT_A_PROCREATE_SIGNATURE,
     ]
     .iter()
     .any(|signature| err.contains(signature))
@@ -706,6 +754,9 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         NOT_A_KEYNOTE_SIGNATURE,
         NOT_A_TEXTCLIPPING_SIGNATURE,
         CONVERTER_CRASHED_SIGNATURE,
+        NOT_AN_ICNS_SIGNATURE,
+        NOT_A_PROCREATE_SIGNATURE,
+        PROCREATE_UNVERIFIED_SIGNATURE,
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -797,6 +848,155 @@ mod tests {
             probe_dimensions(&output).await
         );
         assert_eq!(probe_dimensions(&output).await, Some((64, 48)));
+    }
+
+    /// A fully transparent `size` image via `lavfi`, in whatever format
+    /// `format` names (ADR-0159's flatten and icon tests).
+    async fn generate_transparent(path: &Path, format: &str) -> Result<(), String> {
+        let result = tokio::process::Command::new("ffmpeg")
+            .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+            .arg("color=c=red@0.0:s=16x16,format=rgba")
+            .args(["-frames:v", "1", "-f", format])
+            .arg(path)
+            .output()
+            .await
+            .map_err(|err| format!("failed to run ffmpeg: {err}"))?;
+        if !result.status.success() {
+            return Err(String::from_utf8_lossy(&result.stderr).to_string());
+        }
+        Ok(())
+    }
+
+    /// Decodes any image ffmpeg reads to packed RGB24 bytes.
+    async fn decode_rgb(path: &Path) -> Vec<u8> {
+        let result = tokio::process::Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-i"])
+            .arg(path)
+            .args(["-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .await
+            .unwrap();
+        assert!(result.status.success());
+        result.stdout
+    }
+
+    /// ADR-0159: transparency becomes white, not ffmpeg's default black.
+    /// The input is fully transparent *red*, so dropping alpha alone would
+    /// give red and the old behaviour black; only flattening gives white.
+    #[tokio::test]
+    async fn transcode_to_jpg_flattened_turns_transparency_white() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("clear.png");
+        generate_transparent(&input, "image2").await.unwrap();
+        let output = dir.path().join("clear.jpg.scratch");
+        transcode_to_jpg_flattened(&input, &output).await.unwrap();
+
+        assert_eq!(probe_dimensions(&output).await, Some((16, 16)));
+        let rgb = decode_rgb(&output).await;
+        assert_eq!(rgb.len(), 16 * 16 * 3);
+        assert!(
+            rgb.iter().all(|byte| *byte >= 245),
+            "not white: {:?}",
+            &rgb[..6]
+        );
+    }
+
+    /// The flatten leaves an opaque image alone: same size, and the
+    /// existing `testsrc` pattern is not washed toward white.
+    #[tokio::test]
+    async fn transcode_to_jpg_flattened_keeps_an_opaque_image() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("test.png");
+        generate_test_png(&input).await.unwrap();
+        let (plain, flat) = (dir.path().join("plain.jpg"), dir.path().join("flat.jpg"));
+        transcode_to_jpg(&input, &plain).await.unwrap();
+        transcode_to_jpg_flattened(&input, &flat).await.unwrap();
+        let (a, b) = (decode_rgb(&plain).await, decode_rgb(&flat).await);
+        assert_eq!(a.len(), b.len());
+        let mean_diff = a
+            .iter()
+            .zip(&b)
+            .map(|(x, y)| x.abs_diff(*y) as u64)
+            .sum::<u64>()
+            / a.len() as u64;
+        assert!(mean_diff <= 2, "opaque image changed by {mean_diff}");
+    }
+
+    /// A 16x16 32-bit BMP icon, opaque blue on the left half and fully
+    /// transparent on the right, built by hand: ffmpeg's own ICO *writer*
+    /// zeroes the alpha bytes, and an all-zero BMP alpha channel is read as
+    /// "no alpha" by convention, so it cannot produce this fixture.
+    fn half_transparent_ico() -> Vec<u8> {
+        let (w, h) = (16u32, 16u32);
+        let mut pixels = Vec::new();
+        for _ in 0..h {
+            for x in 0..w {
+                pixels.extend_from_slice(if x < 8 {
+                    &[255, 0, 0, 255]
+                } else {
+                    &[0, 0, 255, 0]
+                });
+            }
+        }
+        let mask = vec![0u8; 4 * h as usize];
+        let mut bmp = Vec::new();
+        for value in [40u32, w, h * 2] {
+            bmp.extend_from_slice(&value.to_le_bytes());
+        }
+        bmp.extend_from_slice(&1u16.to_le_bytes());
+        bmp.extend_from_slice(&32u16.to_le_bytes());
+        for value in [0u32, (pixels.len() + mask.len()) as u32, 0, 0, 0, 0] {
+            bmp.extend_from_slice(&value.to_le_bytes());
+        }
+        bmp.extend_from_slice(&pixels);
+        bmp.extend_from_slice(&mask);
+
+        let mut ico = vec![0, 0, 1, 0, 1, 0, w as u8, h as u8, 0, 0, 1, 0, 32, 0];
+        ico.extend_from_slice(&(bmp.len() as u32).to_le_bytes());
+        ico.extend_from_slice(&22u32.to_le_bytes());
+        ico.extend_from_slice(&bmp);
+        ico
+    }
+
+    /// ADR-0159: an icon becomes a PNG that keeps its alpha channel.
+    #[tokio::test]
+    async fn transcode_to_png_keeps_an_icons_transparency() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("half.ico");
+        std::fs::write(&input, half_transparent_ico()).unwrap();
+        let output = dir.path().join("half.png.scratch");
+        transcode_to_png(&input, &output).await.unwrap();
+
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(std::fs::read(&output).unwrap()));
+        decoder.set_transformations(png::Transformations::normalize_to_color8());
+        let mut reader = decoder.read_info().unwrap();
+        let mut buffer = vec![0; reader.output_buffer_size().unwrap()];
+        let info = reader.next_frame(&mut buffer).unwrap();
+        assert_eq!((info.width, info.height), (16, 16));
+        assert_eq!(info.color_type, png::ColorType::Rgba);
+        let alphas: Vec<u8> = buffer.chunks_exact(4).map(|px| px[3]).collect();
+        assert_eq!(
+            alphas.iter().filter(|a| **a == 255).count(),
+            128,
+            "opaque half"
+        );
+        assert_eq!(
+            alphas.iter().filter(|a| **a == 0).count(),
+            128,
+            "transparent half"
+        );
     }
 
     /// Mirrors `worker.rs`'s real scratch-file naming (`<destination-name>.scratch`,
