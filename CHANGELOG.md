@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0159: `job run transform` gains 11 input kinds: `avif`/`tif`/`tiff`/`webp` to `.jpg` (transparency flattened onto white), `ico`/`icns`/`procreate`/`procreate-2` to `.png` (transparency kept, Procreate at full canvas resolution and verified against its own thumbnail), and `ai`/`emz`/`svg` to `.svg` ([#129](https://github.com/noisypigeon/pigeon-cli/pull/129)).
+
 ## [0.4.47] - 2026-10-18
 
 - ADR-0158: `job run transform` document kinds no longer crash or hang `soffice` on filenames containing spaces, `#`, `(` or `%` (its profile and output-directory URLs are now percent-encoded), a timed-out `soffice` is killed instead of orphaned, a `soffice` crash is reported as a converter crash rather than an unreadable file, and source keys differing only by Unicode normalization are pulled separately like case collisions ([#126](https://github.com/noisypigeon/pigeon-cli/pull/126)).
