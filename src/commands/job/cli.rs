@@ -129,7 +129,11 @@ pub enum JobType {
     /// or documents (ADR-0154) -- `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`/
     /// `epub` into `.pdf` with `pdf` copied through,
     /// `txt`/`md`/`markdown`/`mkd`/`rst`/`textclipping` into `.txt`, and
-    /// `tsv` into `.csv`
+    /// `tsv` into `.csv`; calendars and contacts (`ics`/`vcf`, ADR-0160)
+    /// into readable `.txt`; more raster images (`avif`/`tif`/`tiff`/
+    /// `webp`/`bmp`) into `.jpg`, icons and artwork (`ico`/`icns`/
+    /// `procreate`/`procreate-2`) into `.png`, and vector drawings
+    /// (`ai`/`emz`/`eps`/`svg`) into `.svg` (ADR-0159, ADR-0160)
     /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
     /// pull `--source` into a local staging tree, transcoding/copying each
     /// file locally and pushing it individually via `rclone copyto` the
@@ -154,15 +158,18 @@ pub enum JobType {
     /// `PATH`, plus `ffmpeg`/`ffprobe` for an image, video, or audio input
     /// kind, `soffice` (LibreOffice) for `numbers` and for
     /// `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`, `ebook-convert` (Calibre)
-    /// for `epub`, and `pandoc` for `md`/`rst`;
-    /// `xlsx`/`xls`/`csv`/`tsv`/`pdf`/`txt`/`textclipping` need none of
-    /// them (ADR-0149, ADR-0154).
+    /// for `epub`, `pandoc` for `md`/`rst`, and Ghostscript (`gs`) plus
+    /// `soffice` for `eps`;
+    /// `xlsx`/`xls`/`csv`/`tsv`/`pdf`/`txt`/`textclipping`/`ics`/`vcf`
+    /// need none of them (ADR-0149, ADR-0154, ADR-0160).
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
         /// `mov`, `m4v`, `mp4`, `mp4-audio`, `m4a`, `mp3`, `aac`, `wav`,
         /// `opus`, `numbers`, `xlsx`, `xls`, `csv`, `doc`, `docx`,
         /// `pages`, `rtf`, `pdf`, `epub`, `pptx`, `key`, `txt`, `md`
-        /// (or `markdown`/`mkd`), `rst`, `textclipping`, or `tsv`.
+        /// (or `markdown`/`mkd`), `rst`, `textclipping`, `tsv`, `avif`,
+        /// `tif`, `tiff`, `webp`, `bmp`, `ico`, `icns`, `procreate`,
+        /// `procreate-2`, `ai`, `emz`, `eps`, `svg`, `ics`, or `vcf`.
         /// Interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         /// `mp4-audio` is for audio-only recordings carrying an `.mp4`

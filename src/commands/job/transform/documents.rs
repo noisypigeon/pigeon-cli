@@ -21,6 +21,7 @@ use std::path::{Path, PathBuf};
 use super::format::InputFileType;
 use super::media::{
     NOT_A_DOCUMENT_SIGNATURE, NOT_A_KEYNOTE_SIGNATURE, NOT_A_TEXTCLIPPING_SIGNATURE,
+    SVG_DREW_NOTHING_SIGNATURE,
 };
 
 /// The zip local-file-header magic every modern iWork document begins with.
@@ -151,6 +152,147 @@ pub(crate) async fn to_pdf(
 /// bounds. Not retried, on ADR-0154's reasoning for document kinds.
 pub(crate) async fn to_svg(input: &Path, work_dir: &Path) -> Result<PathBuf, String> {
     super::soffice::convert(input, work_dir, "svg", NOT_A_DOCUMENT_SIGNATURE).await
+}
+
+/// How long Ghostscript gets per file before being treated as hung.
+///
+/// An EPS is a **program**, and a PostScript program can loop forever; the
+/// same reasoning ADR-0158 applied to `soffice`. The one real file took
+/// under a second.
+const GHOSTSCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Confirms Ghostscript's `gs` is on `PATH`, for an `eps` run (ADR-0160 §3).
+pub(crate) async fn check_ghostscript_available() -> Result<(), String> {
+    check_binary(
+        "gs",
+        &["--version"],
+        "required for 'pigeon job run transform --input-file-type eps'. LibreOffice alone \
+         turns an EPS into an empty page, so Ghostscript converts it to PDF first",
+    )
+    .await
+}
+
+/// Converts an EPS to SVG inside `work_dir`, returning the produced path
+/// (ADR-0160 §3).
+///
+/// Not `to_svg` directly: run on the bucket's real Illustrator EPS,
+/// `soffice` **exits 0 and writes an empty SVG** -- a Letter page holding
+/// one invisible bounding-box rectangle and no artwork. So Ghostscript
+/// interprets the PostScript into a PDF first, and `soffice` exports that,
+/// exactly as it already exports an `.ai` (which is a PDF).
+///
+/// - `-dSAFER` is passed explicitly rather than trusted to the installed
+///   version's default: the input is a program from an untrusted bucket,
+///   and without it that program can read and write files on this host.
+/// - `-dEPSCrop` sizes the page to the EPS bounding box, so the SVG is the
+///   drawing's own size, not a Letter page around it.
+///
+/// The result must also draw something (`svg_draws_something`), since an
+/// empty SVG with exit 0 is precisely the failure that shaped this route.
+/// Not retried: a converter fails the same way on the same file.
+pub(crate) async fn eps_to_svg(input: &Path, work_dir: &Path) -> Result<PathBuf, String> {
+    std::fs::create_dir_all(work_dir)
+        .map_err(|err| format!("failed to create {}: {err}", work_dir.display()))?;
+    let stem = input
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or_else(|| format!("{} has no usable file stem", input.display()))?;
+    let pdf = work_dir.join(format!("{stem}.pdf"));
+
+    let mut command = tokio::process::Command::new("gs");
+    command
+        .args(["-dSAFER", "-dBATCH", "-dNOPAUSE", "-dQUIET", "-dEPSCrop"])
+        .args(["-sDEVICE=pdfwrite", "-o"])
+        .arg(&pdf)
+        // `-f` so a file name beginning with `-` is not read as an option.
+        .arg("-f")
+        .arg(input)
+        .kill_on_drop(true);
+    let output = match tokio::time::timeout(GHOSTSCRIPT_TIMEOUT, command.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(err)) => return Err(format!("failed to run gs: {err}")),
+        Err(_) => {
+            return Err(format!(
+                "gs timed out after {}s interpreting {} -- {NOT_A_DOCUMENT_SIGNATURE} this run \
+                 can process",
+                GHOSTSCRIPT_TIMEOUT.as_secs(),
+                input.display()
+            ));
+        }
+    };
+    let pdf_len = std::fs::metadata(&pdf).map(|meta| meta.len()).unwrap_or(0);
+    if !output.status.success() || pdf_len == 0 {
+        return Err(format!(
+            "gs could not interpret {} as PostScript (exit {:?}) -- \
+             {NOT_A_DOCUMENT_SIGNATURE}. stdout: {} stderr: {}",
+            input.display(),
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let svg = super::soffice::convert(&pdf, work_dir, "svg", NOT_A_DOCUMENT_SIGNATURE).await?;
+    let text = std::fs::read_to_string(&svg)
+        .map_err(|err| format!("failed to read {}: {err}", svg.display()))?;
+    if !svg_draws_something(&text) {
+        return Err(format!(
+            "{} {SVG_DREW_NOTHING_SIGNATURE} -- no drawing element outside its definitions",
+            input.display()
+        ));
+    }
+    Ok(svg)
+}
+
+/// Whether an SVG draws anything (ADR-0160 §3).
+///
+/// Counts a drawing element anywhere outside `<defs>` -- where `soffice`
+/// puts the bullet-character templates it writes into every SVG, so those
+/// ten `<path>`s cannot pass for artwork -- other than the invisible
+/// `<rect class="BoundingBox">` it gives every shape. `<use>` is not
+/// counted: in the measured empty SVG it references an empty group.
+fn svg_draws_something(svg: &str) -> bool {
+    const DRAWING: &[&str] = &[
+        "path", "image", "text", "polygon", "polyline", "rect", "circle", "ellipse", "line",
+    ];
+    let body = strip_defs(svg);
+    let mut rest = body.as_str();
+    while let Some(open) = rest.find('<') {
+        rest = &rest[open + 1..];
+        let name_len = rest
+            .find(|ch: char| ch.is_whitespace() || ch == '/' || ch == '>')
+            .unwrap_or(rest.len());
+        let name = &rest[..name_len];
+        if DRAWING.contains(&name) {
+            let tag_end = rest.find('>').unwrap_or(rest.len());
+            let tag = &rest[..tag_end];
+            if !(name == "rect" && tag.contains("class=\"BoundingBox\"")) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// `svg` with every `<defs>…</defs>` (and self-closing `<defs/>`) removed.
+fn strip_defs(svg: &str) -> String {
+    let mut out = String::with_capacity(svg.len());
+    let mut rest = svg;
+    while let Some(start) = rest.find("<defs") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start..];
+        let open_end = after.find('>').map_or(after.len(), |end| end + 1);
+        if after[..open_end].ends_with("/>") {
+            rest = &after[open_end..];
+            continue;
+        }
+        rest = match after.find("</defs>") {
+            Some(close) => &after[close + "</defs>".len()..],
+            None => "",
+        };
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Converts an EPUB to PDF inside `work_dir`, returning the produced path.
@@ -693,5 +835,126 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- ADR-0160 §3: EPS through Ghostscript ---
+
+    /// Reduced from what `soffice` alone wrote for the bucket's real EPS:
+    /// bullet templates and a clip rect inside `<defs>`, an empty `<use>`,
+    /// and one invisible `BoundingBox` rect. It draws nothing.
+    const SOFFICE_EMPTY_SVG: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg version="1.2" width="215.9mm" height="279.4mm" viewBox="0 0 21590 27940">
+ <defs class="ClipPathGroup"><clipPath id="presentation_clip_path"><rect x="0" y="0" width="21590" height="27940"/></clipPath></defs>
+ <defs class="TextShapeIndex"><g ooo:slide="id1" ooo:id-list="id3"/></defs>
+ <defs class="EmbeddedBulletChars"><g id="bullet-char-template-57356"><path d="M 580,1141 L 1163,571 Z"/></g></defs>
+ <g><g id="id2" class="Master_Slide"><g id="bg-id2" class="Background"/><defs><g id="bo-id2" class="BackgroundObjects"/></defs></g></g>
+ <g class="SlideGroup"><g><g id="container-id1"><g id="id1" class="Slide"><g class="Page"><use href="#bo-id2"/>
+  <g class="Graphic"><g id="id3"><rect class="BoundingBox" stroke="none" fill="none" x="1000" y="6209" width="19590" height="15522"/></g></g>
+ </g></g></g></g></g>
+</svg>"##;
+
+    #[test]
+    fn the_empty_svg_soffice_wrote_for_a_real_eps_draws_nothing() {
+        assert!(!svg_draws_something(SOFFICE_EMPTY_SVG));
+    }
+
+    #[test]
+    fn an_svg_with_artwork_outside_defs_draws_something() {
+        let drawn = SOFFICE_EMPTY_SVG.replace(
+            "<g class=\"Graphic\">",
+            "<g class=\"Graphic\"><path fill=\"rgb(200,0,0)\" d=\"M 0,0 L 10,10 Z\"/>",
+        );
+        assert!(svg_draws_something(&drawn));
+        assert!(svg_draws_something(
+            "<svg><rect x=\"1\" width=\"2\" height=\"2\"/></svg>"
+        ));
+        assert!(svg_draws_something("<svg><line x1=\"0\" x2=\"1\"/></svg>"));
+        // A gradient is not a drawing, despite the `line` prefix.
+        assert!(!svg_draws_something(
+            "<svg><linearGradient id=\"g\"/></svg>"
+        ));
+        assert!(!svg_draws_something("<svg><defs/></svg>"));
+    }
+
+    /// A small EPS drawing one filled shape, inside a bounding box that is
+    /// deliberately not a page size, so the crop is observable.
+    const SHAPE_EPS: &str = "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n%%EndComments\n\
+        newpath 10 10 moveto 190 10 lineto 100 90 lineto closepath\n\
+        0.8 0.2 0.5 setrgbcolor fill\nshowpage\n%%EOF\n";
+
+    #[tokio::test]
+    async fn an_eps_converts_to_a_cropped_svg_that_draws() {
+        if check_ghostscript_available().await.is_err()
+            || super::super::soffice::check_available().await.is_err()
+        {
+            eprintln!("skipping: gs or soffice not found on PATH");
+            return;
+        }
+        let dir = temp_dir();
+        let eps = dir.path().join("logo print.eps");
+        std::fs::write(&eps, SHAPE_EPS).unwrap();
+
+        let svg = eps_to_svg(&eps, &dir.path().join("work")).await.unwrap();
+        let text = std::fs::read_to_string(&svg).unwrap();
+        assert!(svg_draws_something(&text));
+        // 200 x 100 pt is 70.56 x 35.28 mm: cropped, not a Letter page.
+        // soffice rounds to its own 1/100 mm grid, so within 0.05 mm.
+        let millimetres = |attribute: &str| -> f64 {
+            let start =
+                text.find(&format!("{attribute}=\"")).expect(attribute) + attribute.len() + 2;
+            let end = start + text[start..].find("mm\"").expect("mm");
+            text[start..end].parse().expect("a number")
+        };
+        assert!(
+            (millimetres("width") - 70.56).abs() < 0.05,
+            "{}",
+            millimetres("width")
+        );
+        assert!(
+            (millimetres("height") - 35.28).abs() < 0.05,
+            "{}",
+            millimetres("height")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_file_that_is_not_postscript_is_refused_as_the_wrong_kind() {
+        if check_ghostscript_available().await.is_err() {
+            eprintln!("skipping: gs not found on PATH");
+            return;
+        }
+        let dir = temp_dir();
+        let eps = dir.path().join("notes.eps");
+        std::fs::write(&eps, b"\x00\x01 this is not PostScript {{{").unwrap();
+        let err = eps_to_svg(&eps, &dir.path().join("work"))
+            .await
+            .expect_err("refused");
+        assert!(media::is_wrong_input_kind_error(&err), "{err}");
+        assert!(media::is_non_retryable_transcode_error(&err), "{err}");
+    }
+
+    /// `-dSAFER` is load-bearing: an EPS is a program from an untrusted
+    /// bucket. One that tries to write a file must not be able to.
+    #[tokio::test]
+    async fn an_eps_cannot_write_files_on_the_host() {
+        if check_ghostscript_available().await.is_err() {
+            eprintln!("skipping: gs not found on PATH");
+            return;
+        }
+        let dir = temp_dir();
+        let target = dir.path().join("planted.txt");
+        let eps = dir.path().join("hostile.eps");
+        std::fs::write(
+            &eps,
+            format!(
+                "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 10 10\n\
+                 ({}) (w) file dup (pwned) writestring closefile\nshowpage\n",
+                target.display()
+            ),
+        )
+        .unwrap();
+        let result = eps_to_svg(&eps, &dir.path().join("work")).await;
+        assert!(!target.exists(), "the EPS wrote a file: {result:?}");
+        assert!(result.is_err());
     }
 }

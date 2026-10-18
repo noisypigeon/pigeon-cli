@@ -2,9 +2,8 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-17.
-- **Status**: Proposed. The Ghostscript leg of §3 has not been run on the
-  real file (no `gs` on the authoring machine). See Verification, which
-  gates the Status on it.
+- **Status**: Accepted. Implemented on 2026-10-17, with the Ghostscript leg
+  of §3 checked on the real file (see the Amendment and Verification).
 
 ## Context
 
@@ -39,7 +38,8 @@ carry a `TZID` (3,363 Toronto, 313 Vancouver, 108 Berlin, and others),
 2,587 are bare UTC or floating times, and 107 are all-day `VALUE=DATE`s.
 **Eight are 142-byte calendars with no component at all**: an airline's
 ticket emails attach a `VCALENDAR` holding only `PRODID`, `VERSION`,
-`CALSCALE` and `UID`. On the vCard side, 734 cards are version 3.0 and **one
+`CALSCALE` and `UID`. (Three more empty calendars turned up during
+implementation; see the Amendment.) On the vCard side, 734 cards are version 3.0 and **one
 is 2.1**. Apple's cards carry long base64 `itemN.X-ADDRESSING-GRAMMAR` blobs,
 and 19 lines across the prefix are `PHOTO`, `ENCODING=b` or
 `QUOTED-PRINTABLE`. In `All Contacts.vcf`, 655 of 679 cards have an `EMAIL`,
@@ -108,15 +108,13 @@ through the PDF-to-SVG route `ai` already uses:
   from the file, and is to be pinned by a test (Verification).
 - Not retried. A converter fails the same way on the same file every time
   (ADR-0149, ADR-0154).
-- Ghostscript reads the DOS-binary EPS header itself. That is documented
-  behaviour, but **not verified on this file** (see Verification).
+- Ghostscript reads the DOS-binary EPS header itself. Verified on the real
+  file during implementation.
 
-`converter_for` gains `Converter::Ghostscript` for `eps`, with a new
-`documents::check_ghostscript_available`. The preflight then also checks
-`soffice`, since `eps` needs both binaries. The `Converter` enum becomes a
-slice of required binaries, or gains an `Eps`-specific arm that runs both
-checks. The implementation picks whichever keeps `converter_for` exhaustive,
-per ADR-0154 §5. The Dockerfile adds `ghostscript` to its apt line.
+`converter_for` gains `Converter::GhostscriptThenSoffice` for `eps`, with a
+new `documents::check_ghostscript_available`. Its preflight checks both
+binaries, since `eps` needs both. `converter_for` stays exhaustive, per
+ADR-0154 §5. The Dockerfile adds `ghostscript` to its apt line.
 
 ### 4. `ics` and `vcf` to readable text, in a new `transform/vobject.rs`
 
@@ -235,7 +233,85 @@ these are the original attachments.
   joins `ai`'s soffice SVG route, behind a Ghostscript step and the
   drew-something check.
 
+## Amendment (2026-10-17): implementation findings
+
+Three things turned up while implementing this ADR.
+
+- **The Ghostscript route works on the real EPS.** `gs` 10.08.0, then
+  `soffice`, gives a 275 KB SVG with 457 drawn paths and no `<image>`. Its
+  page is 203.28 × 161.12 mm, which is the file's `%%HiResBoundingBox` of
+  576.23 × 456.73 pt. So `-dEPSCrop` used the high-resolution box, not the
+  integer `%%BoundingBox` of 577 × 457 the Context quoted. Rendered and
+  checked by eye: the full illustration, upright, nothing missing.
+- **11 calendars are empty, not 8.** Besides the eight airline stubs,
+  three Google Calendar exports (`Work Schedule.ics` and two copies of a
+  school schedule, 177–196 bytes) hold a named `VCALENDAR` with no
+  components. All eleven produce their `No events.` file, as §4 intends.
+- **The interactive `--input-file-type` menu was missing ADR-0159's eleven
+  kinds.** The menu is a string list the compiler cannot check against
+  `InputFileType`, and ADR-0159 never touched it, so `avif` through `svg`
+  could only be chosen by flag. This is a sixth unchecked place a new kind
+  must be added, after the five ADR-0149 §7 and ADR-0154 §5 catalogued. The
+  list is now a constant, `INTERACTIVE_INPUT_FILE_TYPES`, with all 44 kinds.
+  A test enumerates every variant through an exhaustive `match`, so a new
+  variant fails to compile until the test is updated, and the test then
+  fails if the menu does not offer it.
+
 ## Verification
+
+Done while landing the implementation:
+
+- `mise run ci` clean: 639 tests.
+- Pure tests for `vobject.rs`, with fixtures based on the sampled files.
+  They cover:
+  - a CRLF invite with a folded, escaped description, a `TZID` start and a
+    `VALARM`/`VTIMEZONE` that must not appear in the output;
+  - an empty calendar;
+  - all-day, UTC, floating, mixed-zone and unparseable times, and a
+    `DURATION`;
+  - attendees, `RRULE` and a `VTODO`;
+  - a fold inside a multi-byte character;
+  - an Apple card with `itemN.` labels, a base64 blob and a `PHOTO`;
+  - a multi-card export, including a card with nothing left to show;
+  - a vCard 2.1 quoted-printable value with a soft line break and a
+    Latin-1 fallback;
+  - quoted parameters, unknown escapes, and both input guards, which are
+    classified wrong-input-kind and non-retryable.
+- Tests for the four kinds' parsing, output extensions and `outcome_for`,
+  and the interactive-menu completeness test.
+- ffmpeg-gated: 8-bit and 1-bit paletted `.BMP`s at 33 × 17 convert at
+  their own size.
+- The drew-something check refuses a fixture reduced from the measured
+  empty SVG, and accepts one with artwork. A `linearGradient` is not
+  counted as a `line`.
+- gs-gated:
+  - a 200 × 100 pt EPS converts to a 70.56 × 35.28 mm SVG (within soffice's
+    0.01 mm rounding) that draws;
+  - a non-PostScript `.eps` is refused as wrong-input-kind;
+  - an EPS that tries to write a file on the host cannot, which pins
+    `-dSAFER`.
+- **Real files.** All four prefixes were pulled to scratch, 580 files, and
+  run through the same converter functions the job calls, with 0 failures:
+  - 7 of 7 BMPs convert at their own dimensions, from 30 to 544 px high;
+  - the EPS is as described in the Amendment;
+  - 539 of 539 `.ics` files render, and 6,204 `VEVENT`/`VTODO` blocks in
+    gives 6,204 out. The largest is a 3,695-event export;
+  - 33 of 33 `.vcf` files render, and 735 cards in gives 735 blocks out,
+    679 of them in `All Contacts.vcf`;
+  - no output is empty, and no base64, `X-ADDRESSING-GRAMMAR` or
+    undecoded `=XX` text appears in any of them;
+  - the one 2.1 card decodes to its real name, `Tom` followed by a
+    zero-width space that the source genuinely contains.
+- **Not done: a real `job run transform`.** `--destination` takes only a
+  keyring bucket alias, and this job never deletes (ADR-0112), so a
+  verification run would have written permanently into the real
+  `destination:` bucket. The converters were run directly instead. The
+  pull, placement and push legs are unchanged, and the existing tests cover
+  them.
+- **Dockerfile.** `ghostscript` installs on `debian:bookworm-slim` and
+  reports version 10.00.0. **Not verified:** converting the real EPS with
+  that older version inside the image. Per the project's proportionate
+  approach to the image, no full image build was run.
 
 Measured while writing this ADR:
 
@@ -244,7 +320,7 @@ Measured while writing this ADR:
 - `soffice --convert-to svg` on the real EPS: 4,504 bytes, exit 0, a Letter
   page with only a `BoundingBox` rect, no artwork.
 
-To do in the implementing PR:
+Planned when the ADR was written. Every item was done, as recorded above:
 
 - `mise run ci` clean.
 - Pure tests for `vobject.rs`, with inline fixtures based on the sampled
@@ -271,5 +347,6 @@ To do in the implementing PR:
   - the eight empty calendars produce their `No events.` file.
 
   **Status moves to Accepted only once the EPS result has been checked by
-  eye.** Anything not measured is recorded here as not verified.
+  eye.** Anything not measured is recorded here as not verified. (Done:
+  see above.)
 - For the Dockerfile change, a `docker build` check only.

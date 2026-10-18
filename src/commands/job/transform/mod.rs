@@ -16,21 +16,23 @@
 //!
 //! | Output | Kinds |
 //! |---|---|
-//! | `.jpg` | `png`, `jpeg`, `heic` |
+//! | `.jpg` | `png`, `jpeg`, `heic`, `avif`, `tif`, `tiff`, `webp`, `bmp` |
+//! | `.png` | `ico`, `icns`, `procreate`, `procreate-2` |
+//! | `.svg` | `ai`, `emz`, `eps`, `svg` |
 //! | `.mp4` | `mov`, `m4v`, `mp4` (H.265 at the chosen `--video-quality`) |
 //! | `.opus` | `mp4-audio`, `m4a`, `mp3`, `aac`, `wav`, `opus` (at `--audio-quality`) |
 //! | `.csv` | `numbers`, `xlsx`, `xls`, `csv`, `tsv` -- one file per non-empty sheet |
 //! | `.pdf` | `doc`, `docx`, `pages`, `rtf`, `pdf`, `epub`, `pptx`, `key` |
-//! | `.txt` | `txt`, `md`/`markdown`/`mkd`, `rst`, `textclipping` |
+//! | `.txt` | `txt`, `md`/`markdown`/`mkd`, `rst`, `textclipping`, `ics`, `vcf` |
 //!
-//! `jpeg`, `csv`, `pdf` and `txt` arrive already in their target format and are
+//! `jpeg`, `csv`, `pdf`, `txt` and `svg` arrive already in their target format and are
 //! copied through byte-for-byte; `opus` is the one kind that is deliberately
 //! re-encoded anyway (ADR-0153 §6).
 //!
 //! Converters: `ffmpeg`/`ffprobe` for image/video/audio, `soffice` for
 //! `numbers` and the six LibreOffice-readable document kinds, `ebook-convert`
-//! for `epub` alone (LibreOffice's EPUB filter is export-only), and `pandoc`
-//! for `md`/`rst`. The spreadsheet, text and tabular kinds that need none of
+//! for `epub` alone (LibreOffice's EPUB filter is export-only), `pandoc`
+//! for `md`/`rst`, and Ghostscript ahead of `soffice` for `eps` (ADR-0160). The spreadsheet, text and tabular kinds that need none of
 //! them are read in-process.
 //!
 //! See `worker`'s module doc for the per-file pipeline's full shape, `push`'s
@@ -49,6 +51,7 @@ mod procreate;
 mod push;
 mod sheets;
 mod soffice;
+mod vobject;
 pub mod wizard;
 mod worker;
 

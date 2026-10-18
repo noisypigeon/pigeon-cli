@@ -161,6 +161,18 @@ pub(crate) enum InputFileType {
     Emz,
     /// Already SVG: copied through byte-for-byte (ADR-0159).
     Svg,
+    /// A Windows bitmap, to JPEG flattened onto white like `Avif`/`Tif`/
+    /// `Webp` (ADR-0160 §2). A 32-bit bitmap can carry alpha.
+    Bmp,
+    /// Encapsulated PostScript, to SVG (ADR-0160 §3). LibreOffice alone
+    /// turns a real Illustrator EPS into an **empty** page and exits 0, so
+    /// Ghostscript converts it to PDF first and `soffice` exports that.
+    Eps,
+    /// iCalendar, rendered in-process to readable text (ADR-0160 §4).
+    Ics,
+    /// vCard, rendered in-process to readable text, every card of a
+    /// multi-contact export in one file (ADR-0160 §4).
+    Vcf,
 }
 
 impl InputFileType {
@@ -223,6 +235,10 @@ impl InputFileType {
             InputFileType::Ai => &["ai"],
             InputFileType::Emz => &["emz"],
             InputFileType::Svg => &["svg"],
+            InputFileType::Bmp => &["bmp"],
+            InputFileType::Eps => &["eps"],
+            InputFileType::Ics => &["ics"],
+            InputFileType::Vcf => &["vcf"],
         }
     }
 
@@ -290,7 +306,11 @@ impl InputFileType {
             | InputFileType::Procreate
             | InputFileType::Ai
             | InputFileType::Emz
-            | InputFileType::Svg => self.canonical_extension(),
+            | InputFileType::Svg
+            | InputFileType::Bmp
+            | InputFileType::Eps
+            | InputFileType::Ics
+            | InputFileType::Vcf => self.canonical_extension(),
         }
     }
 
@@ -347,18 +367,22 @@ impl InputFileType {
             "ai" => Ok(InputFileType::Ai),
             "emz" => Ok(InputFileType::Emz),
             "svg" => Ok(InputFileType::Svg),
+            "bmp" => Ok(InputFileType::Bmp),
+            "eps" => Ok(InputFileType::Eps),
+            "ics" => Ok(InputFileType::Ics),
+            "vcf" => Ok(InputFileType::Vcf),
             // Grouped by output family rather than listed flat: at 29
             // spellings a single run-on list is unreadable, and the
             // grouping is the thing a reader actually needs -- which
             // extension they will find their output under (ADR-0154).
             other => Err(format!(
                 "unknown --input-file-type '{other}' (expected an image kind png, jpeg, heic, \
-                 avif, tif, tiff or webp; an icon or artwork kind ico, icns, procreate or \
-                 procreate-2; a vector kind ai, emz or svg; \
+                 avif, tif, tiff, webp or bmp; an icon or artwork kind ico, icns, procreate or \
+                 procreate-2; a vector kind ai, emz, eps or svg; \
                  a video kind mov, m4v or mp4; an audio kind mp4-audio, m4a, mp3, aac, wav or \
                  opus; a spreadsheet kind numbers, xlsx, xls or csv; a document kind doc, docx, \
-                 pages, rtf, pdf, epub, pptx or key; a text kind txt, md, markdown, mkd, rst or \
-                 textclipping; or tsv)"
+                 pages, rtf, pdf, epub, pptx or key; a text kind txt, md, markdown, mkd, rst, \
+                 textclipping, ics or vcf; or tsv)"
             )),
         }
     }
@@ -421,19 +445,25 @@ impl InputFileType {
             InputFileType::Txt
             | InputFileType::Md
             | InputFileType::Rst
-            | InputFileType::Textclipping => "txt",
+            | InputFileType::Textclipping
+            // ADR-0160: calendars and contacts, rendered as readable text.
+            | InputFileType::Ics
+            | InputFileType::Vcf => "txt",
             // ADR-0159: still raster images become JPEG, flattened onto
             // white where transparent.
             InputFileType::Avif
             | InputFileType::Tif
             | InputFileType::Tiff
-            | InputFileType::Webp => "jpg",
+            | InputFileType::Webp
+            | InputFileType::Bmp => "jpg",
             // Kinds that routinely carry transparency keep it, as PNG.
             InputFileType::Ico
             | InputFileType::Icns
             | InputFileType::Procreate
             | InputFileType::Procreate2 => "png",
-            InputFileType::Ai | InputFileType::Emz | InputFileType::Svg => "svg",
+            InputFileType::Ai | InputFileType::Emz | InputFileType::Eps | InputFileType::Svg => {
+                "svg"
+            }
         }
     }
 
@@ -1306,6 +1336,32 @@ mod tests {
             assert_eq!(kind.canonical_extension(), prefix, "{kind}");
             assert_eq!(kind.output_extension(), output, "{kind}");
             assert!(!kind.is_video() && !kind.is_audio() && !kind.is_spreadsheet());
+        }
+    }
+
+    /// ADR-0160's four kinds: each spelling parses, round-trips through its
+    /// display name, and lands in the right output family.
+    #[test]
+    fn adr_0160_kinds_parse_and_map_to_their_outputs() {
+        for (spelling, kind, output) in [
+            ("bmp", InputFileType::Bmp, "jpg"),
+            ("BMP", InputFileType::Bmp, "jpg"),
+            ("eps", InputFileType::Eps, "svg"),
+            ("ics", InputFileType::Ics, "txt"),
+            ("ICS", InputFileType::Ics, "txt"),
+            ("vcf", InputFileType::Vcf, "txt"),
+        ] {
+            assert_eq!(InputFileType::parse(spelling), Ok(kind), "{spelling}");
+            assert_eq!(InputFileType::parse(kind.name()), Ok(kind), "{kind}");
+            assert_eq!(kind.name(), kind.canonical_extension(), "{kind}");
+            assert_eq!(kind.output_extension(), output, "{kind}");
+            assert!(!kind.is_video() && !kind.is_audio() && !kind.is_spreadsheet());
+        }
+        // Four of the bucket's seven bitmaps are spelled `.BMP`.
+        assert!(InputFileType::Bmp.matches_extension("BMP"));
+        // No speculative aliases (`extensions()`'s rule).
+        for value in ["ical", "icalendar", "vcard", "dib", "ps", "epsf"] {
+            assert!(InputFileType::parse(value).is_err(), "{value} parsed");
         }
     }
 
