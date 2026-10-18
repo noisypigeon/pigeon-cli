@@ -67,7 +67,7 @@ use tracing::Instrument;
 
 use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
-use super::{destination, documents, email_shape, media, placement, push, sheets};
+use super::{destination, documents, email_shape, icns, media, placement, procreate, push, sheets};
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::Copy;
 
@@ -939,9 +939,54 @@ async fn convert_one(
     let produced: PathBuf = match input_file_type {
         // Already in the target format: copied through byte-for-byte on
         // ADR-0112's reasoning. `Pdf` and `Txt` joined `Jpeg` in ADR-0154.
-        InputFileType::Jpeg | InputFileType::Pdf | InputFileType::Txt => {
+        InputFileType::Jpeg | InputFileType::Pdf | InputFileType::Txt | InputFileType::Svg => {
             media::copy_through(input, &scratch_path).map(|()| scratch_path.clone())
         }
+        // ADR-0159: still raster images to JPEG, transparency flattened
+        // onto white. Retried like `png`/`heic`, since it is the same
+        // ffmpeg invocation and the same transient-failure exposure.
+        InputFileType::Avif | InputFileType::Tif | InputFileType::Tiff | InputFileType::Webp => {
+            retry_transcode_unless_fatal(
+                TRANSCODE_RETRIES,
+                TRANSCODE_RETRY_BACKOFF,
+                &pending_file.source_key,
+                || media::transcode_to_jpg_flattened(input, &scratch_path),
+            )
+            .await
+            .map(|()| scratch_path.clone())
+        }
+        // ADR-0159: icons keep their transparency, as PNG.
+        InputFileType::Ico => retry_transcode_unless_fatal(
+            TRANSCODE_RETRIES,
+            TRANSCODE_RETRY_BACKOFF,
+            &pending_file.source_key,
+            || media::transcode_to_png(input, &scratch_path),
+        )
+        .await
+        .map(|()| scratch_path.clone()),
+        // ffmpeg cannot open the container, so its largest embedded image
+        // is pulled out first and converted on its own.
+        InputFileType::Icns => {
+            let entry = icns::extract_largest(input, scratch)?;
+            retry_transcode_unless_fatal(
+                TRANSCODE_RETRIES,
+                TRANSCODE_RETRY_BACKOFF,
+                &pending_file.source_key,
+                || media::transcode_to_png(&entry, &scratch_path),
+            )
+            .await
+            .map(|()| scratch_path.clone())
+        }
+        // In-process and CPU-bound, so off the async runtime (ADR-0090).
+        // Not retried: decoding the same file gives the same result.
+        InputFileType::Procreate | InputFileType::Procreate2 => {
+            let (from, to) = (input.clone(), scratch_path.clone());
+            tokio::task::spawn_blocking(move || procreate::export_png(&from, &to))
+                .await
+                .map_err(|err| format!("procreate export task failed: {err}"))?
+                .map(|()| scratch_path.clone())
+        }
+        InputFileType::Ai | InputFileType::Emz => documents::to_svg(input, scratch).await,
         InputFileType::Png | InputFileType::Heic => retry_transcode_unless_fatal(
             TRANSCODE_RETRIES,
             TRANSCODE_RETRY_BACKOFF,
@@ -1103,6 +1148,8 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         //
         // ADR-0154 adds `Pdf` and `Txt` on the same reasoning.
         InputFileType::Csv | InputFileType::Pdf | InputFileType::Txt => Outcome::CopiedThrough,
+        // ADR-0159.
+        InputFileType::Svg => Outcome::CopiedThrough,
         InputFileType::Png
         | InputFileType::Heic
         | InputFileType::Mov
@@ -1127,7 +1174,17 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         | InputFileType::Md
         | InputFileType::Rst
         | InputFileType::Textclipping
-        | InputFileType::Tsv => Outcome::Transcoded,
+        | InputFileType::Tsv
+        | InputFileType::Avif
+        | InputFileType::Tif
+        | InputFileType::Tiff
+        | InputFileType::Webp
+        | InputFileType::Ico
+        | InputFileType::Icns
+        | InputFileType::Procreate
+        | InputFileType::Procreate2
+        | InputFileType::Ai
+        | InputFileType::Emz => Outcome::Transcoded,
     }
 }
 

@@ -141,6 +141,18 @@ pub(crate) async fn to_pdf(
     super::soffice::convert(input, work_dir, "pdf", NOT_A_DOCUMENT_SIGNATURE).await
 }
 
+/// Converts a vector drawing (`.ai`, `.emz`) to SVG inside `work_dir`,
+/// returning the produced path (ADR-0159).
+///
+/// LibreOffice Draw does both: an Illustrator file through its PDF import
+/// (every modern `.ai` is PDF-compatible), and a gzip'd EMF directly. Two
+/// recorded limitations: only the first page or artboard is exported, and
+/// an EMF keeps Draw's page around it rather than being cropped to its own
+/// bounds. Not retried, on ADR-0154's reasoning for document kinds.
+pub(crate) async fn to_svg(input: &Path, work_dir: &Path) -> Result<PathBuf, String> {
+    super::soffice::convert(input, work_dir, "svg", NOT_A_DOCUMENT_SIGNATURE).await
+}
+
 /// Converts an EPUB to PDF inside `work_dir`, returning the produced path.
 ///
 /// Calibre infers the output format from the output file's extension, so
@@ -343,6 +355,29 @@ pub(crate) fn tsv_to_csv(input: &Path, output: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0159: a PDF-compatible Illustrator file -- here a one-page PDF
+    /// that soffice itself writes, renamed `.ai` -- comes out as SVG.
+    #[tokio::test]
+    async fn an_ai_file_converts_to_svg() {
+        if super::super::soffice::check_available().await.is_err() {
+            eprintln!("skipping: soffice not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let rtf = dir.path().join("seed.rtf");
+        std::fs::write(&rtf, br"{\rtf1\ansi\deff0 Vector fixture.\par}").unwrap();
+        let pdf = super::super::soffice::convert(&rtf, &dir.path().join("pdf"), "pdf", "x")
+            .await
+            .unwrap();
+        let ai = dir.path().join("drawing.ai");
+        std::fs::rename(&pdf, &ai).unwrap();
+
+        let svg = to_svg(&ai, &dir.path().join("svg")).await.unwrap();
+        assert_eq!(svg.extension().unwrap(), "svg");
+        let text = std::fs::read_to_string(&svg).unwrap();
+        assert!(text.contains("<svg"), "{}", &text[..text.len().min(200)]);
+    }
     use crate::commands::job::transform::media;
 
     fn temp_dir() -> tempfile::TempDir {
