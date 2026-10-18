@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0158: `job run transform` document kinds no longer crash or hang `soffice` on filenames containing spaces, `#`, `(` or `%` (its profile and output-directory URLs are now percent-encoded), a timed-out `soffice` is killed instead of orphaned, a `soffice` crash is reported as a converter crash rather than an unreadable file, and source keys differing only by Unicode normalization are pulled separately like case collisions ([#126](https://github.com/noisypigeon/pigeon-cli/pull/126)).
+
 ## [0.4.46] - 2026-10-17
 
 - ADR-0157: `job run transform --input-file-type md` now skips Markdown renderings of `.eml` messages, recognized from file content, as a counted, reported, non-failure skip ([#125](https://github.com/noisypigeon/pigeon-cli/pull/125)).
