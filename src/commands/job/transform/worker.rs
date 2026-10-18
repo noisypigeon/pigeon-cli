@@ -67,7 +67,9 @@ use tracing::Instrument;
 
 use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::manifest::{self, PendingFile};
-use super::{destination, documents, email_shape, icns, media, placement, procreate, push, sheets};
+use super::{
+    destination, documents, email_shape, icns, media, placement, procreate, push, sheets, vobject,
+};
 use crate::core::rclone::RcloneCommand as _;
 use crate::core::rclone::command::Copy;
 
@@ -945,16 +947,18 @@ async fn convert_one(
         // ADR-0159: still raster images to JPEG, transparency flattened
         // onto white. Retried like `png`/`heic`, since it is the same
         // ffmpeg invocation and the same transient-failure exposure.
-        InputFileType::Avif | InputFileType::Tif | InputFileType::Tiff | InputFileType::Webp => {
-            retry_transcode_unless_fatal(
-                TRANSCODE_RETRIES,
-                TRANSCODE_RETRY_BACKOFF,
-                &pending_file.source_key,
-                || media::transcode_to_jpg_flattened(input, &scratch_path),
-            )
-            .await
-            .map(|()| scratch_path.clone())
-        }
+        InputFileType::Avif
+        | InputFileType::Tif
+        | InputFileType::Tiff
+        | InputFileType::Webp
+        | InputFileType::Bmp => retry_transcode_unless_fatal(
+            TRANSCODE_RETRIES,
+            TRANSCODE_RETRY_BACKOFF,
+            &pending_file.source_key,
+            || media::transcode_to_jpg_flattened(input, &scratch_path),
+        )
+        .await
+        .map(|()| scratch_path.clone()),
         // ADR-0159: icons keep their transparency, as PNG.
         InputFileType::Ico => retry_transcode_unless_fatal(
             TRANSCODE_RETRIES,
@@ -987,6 +991,23 @@ async fn convert_one(
                 .map(|()| scratch_path.clone())
         }
         InputFileType::Ai | InputFileType::Emz => documents::to_svg(input, scratch).await,
+        // ADR-0160 §3: `soffice` alone writes an empty page for an EPS, so
+        // Ghostscript interprets it first. Not retried, as above.
+        InputFileType::Eps => documents::eps_to_svg(input, scratch).await,
+        // ADR-0160 §4: in-process and blocking, like `Tsv` below. Not
+        // retried: the same bytes render the same way.
+        InputFileType::Ics | InputFileType::Vcf => {
+            let (from, to) = (input.clone(), scratch_path.clone());
+            let render = if input_file_type == InputFileType::Ics {
+                vobject::ics_to_text
+            } else {
+                vobject::vcf_to_text
+            };
+            tokio::task::spawn_blocking(move || render(&from, &to))
+                .await
+                .map_err(|err| format!("{input_file_type} rendering task failed: {err}"))?
+                .map(|()| scratch_path.clone())
+        }
         InputFileType::Png | InputFileType::Heic => retry_transcode_unless_fatal(
             TRANSCODE_RETRIES,
             TRANSCODE_RETRY_BACKOFF,
@@ -1184,7 +1205,11 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
         | InputFileType::Procreate
         | InputFileType::Procreate2
         | InputFileType::Ai
-        | InputFileType::Emz => Outcome::Transcoded,
+        | InputFileType::Emz
+        | InputFileType::Bmp
+        | InputFileType::Eps
+        | InputFileType::Ics
+        | InputFileType::Vcf => Outcome::Transcoded,
     }
 }
 
@@ -4722,6 +4747,11 @@ c;d
             InputFileType::Md,
             InputFileType::Textclipping,
             InputFileType::Tsv,
+            // ADR-0160: none arrives in its target format.
+            InputFileType::Bmp,
+            InputFileType::Eps,
+            InputFileType::Ics,
+            InputFileType::Vcf,
         ] {
             assert_eq!(outcome_for(kind), Outcome::Transcoded, "{kind}");
         }

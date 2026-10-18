@@ -766,6 +766,11 @@ mod tests {
             InputFileType::Rst,
             InputFileType::Textclipping,
             InputFileType::Tsv,
+            // ADR-0160: single-output, so `strict_stem` is not applied.
+            InputFileType::Bmp,
+            InputFileType::Eps,
+            InputFileType::Ics,
+            InputFileType::Vcf,
         ] {
             let name = compute_destination_name(
                 "source:docs",

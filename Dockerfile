@@ -71,10 +71,14 @@ FROM debian:bookworm-slim
 # registry), so it is the one document kind `soffice` cannot serve.
 # `pandoc` renders `md`/`rst` to prose.
 #
+# `ghostscript` interprets `--input-file-type eps` to PDF ahead of `soffice`
+# (ADR-0160): LibreOffice alone turns a real Illustrator EPS into an empty
+# page and exits 0.
+#
 # Together these are by far the heaviest thing in this image. Accepted
 # rather than worked around: the alternative is a job that cannot run where
 # it is deployed. The in-process kinds -- `xlsx`/`xls`/`csv`/`tsv`/`pdf`/
-# `txt`/`textclipping` -- need none of them.
+# `txt`/`textclipping`/`ics`/`vcf` -- need none of them.
 #
 # `rclone` itself comes from the pinned builder stage above (ADR-0155), not
 # from apt.
@@ -83,6 +87,7 @@ RUN apt-get update \
        ffmpeg \
        libreoffice-calc libreoffice-writer libreoffice-impress \
        calibre pandoc \
+       ghostscript \
        ca-certificates libssl3 \
     && rm -rf /var/lib/apt/lists/*
 

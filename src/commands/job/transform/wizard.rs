@@ -22,6 +22,61 @@ use crate::core::wizard::WizardInput;
 use super::format::{AudioQuality, InputFileType, VideoQuality};
 use super::{TransformJob, documents, media, soffice, worker};
 
+/// The interactive `--input-file-type` menu. A list the compiler cannot
+/// check against `InputFileType`, so a test pins that every entry parses
+/// and that no kind is missing (ADR-0160, which found ADR-0159's eleven
+/// kinds absent from it).
+const INTERACTIVE_INPUT_FILE_TYPES: &[&str] = &[
+    "png",
+    "jpeg",
+    "heic",
+    "mov",
+    "m4v",
+    "mp4",
+    "mp4-audio",
+    "m4a",
+    "mp3",
+    "aac",
+    "wav",
+    "opus",
+    "numbers",
+    "xlsx",
+    "xls",
+    "csv",
+    "doc",
+    "docx",
+    "pages",
+    "rtf",
+    "pdf",
+    "epub",
+    "pptx",
+    "key",
+    "txt",
+    "md",
+    "markdown",
+    "mkd",
+    "rst",
+    "textclipping",
+    "tsv",
+    // ADR-0159's eleven kinds never reached this menu; added with
+    // ADR-0160's four, which found the gap.
+    "avif",
+    "tif",
+    "tiff",
+    "webp",
+    "bmp",
+    "ico",
+    "icns",
+    "procreate",
+    "procreate-2",
+    "ai",
+    "emz",
+    "eps",
+    "svg",
+    "ics",
+    "vcf",
+];
+
 /// Resolves `--input-file-type` -- mandatory, a small vetted menu
 /// (`InputFileType::parse`), never falls through to an interactive prompt
 /// on an invalid flag value (`WizardInput::flag_value`'s own contract).
@@ -37,39 +92,7 @@ impl WizardInput for InputFileTypeInput {
     }
 
     fn prompt(&self) -> Result<InputFileType, String> {
-        let options = [
-            "png",
-            "jpeg",
-            "heic",
-            "mov",
-            "m4v",
-            "mp4",
-            "mp4-audio",
-            "m4a",
-            "mp3",
-            "aac",
-            "wav",
-            "opus",
-            "numbers",
-            "xlsx",
-            "xls",
-            "csv",
-            "doc",
-            "docx",
-            "pages",
-            "rtf",
-            "pdf",
-            "epub",
-            "pptx",
-            "key",
-            "txt",
-            "md",
-            "markdown",
-            "mkd",
-            "rst",
-            "textclipping",
-            "tsv",
-        ];
+        let options = INTERACTIVE_INPUT_FILE_TYPES;
         let selected = Select::with_theme(&ColorfulTheme::default())
             .with_prompt("Input file type")
             .items(options)
@@ -429,6 +452,10 @@ async fn required_converter_available(input_file_type: InputFileType) -> Result<
         Converter::Soffice => soffice::check_available().await,
         Converter::Calibre => documents::check_calibre_available().await,
         Converter::Pandoc => documents::check_pandoc_available().await,
+        Converter::GhostscriptThenSoffice => {
+            documents::check_ghostscript_available().await?;
+            soffice::check_available().await
+        }
     }
 }
 
@@ -442,6 +469,9 @@ enum Converter {
     /// Calibre's `ebook-convert`, for `epub` alone (ADR-0154).
     Calibre,
     Pandoc,
+    /// `gs` interprets the PostScript to PDF, then `soffice` exports SVG:
+    /// `eps` alone, the first kind needing two binaries (ADR-0160 §3).
+    GhostscriptThenSoffice,
 }
 
 /// An **exhaustive** match, which is the whole point of it (ADR-0154 §5).
@@ -474,7 +504,9 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Tiff
         | InputFileType::Webp
         | InputFileType::Ico
-        | InputFileType::Icns => Converter::Ffmpeg,
+        | InputFileType::Icns
+        // ADR-0160.
+        | InputFileType::Bmp => Converter::Ffmpeg,
         InputFileType::Numbers
         | InputFileType::Doc
         | InputFileType::Docx
@@ -486,6 +518,7 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Emz => Converter::Soffice,
         InputFileType::Epub => Converter::Calibre,
         InputFileType::Md | InputFileType::Rst => Converter::Pandoc,
+        InputFileType::Eps => Converter::GhostscriptThenSoffice,
         // Read and written in-process: `sheets` via `calamine`/`csv`,
         // `documents` via `csv` and `plist`, and the three kinds already in
         // their target format, which are a plain file copy.
@@ -499,7 +532,10 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Svg
         // ADR-0159: zip, plist, LZO and PNG all in-process.
         | InputFileType::Procreate
-        | InputFileType::Procreate2 => Converter::None,
+        | InputFileType::Procreate2
+        // ADR-0160: parsed and rendered by `vobject`.
+        | InputFileType::Ics
+        | InputFileType::Vcf => Converter::None,
     }
 }
 
@@ -782,6 +818,117 @@ async fn dispatch_async(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every kind is offered by the interactive menu, and every entry
+    /// parses (ADR-0160). The `match` makes a new variant a compile error
+    /// here, so it cannot be added without this list -- and so the menu --
+    /// being revisited.
+    #[test]
+    fn the_interactive_menu_offers_every_input_file_type() {
+        let all = [
+            InputFileType::Png,
+            InputFileType::Jpeg,
+            InputFileType::Heic,
+            InputFileType::Mov,
+            InputFileType::M4v,
+            InputFileType::Mp4,
+            InputFileType::Mp4Audio,
+            InputFileType::Numbers,
+            InputFileType::Xlsx,
+            InputFileType::Xls,
+            InputFileType::Csv,
+            InputFileType::M4a,
+            InputFileType::Mp3,
+            InputFileType::Aac,
+            InputFileType::Wav,
+            InputFileType::Opus,
+            InputFileType::Doc,
+            InputFileType::Docx,
+            InputFileType::Pages,
+            InputFileType::Rtf,
+            InputFileType::Pdf,
+            InputFileType::Epub,
+            InputFileType::Pptx,
+            InputFileType::Key,
+            InputFileType::Txt,
+            InputFileType::Md,
+            InputFileType::Rst,
+            InputFileType::Textclipping,
+            InputFileType::Tsv,
+            InputFileType::Avif,
+            InputFileType::Tif,
+            InputFileType::Tiff,
+            InputFileType::Webp,
+            InputFileType::Ico,
+            InputFileType::Icns,
+            InputFileType::Procreate,
+            InputFileType::Procreate2,
+            InputFileType::Ai,
+            InputFileType::Emz,
+            InputFileType::Svg,
+            InputFileType::Bmp,
+            InputFileType::Eps,
+            InputFileType::Ics,
+            InputFileType::Vcf,
+        ];
+        for kind in all {
+            match kind {
+                InputFileType::Png
+                | InputFileType::Jpeg
+                | InputFileType::Heic
+                | InputFileType::Mov
+                | InputFileType::M4v
+                | InputFileType::Mp4
+                | InputFileType::Mp4Audio
+                | InputFileType::Numbers
+                | InputFileType::Xlsx
+                | InputFileType::Xls
+                | InputFileType::Csv
+                | InputFileType::M4a
+                | InputFileType::Mp3
+                | InputFileType::Aac
+                | InputFileType::Wav
+                | InputFileType::Opus
+                | InputFileType::Doc
+                | InputFileType::Docx
+                | InputFileType::Pages
+                | InputFileType::Rtf
+                | InputFileType::Pdf
+                | InputFileType::Epub
+                | InputFileType::Pptx
+                | InputFileType::Key
+                | InputFileType::Txt
+                | InputFileType::Md
+                | InputFileType::Rst
+                | InputFileType::Textclipping
+                | InputFileType::Tsv
+                | InputFileType::Avif
+                | InputFileType::Tif
+                | InputFileType::Tiff
+                | InputFileType::Webp
+                | InputFileType::Ico
+                | InputFileType::Icns
+                | InputFileType::Procreate
+                | InputFileType::Procreate2
+                | InputFileType::Ai
+                | InputFileType::Emz
+                | InputFileType::Svg
+                | InputFileType::Bmp
+                | InputFileType::Eps
+                | InputFileType::Ics
+                | InputFileType::Vcf => {}
+            }
+            assert!(
+                INTERACTIVE_INPUT_FILE_TYPES
+                    .iter()
+                    .any(|option| InputFileType::parse(option) == Ok(kind)),
+                "{kind} is missing from the interactive menu"
+            );
+        }
+        for option in INTERACTIVE_INPUT_FILE_TYPES {
+            assert!(InputFileType::parse(option).is_ok(), "{option}");
+        }
+    }
 
     #[test]
     fn input_file_type_input_flag_value_parses_a_valid_value() {

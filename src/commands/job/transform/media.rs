@@ -394,6 +394,18 @@ pub(crate) const NOT_A_KEYNOTE_SIGNATURE: &str = "is not a Keynote presentation"
 /// (ADR-0154).
 pub(crate) const NOT_A_TEXTCLIPPING_SIGNATURE: &str = "is not a readable text clipping";
 
+/// `vobject`'s rejection of an `.ics` with no `BEGIN:VCALENDAR` (ADR-0160).
+pub(crate) const NOT_A_CALENDAR_SIGNATURE: &str = "is not an iCalendar file";
+
+/// `vobject`'s rejection of a `.vcf` with no `BEGIN:VCARD` (ADR-0160).
+pub(crate) const NOT_A_VCARD_SIGNATURE: &str = "is not a vCard file";
+
+/// `documents::eps_to_svg`'s refusal of an SVG that draws nothing
+/// (ADR-0160 §3) -- what `soffice` alone produced from a real EPS, with
+/// exit 0. Non-retryable, but **not** wrong-input-kind: the local copy is
+/// kept for diagnosis, since the input may be fine and the converter wrong.
+pub(crate) const SVG_DREW_NOTHING_SIGNATURE: &str = "converted to an SVG that draws nothing";
+
 /// Whether `err` means the operator pointed this run at the wrong
 /// `--input-file-type` for this file -- the file itself is intact
 /// (ADR-0143).
@@ -414,6 +426,8 @@ pub(crate) fn is_wrong_input_kind_error(err: &str) -> bool {
         NOT_A_TEXTCLIPPING_SIGNATURE,
         NOT_AN_ICNS_SIGNATURE,
         NOT_A_PROCREATE_SIGNATURE,
+        NOT_A_CALENDAR_SIGNATURE,
+        NOT_A_VCARD_SIGNATURE,
     ]
     .iter()
     .any(|signature| err.contains(signature))
@@ -757,6 +771,9 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         NOT_AN_ICNS_SIGNATURE,
         NOT_A_PROCREATE_SIGNATURE,
         PROCREATE_UNVERIFIED_SIGNATURE,
+        NOT_A_CALENDAR_SIGNATURE,
+        NOT_A_VCARD_SIGNATURE,
+        SVG_DREW_NOTHING_SIGNATURE,
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()
@@ -903,6 +920,43 @@ mod tests {
             "not white: {:?}",
             &rgb[..6]
         );
+    }
+
+    /// ADR-0160 §2: the bucket's bitmaps are 8-bit and 1-bit paletted, at
+    /// sizes that are not multiples of anything. Both convert at their own
+    /// dimensions through the same flattening path as `avif`/`webp`.
+    #[tokio::test]
+    async fn paletted_bitmaps_convert_at_their_own_size() {
+        if check_ffmpeg_available().await.is_err() {
+            eprintln!("skipping: ffmpeg/ffprobe not found on PATH");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        for pix_fmt in ["pal8", "monob"] {
+            let input = dir.path().join(format!("{pix_fmt}.BMP"));
+            let made = tokio::process::Command::new("ffmpeg")
+                .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
+                .arg("testsrc=size=33x17")
+                .args([
+                    "-frames:v",
+                    "1",
+                    "-c:v",
+                    "bmp",
+                    "-pix_fmt",
+                    pix_fmt,
+                    "-f",
+                    "image2",
+                ])
+                .arg(&input)
+                .output()
+                .await
+                .unwrap();
+            assert!(made.status.success(), "{pix_fmt}: {made:?}");
+
+            let output = dir.path().join(format!("{pix_fmt}.jpg.scratch"));
+            transcode_to_jpg_flattened(&input, &output).await.unwrap();
+            assert_eq!(probe_dimensions(&output).await, Some((33, 17)), "{pix_fmt}");
+        }
     }
 
     /// The flatten leaves an opaque image alone: same size, and the
