@@ -251,10 +251,22 @@ the user for the terminal output instead.
   (`rclone_duplicate_notices` should be `0`) and a collision no longer
   produces an undelivered file. Look instead for
   `"transform: case-variant pull complete"` with `pulled`/`failed` counts,
-  and for the `"source keys differ only by letter case…"` line, which is now
+  and for the `"source keys differ only by letter case or Unicode
+  normalization…"` line (the normalization half since ADR-0158; before it
+  read `"…only by letter case…"`), which is now
   **INFO** rather than WARN -- it describes what was done, not data about to
   be lost. A non-zero `failed` there, or a `Pull`-stage failure whose detail
   names a failed individual pull, is the real signal.
+
+  **`soffice` failures since ADR-0158.** A transcode error saying
+  `soffice crashed (signal N) … -- converter crashed` is the converter
+  dying, not the file being unreadable: the local copy is kept, and macOS
+  writes a matching `~/Library/Logs/DiagnosticReports/soffice-*.ips` with
+  the faulting stack (parent process `pigeon`). On an older build the same
+  crash reads `soffice produced no usable .pdf … (exit None) -- is not a
+  readable document` -- `exit None` is the tell. A run where every failure
+  shares one character class in its filename (a space, `#`, `%`) is
+  ADR-0158's URL-encoding bug, not bad files.
 
   **Since ADR-0156** the variants are pulled by one bulk `copy` per
   collision-free *slot* (`case-variant pull complete` gains `slots`/`keys`;

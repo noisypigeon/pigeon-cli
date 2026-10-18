@@ -566,13 +566,13 @@ fn assign_case_variant_slots(variants: &[String]) -> Vec<Vec<String>> {
         for (index, claimed) in claims.iter_mut().enumerate() {
             let fits = prefixes
                 .iter()
-                .all(|prefix| match claimed.get(&prefix.to_lowercase()) {
+                .all(|prefix| match claimed.get(&local_fold(prefix)) {
                     Some(spelling) => spelling == prefix,
                     None => true,
                 });
             if fits {
                 for prefix in prefixes {
-                    claimed.insert(prefix.to_lowercase(), prefix);
+                    claimed.insert(local_fold(&prefix), prefix);
                 }
                 slots[index].push(key.clone());
                 continue 'key;
@@ -580,7 +580,7 @@ fn assign_case_variant_slots(variants: &[String]) -> Vec<Vec<String>> {
         }
         let claimed = prefixes
             .into_iter()
-            .map(|prefix| (prefix.to_lowercase(), prefix))
+            .map(|prefix| (local_fold(&prefix), prefix))
             .collect();
         claims.push(claimed);
         slots.push(vec![key.clone()]);
@@ -1368,6 +1368,20 @@ const UNDELIVERED_LOG_LIMIT: u64 = 50;
 /// (ADR-0156); the report carries the rest.
 const COLLISION_LOG_EXAMPLES: usize = 10;
 
+/// The name a source key has on the local volume, for deciding which keys
+/// collide there (ADR-0158): NFC, then lowercase.
+///
+/// APFS matches names regardless of both letter case and Unicode
+/// normalization, so `Montréal` spelled with a precomposed `é` and with
+/// `e` + U+0301 are one local file even though they are two S3 keys.
+/// Lowercasing alone (ADR-0144) missed that. This approximates APFS rather
+/// than reproducing it -- APFS uses its own case-folding tables -- and a
+/// pair it misses still surfaces as an undelivered file, never silently.
+fn local_fold(key: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    key.nfc().collect::<String>().to_lowercase()
+}
+
 /// `case_collisions` regrouped by folded key, each group and the list of
 /// groups sorted, so the log line's examples and the report's listing are
 /// stable across runs (ADR-0156).
@@ -1375,7 +1389,7 @@ fn case_collision_groups(case_collisions: &HashSet<String>) -> Vec<Vec<String>> 
     let mut by_folded: HashMap<String, Vec<String>> = HashMap::new();
     for key in case_collisions {
         by_folded
-            .entry(key.to_lowercase())
+            .entry(local_fold(key))
             .or_default()
             .push(key.clone());
     }
@@ -1411,7 +1425,7 @@ fn case_insensitive_collisions(relative_paths: &[String]) -> HashSet<String> {
     let mut by_folded: HashMap<String, Vec<&String>> = HashMap::new();
     for relative_path in relative_paths {
         by_folded
-            .entry(relative_path.to_lowercase())
+            .entry(local_fold(relative_path))
             .or_default()
             .push(relative_path);
     }
@@ -1623,9 +1637,9 @@ pub(crate) async fn run_transform_job(
             keys = case_collisions.len(),
             largest_group = case_collision_groups.iter().map(Vec::len).max().unwrap_or(0),
             examples = ?examples,
-            "transform: source keys differ only by letter case, so they cannot share one \
-             local directory; each is pulled separately (all groups are listed in \
-             transform-report.txt)"
+            "transform: source keys differ only by letter case or Unicode normalization, so they \
+             cannot share one local directory; each is pulled separately (all groups are listed \
+             in transform-report.txt)"
         );
     }
 
@@ -2097,7 +2111,7 @@ pub(crate) async fn run_transform_job(
              first {CIRCUIT_BREAKER_SAMPLE_SIZE} completed files failed transcoding with the same \
              deterministic error signature. That is a systemic problem, not isolated bad source \
              files, so the run is being aborted instead of grinding through every remaining file \
-             with a guaranteed-identical failure. The two usual causes: (1) the wrong \
+             with a guaranteed-identical failure. The usual causes: (1) the wrong \
              --input-file-type for what this source actually holds -- e.g. a mp4-audio run \
              pointed at real video, or vice versa (ADR-0143); a spreadsheet kind pointed at \
              something that is not a workbook (ADR-0149); or a document kind pointed at \
@@ -2106,7 +2120,9 @@ pub(crate) async fn run_transform_job(
              environment/capability gap, the converter on this job's host lacking support for \
              this input's format or a feature it uses -- `ffmpeg` for image/video/audio kinds, \
              `soffice` for numbers/doc/docx/pages/rtf/pptx/key, `ebook-convert` for epub, and \
-             `pandoc` for md/rst. The example error below distinguishes them. \
+             `pandoc` for md/rst; or (3) the converter itself crashing, which says \
+             `converter crashed` and is not the files' fault (ADR-0158). The example error \
+             below distinguishes them. \
              Example error: {example}"
         ));
     }
@@ -3254,6 +3270,50 @@ mod tests {
     /// The exact shape found in the ADR-0144 run: `IMG_0260.JPG` and
     /// `IMG_0260.jpg` were the only two case-insensitive duplicates among
     /// 38,232 source keys, and the lowercase one silently never arrived.
+    /// ADR-0158: the real pair from the docx run -- `é` precomposed (NFC,
+    /// U+00E9) and decomposed (NFD, `e` + U+0301). Two S3 keys, one APFS
+    /// file.
+    const MONTREAL_NFC: &str = "Solutions S Montr\u{e9}al.docx";
+    const MONTREAL_NFD: &str = "Solutions S Montre\u{301}al.docx";
+
+    #[test]
+    fn local_fold_treats_normalization_and_case_as_one_name() {
+        assert_ne!(
+            MONTREAL_NFC, MONTREAL_NFD,
+            "the fixture must differ in bytes"
+        );
+        assert_eq!(local_fold(MONTREAL_NFC), local_fold(MONTREAL_NFD));
+        assert_eq!(
+            local_fold(&MONTREAL_NFD.to_uppercase()),
+            local_fold(MONTREAL_NFC)
+        );
+        assert_ne!(local_fold("a.docx"), local_fold("b.docx"));
+    }
+
+    #[test]
+    fn case_insensitive_collisions_finds_a_normalization_only_pair() {
+        let collisions = case_insensitive_collisions(&[
+            MONTREAL_NFC.to_string(),
+            MONTREAL_NFD.to_string(),
+            "Solutions S Montr\u{e9}al-2.docx".to_string(),
+        ]);
+        let mut found: Vec<&String> = collisions.iter().collect();
+        found.sort();
+        let mut expected = vec![MONTREAL_NFC, MONTREAL_NFD];
+        expected.sort();
+        assert_eq!(found, expected);
+        assert_eq!(case_collision_groups(&collisions).len(), 1);
+    }
+
+    #[test]
+    fn case_variant_slots_separate_a_normalization_only_pair() {
+        let mut variants = vec![MONTREAL_NFC.to_string(), MONTREAL_NFD.to_string()];
+        variants.sort();
+        let slots = assign_case_variant_slots(&variants);
+        assert_eq!(slots.len(), 2, "{slots:?}");
+        assert!(slots.iter().all(|slot| slot.len() == 1));
+    }
+
     #[test]
     fn case_insensitive_collisions_finds_the_real_extension_case_pair() {
         let collisions = case_insensitive_collisions(&[
@@ -3781,7 +3841,7 @@ mod tests {
             let mut seen: HashMap<String, String> = HashMap::new();
             for key in slot {
                 for prefix in path_prefixes(key) {
-                    if let Some(other) = seen.insert(prefix.to_lowercase(), prefix.clone()) {
+                    if let Some(other) = seen.insert(local_fold(&prefix), prefix.clone()) {
                         assert_eq!(other, prefix, "slot {slot:?} folds two spellings together");
                     }
                 }

@@ -11,9 +11,17 @@
 //! Everything hardened about it is load-bearing and is preserved here: the
 //! per-invocation profile directory, the timeout, and treating the exit
 //! code as *not* authoritative.
+//!
+//! ADR-0158 adds two more. soffice reads both its profile and its
+//! `--outdir` as URLs, and the work directory is named after the source
+//! file, so both are percent-encoded: an unencoded space crashed it, a `#`
+//! hung it, and a `%41` silently became `A`. And a timed-out soffice is
+//! killed rather than orphaned.
 
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+use super::media::CONVERTER_CRASHED_SIGNATURE;
 
 /// How long `soffice` gets before being treated as hung.
 ///
@@ -76,21 +84,28 @@ pub(crate) async fn convert(
     std::fs::create_dir_all(work_dir)
         .map_err(|err| format!("failed to create {}: {err}", work_dir.display()))?;
     let profile_dir = work_dir.join("lo-profile");
+    let profile_url = directory_url(&profile_dir)?;
+    let outdir_url = directory_url(work_dir)?;
 
     // `-env:UserInstallation` is not optional. Without it every concurrent
     // `soffice` shares one profile directory, and they either serialise on
     // its lock or fail outright -- and this job runs `--concurrency` files
     // at once.
+    //
+    // Both directories go in as encoded URLs (ADR-0158). The input file
+    // does not need it: soffice treats a plain path argument as a path,
+    // measured with a space, `#`, `%` and `:` in the name.
     let mut command = tokio::process::Command::new("soffice");
     command
         .arg("--headless")
-        .arg(format!(
-            "-env:UserInstallation=file://{}",
-            profile_dir.display()
-        ))
+        .arg(format!("-env:UserInstallation={profile_url}"))
         .args(["--convert-to", target_ext, "--outdir"])
-        .arg(work_dir)
-        .arg(input);
+        .arg(&outdir_url)
+        .arg(input)
+        // ADR-0158: without this, the timeout below drops the future and
+        // leaves soffice running. Two runs' hung processes were still alive
+        // half an hour later.
+        .kill_on_drop(true);
 
     let output = match tokio::time::timeout(SOFFICE_TIMEOUT, command.output()).await {
         Ok(Ok(output)) => output,
@@ -119,22 +134,117 @@ pub(crate) async fn convert(
     // the key legible in it. No output check can catch that, which is why
     // `documents::ensure_keynote` guards the **input** instead.
     let produced_len = std::fs::metadata(&produced).map(|meta| meta.len()).ok();
-    match produced_len {
-        Some(len) if len > 0 => Ok(produced),
-        _ => Err(format!(
-            "soffice produced no usable .{target_ext} for {} (exit {:?}) -- \
-             {signature}. stdout: {} stderr: {}",
-            input.display(),
-            output.status.code(),
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        )),
+    if let Some(len) = produced_len
+        && len > 0
+    {
+        return Ok(produced);
     }
+
+    // A signal death is the converter failing, not the file (ADR-0158), so
+    // it must not carry the caller's wrong-input signature: that would
+    // delete the local copy under ADR-0143 and send the reader looking at
+    // the wrong cause. It stays non-retryable, so a systemic crash still
+    // trips the circuit breaker.
+    if output.status.code().is_none() {
+        return Err(format!(
+            "soffice crashed ({}) converting {} -- {CONVERTER_CRASHED_SIGNATURE}. stderr: {}",
+            termination_signal(&output.status),
+            input.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    Err(format!(
+        "soffice produced no usable .{target_ext} for {} (exit {:?}) -- \
+         {signature}. stdout: {} stderr: {}",
+        input.display(),
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout).trim(),
+        String::from_utf8_lossy(&output.stderr).trim()
+    ))
+}
+
+/// `path` as a percent-encoded `file://` directory URL (ADR-0158).
+///
+/// Made absolute first, since a URL cannot express a relative path.
+fn directory_url(path: &Path) -> Result<String, String> {
+    let absolute = std::path::absolute(path)
+        .map_err(|err| format!("failed to resolve {}: {err}", path.display()))?;
+    url::Url::from_directory_path(&absolute)
+        .map(String::from)
+        .map_err(|()| format!("{} cannot be expressed as a file URL", absolute.display()))
+}
+
+#[cfg(unix)]
+fn termination_signal(status: &std::process::ExitStatus) -> String {
+    use std::os::unix::process::ExitStatusExt;
+    match status.signal() {
+        Some(signal) => format!("signal {signal}"),
+        None => "no exit code".to_string(),
+    }
+}
+
+#[cfg(not(unix))]
+fn termination_signal(_status: &std::process::ExitStatus) -> String {
+    "no exit code".to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ADR-0158: each of these crashed, hung, or redirected soffice when
+    /// passed unencoded.
+    #[test]
+    fn directory_url_percent_encodes_reserved_characters() {
+        let url = directory_url(Path::new("/tmp/a b#1 (c)%41/lo-profile")).unwrap();
+        assert_eq!(url, "file:///tmp/a%20b%231%20(c)%2541/lo-profile/");
+        assert!(!url.contains(' ') && !url.contains('#'), "{url}");
+    }
+
+    #[test]
+    fn directory_url_resolves_a_relative_path() {
+        let url = directory_url(Path::new("relative/dir")).unwrap();
+        assert!(url.starts_with("file:///"), "{url}");
+        assert!(url.ends_with("/relative/dir/"), "{url}");
+    }
+
+    /// ADR-0158 §4: a crash stops retries and counts toward the breaker,
+    /// but is not the file's fault, so its local copy is kept.
+    #[test]
+    fn a_crash_is_non_retryable_but_not_wrong_input_kind() {
+        let err = format!(
+            "soffice crashed (signal 6) converting /x.docx -- {CONVERTER_CRASHED_SIGNATURE}. stderr: boom"
+        );
+        assert!(super::super::media::is_non_retryable_transcode_error(&err));
+        assert!(!super::super::media::is_wrong_input_kind_error(&err));
+    }
+
+    /// End to end against the real binary: a work directory carrying every
+    /// character class that broke the docx run still converts, and the
+    /// output lands where the caller expects it rather than at a decoded
+    /// path.
+    #[tokio::test]
+    async fn convert_succeeds_in_a_work_dir_with_url_reserved_characters() {
+        if check_available().await.is_err() {
+            eprintln!("skipping: soffice not found on PATH");
+            return;
+        }
+        let temp = tempfile::tempdir().expect("tempdir");
+        let input = temp.path().join("fixture.rtf");
+        std::fs::write(&input, br"{\rtf1\ansi\deff0 Reserved characters.\par}").unwrap();
+        let work_dir = temp.path().join("a b#1 (c)%41");
+
+        let produced = convert(&input, &work_dir, "pdf", "is not a readable document")
+            .await
+            .expect("converts despite the directory name");
+        assert_eq!(produced, work_dir.join("fixture.pdf"));
+        assert!(
+            work_dir.join("lo-profile").is_dir(),
+            "profile went elsewhere"
+        );
+        assert!(!temp.path().join("a b#1 (c)A").exists());
+    }
 
     #[tokio::test]
     async fn check_available_reports_a_missing_binary_clearly() {
