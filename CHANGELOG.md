@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.48] - 2026-10-18
+
 - ADR-0159: `job run transform` gains 11 input kinds: `avif`/`tif`/`tiff`/`webp` to `.jpg` (transparency flattened onto white), `ico`/`icns`/`procreate`/`procreate-2` to `.png` (transparency kept, Procreate at full canvas resolution and verified against its own thumbnail), and `ai`/`emz`/`svg` to `.svg` ([#129](https://github.com/noisypigeon/pigeon-cli/pull/129)).
 
 ## [0.4.47] - 2026-10-18
