@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.49] - 2026-10-18
+
 - ADR-0160 (Proposed): plan for `bmp` to `.jpg`, `eps` to `.svg` via Ghostscript (soffice alone writes an empty SVG for the real file), and `ics`/`vcf` to readable `.txt` as `job run transform` input kinds ([#130](https://github.com/noisypigeon/pigeon-cli/pull/130)).
 
 ## [0.4.48] - 2026-10-18
