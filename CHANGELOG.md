@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- Docs: `CLAUDE.md` points at [`noisypigeon/library`](https://github.com/noisypigeon/library)'s `docs/adr/` for the family's infrastructure ADRs, since LIB-0017 moved them there and archived the `DEV-` corpus, and names `noisypigeon/runway` in place of the renamed `noisypigeon/willowgraysen` ([#132](https://github.com/noisypigeon/pigeon-cli/pull/132)).
+
 ## [0.4.50] - 2026-10-18
 
 - ADR-0160: `job run transform` gains `bmp` to `.jpg`, `eps` to `.svg` (Ghostscript then `soffice`, since `soffice` alone writes an empty page for a real EPS), and `ics`/`vcf` to readable `.txt`; the interactive `--input-file-type` menu now offers every kind, including ADR-0159's eleven ([#131](https://github.com/noisypigeon/pigeon-cli/pull/131)).
