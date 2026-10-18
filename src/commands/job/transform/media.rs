@@ -328,6 +328,13 @@ pub(crate) const NOT_A_WORKBOOK_SIGNATURE: &str = "is not a readable spreadsheet
 /// `NOT_A_WORKBOOK_SIGNATURE` is.
 pub(crate) const NOT_A_DOCUMENT_SIGNATURE: &str = "is not a readable document";
 
+/// `soffice` dying by signal rather than exiting (ADR-0158).
+///
+/// Non-retryable, so a systemic crash still trips the circuit breaker, but
+/// deliberately **not** wrong-input-kind: the file was never read, so its
+/// local copy is kept for diagnosis rather than deleted under ADR-0143.
+pub(crate) const CONVERTER_CRASHED_SIGNATURE: &str = "converter crashed";
+
 /// `documents::ensure_keynote`'s rejection of a `.key` that is not an iWork
 /// container (ADR-0154 §2).
 ///
@@ -698,6 +705,7 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
         NOT_A_DOCUMENT_SIGNATURE,
         NOT_A_KEYNOTE_SIGNATURE,
         NOT_A_TEXTCLIPPING_SIGNATURE,
+        CONVERTER_CRASHED_SIGNATURE,
     ];
     NON_RETRYABLE_SIGNATURES
         .iter()

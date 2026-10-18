@@ -60,6 +60,12 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-error = "0.2.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
+# ADR-0158: NFC-normalizes source keys before case-folding them, so keys that
+# differ only by Unicode normalization are detected as colliding on APFS.
+unicode-normalization = "0.1"
+# ADR-0158: percent-encodes the `file://` URLs `soffice` takes for its profile
+# and output directories. Already in the lockfile via `async-native-tls`.
+url = "2.5"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(unix)'.dependencies]
