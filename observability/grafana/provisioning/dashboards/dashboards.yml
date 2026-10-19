@@ -1,9 +1,0 @@
-apiVersion: 1
-
-providers:
-  - name: pigeon-cli
-    orgId: 1
-    folder: ""
-    type: file
-    options:
-      path: /etc/grafana/provisioning/dashboards

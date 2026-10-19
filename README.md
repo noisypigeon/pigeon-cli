@@ -10,8 +10,10 @@ concurrent operations, and rate-limited transfers.
 - [`src/`](src/) — the Rust CLI source.
 - [`adr/`](adr/) — architecture decision records governing every
   change in this repo.
-- [`docs/report/`](docs/report/) — job-run log analysis reports produced
-  by the `analyze-job-run` Claude Code skill.
+- [`fetch-lib.sh`](fetch-lib.sh) / [`.lib-version`](.lib-version) — fetch
+  [`noisypigeon/library`](https://github.com/noisypigeon/library), which holds
+  this repo's release pipeline, local observability stack and Claude Code
+  skills, at a pinned version (CLI-0161).
 
 ## Getting started
 
@@ -80,11 +82,13 @@ Previously, `pigeon` job runs on Scaleway compute were observed via
 Scaleway's managed Cockpit (see CLI-0092/0093), fed by an on-host Grafana
 Alloy agent. Running `pigeon` bare-metal on your own machine instead (see
 CLI-0128) drops that path entirely — nothing ships `/metrics` or
-`pigeon.jsonl` anywhere by default. `observability/` provides an
-equivalent local stack via Docker Compose.
+`pigeon.jsonl` anywhere by default. The library's
+[`observability/pigeon-cli`](https://github.com/noisypigeon/library/tree/main/observability/pigeon-cli)
+provides an equivalent local stack via Docker Compose, at the version
+`.mise.toml`'s `PIGEON_OBSERVABILITY_VERSION` pins (CLI-0161).
 
 ```sh
-mise run observability-up      # starts Prometheus, Loki, Promtail, Grafana
+mise run observability-up      # fetches the pinned stack, starts Prometheus, Loki, Promtail, Grafana
 ```
 
 Then run `pigeon` commands normally, bare-metal, alongside the stack —

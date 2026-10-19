@@ -1,6 +1,17 @@
 [tools]
 rust = "1.92.0"
 
+# Library assets this repo consumes by version (CLI-0161, LIB-0001 invariant 2).
+# The scripts' version is /.lib-version, read by fetch-lib.sh; the stack's tag
+# is pinned here, and the Claude Code plugin's in .claude/settings.json.
+[env]
+PIGEON_OBSERVABILITY_VERSION = "observability/pigeon-cli/v1.0.0"
+
+# Materializes the library into .lib-src/ at /.lib-version. A no-op beyond a
+# tag fetch once it is there; set LIB_SRC to use your own checkout instead.
+[tasks.fetch-lib]
+run = "./fetch-lib.sh"
+
 [tasks.build]
 run = """
 cargo build
@@ -19,7 +30,8 @@ exec target/debug/pigeon "$@"
 """
 
 [tasks.build-release]
-run = ".github/scripts/build-release.sh \"$@\""
+depends = ["fetch-lib"]
+run = "\"${LIB_SRC:-.lib-src}/.github/scripts/crate-build-release.sh\" --bin pigeon --codesign-id dev.pigeon.cli \"$@\""
 
 [tasks.pigeon-release]
 run = """
@@ -52,10 +64,12 @@ run = "cargo publish --dry-run"
 run = "cargo publish"
 
 [tasks.release]
-run = ".github/scripts/release.sh \"$@\""
+depends = ["fetch-lib"]
+run = "\"${LIB_SRC:-.lib-src}/.github/scripts/crate-release.sh\" --crate pigeon-cli \"$@\""
 
 [tasks.adr-issue]
-run = ".github/scripts/adr-issue.sh \"$@\""
+depends = ["fetch-lib"]
+run = "\"${LIB_SRC:-.lib-src}/.github/scripts/adr-issue.sh\" --repo noisypigeon/pigeon-cli --label-meta .github/adr-issue-labels.txt \"$@\""
 
 [tasks.docker-build]
 run = "docker build --platform linux/arm64 -t pigeon-cli ."
@@ -63,11 +77,26 @@ run = "docker build --platform linux/arm64 -t pigeon-cli ."
 [tasks.docker-run]
 run = "docker run --platform linux/arm64 --rm -it -v pigeon-data:/data pigeon-cli \"$@\""
 
-[tasks.observability-up]
-run = "docker compose -f observability/docker-compose.yml up -d"
+# The local observability stack (CLI-0128) lives in the library since CLI-0161.
+# observability-stack extracts the pinned tag's stack, and the dashboard it
+# mounts, out of .lib-src/ into .lib-observability/, replacing any older copy.
+[tasks.observability-stack]
+depends = ["fetch-lib"]
+run = """
+rm -rf .lib-observability
+mkdir -p .lib-observability
+git -C "${LIB_SRC:-.lib-src}" archive "$PIGEON_OBSERVABILITY_VERSION" observability/pigeon-cli grafana-dashboards/pigeon-cli \
+  | tar -x -C .lib-observability
+"""
 
+[tasks.observability-up]
+depends = ["observability-stack"]
+run = "docker compose -f .lib-observability/observability/pigeon-cli/docker-compose.yml up -d"
+
+# By project name (pinned to `observability` in the stack), so these work
+# whether or not .lib-observability/ is still there.
 [tasks.observability-down]
-run = "docker compose -f observability/docker-compose.yml down"
+run = "docker compose -p observability down"
 
 [tasks.observability-logs]
-run = "docker compose -f observability/docker-compose.yml logs -f \"$@\""
+run = "docker compose -p observability logs -f \"$@\""

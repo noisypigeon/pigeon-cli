@@ -1,0 +1,7 @@
+area:email-sync|1d76db|IMAP import pipeline (job run email import)
+area:dataops|0e8a16|S3-compatible remote storage (bucket configs, upload)
+area:keyring|fbca04|Identities and bucket configs in keyring.toml
+area:job-orchestration|d93f0b|pigeon job wizard, concurrency, and phase orchestration
+area:security|b60205|Secret handling, credential scope, and access control
+area:tooling|c5def5|Dev-cycle, CI, release, and publishing tooling
+area:observability|5319e7|Logs, metrics, and the local observability stack
