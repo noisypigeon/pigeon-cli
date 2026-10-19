@@ -233,7 +233,7 @@ these ways only:
 
 ## Out of scope
 
-- **Pinning the observability images.** Every compose service uses
+- **Pinning the observability images.** Every compose service uses ([#134](https://github.com/noisypigeon/pigeon-cli/issues/134))
   `:latest`, so versioning the stack does not version what it runs. This is a
   genuine gap and is deferred.
 - **Adopting `spoke-root-changelog.yml`.** A permanent boundary, per §6.

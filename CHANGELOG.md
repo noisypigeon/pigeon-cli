@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- ADR-0161: records aligning pigeon-cli with library's hub-and-spoke model. `docs/adr/` moves to `adr/` and is re-prefixed `CLI-` everywhere. The skills, the release workflow and its scripts, and the observability stack move to the hub, pinned by version. `docs/report/` and `docs/VISION.md` are removed. The recorded exceptions are its own ADRs, issues, tags and publish ([#133](https://github.com/noisypigeon/pigeon-cli/pull/133)).
+
 ## [0.4.51] - 2026-10-18
 
 - Docs: `CLAUDE.md` points at [`noisypigeon/library`](https://github.com/noisypigeon/library)'s `docs/adr/` for the family's infrastructure ADRs, since LIB-0017 moved them there and archived the `DEV-` corpus, and names `noisypigeon/runway` in place of the renamed `noisypigeon/willowgraysen` ([#132](https://github.com/noisypigeon/pigeon-cli/pull/132)).
