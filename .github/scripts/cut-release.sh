@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bump Cargo.toml's patch version and cut CHANGELOG.md's [Unreleased]
-# section into a dated release section. See docs/adr/0117.
+# section into a dated release section. See adr/CLI-0117.
 set -euo pipefail
 
 usage() {
@@ -57,7 +57,7 @@ patch="${BASH_REMATCH[3]}"
 new_version="${major}.${minor}.$((patch + 1))"
 
 # Refuse to cut a release with nothing in it -- every merged PR appends a
-# bullet before merge per ADR-0029 step 4, so this should only ever fire if
+# bullet before merge per CLI-0029 step 4, so this should only ever fire if
 # main was pushed to directly, bypassing that process.
 if ! awk '
   /^## \[Unreleased\]$/ { found=1; next }

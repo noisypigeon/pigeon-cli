@@ -1,4 +1,4 @@
-//! Per-object push via `rclone copyto` (ADR-0146 §5), following
+//! Per-object push via `rclone copyto` (CLI-0146 §5), following
 //! `transform/push.rs`'s shape.
 //!
 //! `copyto` is rclone's single-file-to-single-file-path primitive: no
@@ -29,7 +29,7 @@ pub(crate) async fn push_one(
     key: &str,
     push_log_dir: &Path,
 ) -> Result<(), String> {
-    // Read before the push: ADR-0146 §5's GC deletes this file immediately
+    // Read before the push: CLI-0146 §5's GC deletes this file immediately
     // afterwards, so its size is unavailable then and `CopyTo` needs it for
     // `pigeon_upload_bytes_total`.
     let bytes = std::fs::metadata(local_path)

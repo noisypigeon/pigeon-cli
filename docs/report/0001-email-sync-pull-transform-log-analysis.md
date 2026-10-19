@@ -2,7 +2,7 @@
 
 - **Author**: Willow Finch ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-09-28.
-- **Method**: `.claude/skills/analyze-job-run/SKILL.md` (ADR-0078), applied to
+- **Method**: `.claude/skills/analyze-job-run/SKILL.md` (CLI-0078), applied to
   the real `pigeon.jsonl` observability log plus three terminal transcripts.
 
 Identities, mailbox names, and file paths below are placeholders
@@ -37,7 +37,7 @@ one identity, `jane-doe` -- by far the largest in the run (18 mailboxes,
 176,538 pending messages, 18.2GB). IMAP-level connectivity failures against
 its provider (`[OVERQUOTA] Account exceeded command or bandwidth limits`
 and, in a related run, "Too many simultaneous connections") exhausted
-ADR-0071's single-retry policy and caused whole batches to be dropped:
+CLI-0071's single-retry policy and caused whole batches to be dropped:
 
 - `step=connect`, "batch retries exhausted, dropping": 2 batches x 60 UIDs
   = **120** -- matches the transcript's "120 connect" exactly.
@@ -50,7 +50,7 @@ ADR-0071's single-retry policy and caused whole batches to be dropped:
 
 Concurrency was set to 16 for this run. That's very likely too many
 simultaneous IMAP sessions for this one identity's provider to tolerate,
-even with ADR-0071's per-identity cap -- the cap limits sessions but the
+even with CLI-0071's per-identity cap -- the cap limits sessions but the
 retry budget (one retry) isn't enough to ride out a rate-limit window once
 tripped.
 
@@ -72,7 +72,7 @@ capture of this exact failure would be undiagnosable from the log alone.
 00:34:42-04:18:47 window, grouped by `.fields.step`; cross-checked 1:1
 against both captured transcripts' printed summary lines.
 
-## Finding 2: `job.pull-transform` SIGKILL -- NOT the ADR-0076 pattern; a different, new defect found
+## Finding 2: `job.pull-transform` SIGKILL -- NOT the CLI-0076 pattern; a different, new defect found
 
 **Summary**: A separate, substantial `pull-transform` run (a scratch
 bucket-config in, a vault bucket-config out, encryption enabled,
@@ -81,7 +81,7 @@ concurrency 4) processed 17,678/17,678 pull-transform items and
 11,418/11,425, reported by `mise` as `killed by SIGKILL`.
 
 **Root cause of the SIGKILL itself: still open, and NOT memory exhaustion.**
-This is the important correction versus the ADR-0076 precedent: `mem_bytes`
+This is the important correction versus the CLI-0076 precedent: `mem_bytes`
 in the resource-sample stream stayed flat at 400-820MB for the entire tail
 of this run, right up to the last sample -- no growth, no swap-thrashing
 disk-read signature. The crash-detection method still applies (samples
@@ -104,8 +104,8 @@ retry and succeed; 5 in this run exhausted all 3 retries and became
 permanent upload failures (the exact 5 the transcript showed, immediately
 before the SIGKILL: 2 video files and 3 zip files). This is intermittent,
 cross-cuts multiple bucket-configs and both job types, and was not
-previously diagnosed under ADR-0076 -- it looks like a client-side
-S3-request malformation (possibly interacting with ADR-0025's
+previously diagnosed under CLI-0076 -- it looks like a client-side
+S3-request malformation (possibly interacting with CLI-0025's
 deterministic-nonce encryption-before-upload path under retry) rather than
 a provider-specific issue, given it isn't confined to one bucket-config or
 provider.
@@ -123,7 +123,7 @@ gap after 03:03:30Z with no further samples or closing event.
 1. **email-sync**: concurrency=16 is too aggressive for the `jane-doe`
    identity specifically, given its provider's rate limits. Worth a
    follow-up ADR to either lower per-identity concurrency adaptively, or
-   extend ADR-0071's retry budget for `connect`/`examine` batch failures
+   extend CLI-0071's retry budget for `connect`/`examine` batch failures
    before dropping them.
 2. **email-sync (observability gap)**: route the dedup/merge pass's
    `Warning: failed to read ... No such file or directory` lines through

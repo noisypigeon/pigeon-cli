@@ -1,4 +1,4 @@
-//! Recursive, disk-streamed zip expansion (ADR-0076, replacing ADR-0074's
+//! Recursive, disk-streamed zip expansion (CLI-0076, replacing CLI-0074's
 //! original fully-in-memory design). Every member is streamed straight from
 //! the zip entry's own `Read` impl to a fresh file on disk in bounded
 //! chunks -- never fully materialized as a `Vec<u8>` -- because a zip can
@@ -22,7 +22,7 @@ use crate::core::data::is_apple_double_basename;
 pub(crate) const MAX_ZIP_DEPTH: u32 = 10;
 
 /// How far a single archive's extracted bytes may exceed its own on-disk
-/// (compressed) size before extraction is treated as a zip bomb (ADR-0098,
+/// (compressed) size before extraction is treated as a zip bomb (CLI-0098,
 /// replacing a prior run-wide cumulative cap that punished a run for
 /// containing a lot of *legitimately* large data spread across many
 /// archives -- real buckets holding hundreds of GB of already-compressed
@@ -32,7 +32,7 @@ pub(crate) const MAX_ZIP_DEPTH: u32 = 10;
 /// legitimately compressible archive of plain text rarely clears 10-20:1.
 /// 100x is deliberately generous headroom while still catching a
 /// pathological nested-zip bomb. `worker.rs`'s live disk-space check
-/// (`local::check_disk_space`, ADR-0076) remains the real-time backstop
+/// (`local::check_disk_space`, CLI-0076) remains the real-time backstop
 /// this guard doesn't need to duplicate.
 const EXTRACTION_RATIO_LIMIT: u64 = 100;
 
@@ -55,7 +55,7 @@ pub(crate) struct ExtractedMember {
 /// etc.) -- as opposed to an AppleDouble object skipped before any open
 /// attempt was made. Collected by `deduplicate`'s worker loop so a run's
 /// report can itemize exactly which keys need a
-/// human to unlock or discard, instead of only a count (ADR-0107).
+/// human to unlock or discard, instead of only a count (CLI-0107).
 #[derive(Debug, Clone)]
 pub(crate) struct ArchiveFailure {
     pub key: String,
@@ -65,7 +65,7 @@ pub(crate) struct ArchiveFailure {
 /// `true` for a macOS AppleDouble resource-fork sidecar (`._<name>`,
 /// anywhere in the archive) or anything under a `__MACOSX/` metadata
 /// directory -- Finder-written noise that macOS zip tooling attaches
-/// alongside real content, never the user's own data (ADR-0098). These are
+/// alongside real content, never the user's own data (CLI-0098). These are
 /// skipped entirely rather than extracted: left unfiltered, a `._foo.zip`
 /// stub gets requeued by the caller as a nested zip purely because of its
 /// name, then fails to open ("Could not find EOCD") since it's actually a
@@ -80,7 +80,7 @@ fn is_apple_metadata_entry(entry_name: &str) -> bool {
 
 /// `true` for `is_apple_metadata_entry`'s noise, or for a `.DS_Store`
 /// sidecar, a `.git` internal, or a `node_modules` vendor file anywhere in
-/// the archive (ADR-0099) -- tooling-generated noise or fully-reproducible
+/// the archive (CLI-0099) -- tooling-generated noise or fully-reproducible
 /// vendor code, never the user's own data, the same reasoning that already
 /// justifies skipping AppleDouble/`__MACOSX` entries outright rather than
 /// archiving them. Matched on path *segments* so a nested `.git`/
@@ -110,7 +110,7 @@ fn is_skippable_zip_entry(entry_name: &str) -> bool {
 /// about) would push this archive's own extraction past
 /// `EXTRACTION_RATIO_LIMIT` times its on-disk size is truncated and
 /// dropped. Returns the surviving members alongside how many were dropped
-/// this way -- the caller counts this as a real failure (ADR-0098; a prior
+/// this way -- the caller counts this as a real failure (CLI-0098; a prior
 /// version of this function only logged it, contradicting this same doc
 /// comment).
 pub(crate) fn expand_to_dir(

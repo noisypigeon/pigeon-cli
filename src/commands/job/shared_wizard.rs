@@ -1,4 +1,4 @@
-//! `WizardInput` implementors shared by more than one job type (ADR-0074).
+//! `WizardInput` implementors shared by more than one job type (CLI-0074).
 //! Extracted once a second/third job needed the exact same prompt, not
 //! written generically up front -- `email_sync::wizard` originated
 //! `UploadTargetInput`; `decrypt_files::wizard` originated `ConfirmInput`.
@@ -6,15 +6,15 @@
 //! `email_import`'s `MessagesPerMinuteInput`, which governs a pace no other
 //! job has a concept of).
 //!
-//! Membership here is earned and can be lost: ADR-0131 removed
+//! Membership here is earned and can be lost: CLI-0131 removed
 //! `SourceBucketInput` outright and returned `EncryptionKeyInput` to
 //! `email_sync::wizard` when `pull_transform`'s deletion left them with zero
-//! and one consumer respectively -- the same un-hoisting ADR-0094 did to
-//! `ConcurrencyInput`, and ADR-0147 did again to `UploadConcurrencyInput`
+//! and one consumer respectively -- the same un-hoisting CLI-0094 did to
+//! `ConcurrencyInput`, and CLI-0147 did again to `UploadConcurrencyInput`
 //! once the two email jobs that used it were removed. `TransfersInput`/`CheckersInput`/`TpslimitInput`
 //! arrived the opposite way: originated in `rclone::wizard`, duplicated by
 //! `transform::wizard`, and hoisted here once `deduplicate` needed the
-//! identical prompts as the third consumer (ADR-0136).
+//! identical prompts as the third consumer (CLI-0136).
 
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
@@ -23,14 +23,14 @@ use crate::core::wizard::WizardInput;
 
 /// Resolves the keyring's path and loads it, the first thing every job's
 /// async dispatch does. Hoisted from six byte-identical copies, one per job
-/// wizard (ADR-0145 §4).
+/// wizard (CLI-0145 §4).
 ///
 /// Refuses an explicitly-passed `--keyring-path` naming a file that doesn't
 /// exist, rather than loading the empty store `Store::load` returns for any
 /// missing file. Without the guard a typo'd path surfaces much later as
 /// "no bucket-configs are configured", which names neither the real problem
 /// nor the path -- the same exit-successfully-having-done-nothing failure
-/// ADR-0140 closed for a source `Lsjson`. The check lives here rather than
+/// CLI-0140 closed for a source `Lsjson`. The check lives here rather than
 /// in `Store::load` precisely because `pigeon keyring add` must still be
 /// able to create a keyring at a path that doesn't exist yet, so
 /// `keyring::wizard` keeps calling `Store::resolve_path`/`Store::load`
@@ -49,9 +49,9 @@ pub(crate) fn load_keyring() -> Result<Store, String> {
 }
 
 /// Every rclone-backed job's preflight: confirm the binary is on `PATH`,
-/// then regenerate the sandboxed config from the current keyring (ADR-0136
+/// then regenerate the sandboxed config from the current keyring (CLI-0136
 /// §2). Hoisted from three byte-identical copies in `rclone::wizard`
-/// (copy and delete) and `transform::wizard` (ADR-0145 §5).
+/// (copy and delete) and `transform::wizard` (CLI-0145 §5).
 ///
 /// `deduplicate` is the fourth call site and the reason this is shared at
 /// all: it had neither half, despite all three of its data legs
@@ -59,7 +59,7 @@ pub(crate) fn load_keyring() -> Result<Store, String> {
 /// being alias-addressed rclone calls that read the generated config. It
 /// ran against whatever a previous `transform`/`rclone` run happened to
 /// leave behind -- or nothing at all -- so a `pigeon keyring modify bucket`
-/// never reached it, contradicting ADR-0136's "regenerated fresh from the
+/// never reached it, contradicting CLI-0136's "regenerated fresh from the
 /// current keyring state every time" guarantee.
 pub(crate) async fn prepare_rclone(store: &Store) -> Result<(), String> {
     crate::core::rclone::check_available().await.map_err(|_| {
@@ -70,7 +70,7 @@ pub(crate) async fn prepare_rclone(store: &Store) -> Result<(), String> {
 }
 
 /// Resolves which bucket-config to upload this run's report/log/transcript
-/// to -- mandatory on every job type (ADR-0100). Put here directly
+/// to -- mandatory on every job type (CLI-0100). Put here directly
 /// (rather than originated in one job first) since every job needs it from
 /// day one.
 pub(crate) struct ReportBucketInput<'a> {
@@ -98,9 +98,9 @@ impl WizardInput for ReportBucketInput<'_> {
 
 /// Resolves whether (and where) to upload (originally the since-removed
 /// `email_sync`'s
-/// `RemoteOutputInput`, ADR-0021 §5 amendment): `Some(alias)` if the flag is
+/// `RemoteOutputInput`, CLI-0021 §5 amendment): `Some(alias)` if the flag is
 /// given (validated by the caller); on a TTY if omitted, asks whether to
-/// upload at all and, if so, reuses `Store::prompt_select_bucket` (ADR-0022
+/// upload at all and, if so, reuses `Store::prompt_select_bucket` (CLI-0022
 /// -- scoped to bucket-configs only) to pick among `store`'s configured
 /// bucket-configs; if omitted and non-interactive, silently returns `None`
 /// (skip upload) -- there was already a safe default before this prompt
@@ -144,10 +144,10 @@ impl WizardInput for UploadTargetInput<'_> {
 /// shared by every job whose per-item work is CPU-bound (hashing,
 /// decompression, decryption) rather than I/O-bound, where a flat `4`
 /// (tuned for IMAP/S3-bound jobs) is the wrong default. Originated in
-/// `deduplicate/wizard.rs` (ADR-0088); hoisted here once two more jobs
-/// needed the identical logic (ADR-0090, this codebase's usual "duplicate
+/// `deduplicate/wizard.rs` (CLI-0088); hoisted here once two more jobs
+/// needed the identical logic (CLI-0090, this codebase's usual "duplicate
 /// until the third consumer" precedent). Two consumers remain after
-/// ADR-0131 and ADR-0134 (which removed `decrypt_files`): `deduplicate`
+/// CLI-0131 and CLI-0134 (which removed `decrypt_files`): `deduplicate`
 /// and `transform`.
 pub(crate) fn default_concurrency() -> usize {
     std::thread::available_parallelism()
@@ -158,16 +158,16 @@ pub(crate) fn default_concurrency() -> usize {
 /// Resolves a plain concurrency value with no time-estimate table, with a
 /// cores-based interactive default via `default_concurrency()` for
 /// CPU-bound jobs. `--concurrency <N>` and the non-interactive fallback
-/// are unchanged (ADR-0088/ADR-0090), except `--concurrency` is now clamped
-/// against the host's core count (ADR-0127): a real `transform` run with
+/// are unchanged (CLI-0088/CLI-0090), except `--concurrency` is now clamped
+/// against the host's core count (CLI-0127): a real `transform` run with
 /// `--concurrency 50` on a 14-core machine oversubscribed both process count
 /// and (via `ffmpeg`'s own per-process threading) CPU threads at once,
 /// OOM-killing the host. `CONCURRENCY_CLAMP_MULTIPLIER` leaves headroom for
 /// deliberate, modest oversubscription of a partly-I/O-bound pipeline
 /// without allowing a pathological value through -- a warning, not a hard
 /// error, so an existing non-interactive invocation never starts failing
-/// outright (the same posture ADR-0091 §3 took for the upload-phase
-/// concurrency flag ADR-0147 removed).
+/// outright (the same posture CLI-0091 §3 took for the upload-phase
+/// concurrency flag CLI-0147 removed).
 const CONCURRENCY_CLAMP_MULTIPLIER: usize = 2;
 
 pub(crate) struct CpuConcurrencyInput {
@@ -208,16 +208,16 @@ impl WizardInput for CpuConcurrencyInput {
     }
 }
 
-/// Flat default for `TransfersInput` (ADR-0108) -- matches ADR-0106's
+/// Flat default for `TransfersInput` (CLI-0108) -- matches CLI-0106's
 /// tuned value, overridable rather than fixed.
 const TRANSFERS_DEFAULT: usize = 8;
 
 /// Resolves rclone's `--transfers` (concurrent file transfers). Falls back
-/// to the flat default rather than erroring non-interactively (ADR-0108,
+/// to the flat default rather than erroring non-interactively (CLI-0108,
 /// same fall-back-rather-than-error precedent). Originated in `rclone::wizard`
-/// (ADR-0108), duplicated by `transform::wizard` (ADR-0112) as the second
+/// (CLI-0108), duplicated by `transform::wizard` (CLI-0112) as the second
 /// consumer, hoisted here once `deduplicate` needed the identical prompt as
-/// the third (ADR-0136, this codebase's usual "duplicate until the third
+/// the third (CLI-0136, this codebase's usual "duplicate until the third
 /// consumer" precedent).
 pub(crate) struct TransfersInput {
     pub flag: Option<usize>,
@@ -244,7 +244,7 @@ impl WizardInput for TransfersInput {
     }
 }
 
-/// Flat default for `CheckersInput` (ADR-0106).
+/// Flat default for `CheckersInput` (CLI-0106).
 const CHECKERS_DEFAULT: usize = 16;
 
 /// Resolves rclone's `--checkers` (concurrent list/compare operations).
@@ -279,7 +279,7 @@ impl WizardInput for CheckersInput {
 /// distinct value here (rclone's own behavior when the flag is omitted),
 /// not just "use a baked-in default" -- so this resolves to `Option<usize>`,
 /// and both the empty-prompt and non-interactive paths resolve to `None`
-/// (ADR-0108). Same hoisting history as `TransfersInput`.
+/// (CLI-0108). Same hoisting history as `TransfersInput`.
 pub(crate) struct TpslimitInput {
     pub flag: Option<usize>,
 }

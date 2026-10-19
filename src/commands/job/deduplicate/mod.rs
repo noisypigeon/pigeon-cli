@@ -1,4 +1,4 @@
-//! `pigeon job run deduplicate` (ADR-0082): recursively pulls every object from a
+//! `pigeon job run deduplicate` (CLI-0082): recursively pulls every object from a
 //! source bucket, always inflates every zip encountered (containers
 //! themselves never uploaded, only their inflated contents), content-hashes
 //! (SHA-256) everything bucket-wide to keep one byte-identical copy of each
@@ -28,15 +28,15 @@ use crate::core::job::Job;
 pub(crate) use manifest::{DeduplicatePlan, gather_pending};
 pub(crate) use worker::DeduplicateSummary;
 
-/// No `encryptor` field at all -- a permanent scoping decision (ADR-0082
-/// §0), not a temporarily-unused slot. `source_buckets` (ADR-0109) can name
+/// No `encryptor` field at all -- a permanent scoping decision (CLI-0082
+/// §0), not a temporarily-unused slot. `source_buckets` (CLI-0109) can name
 /// more than one bucket-config -- every one is downloaded into one shared
 /// local staging tree and deduplicated across the combined set, not
-/// per-bucket. `transfers`/`checkers`/`tpslimit` (ADR-0136) size the upload
+/// per-bucket. `transfers`/`checkers`/`tpslimit` (CLI-0136) size the upload
 /// phase's bulk `rclone copy` -- `Job::run`'s own `upload_concurrency`
 /// parameter no longer applies once that phase is one bulk transfer rather
 /// than a per-file task queue, so it's ignored here (same "not uniformly"
-/// precedent ADR-0090 already established for a dial that doesn't apply to
+/// precedent CLI-0090 already established for a dial that doesn't apply to
 /// every implementor).
 pub(crate) struct DeduplicateJob {
     pub source_buckets: Vec<(BucketConfig, String)>,

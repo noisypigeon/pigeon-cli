@@ -1,10 +1,10 @@
-//! Finds files already landed under `<local_output>/source/` (ADR-0112),
+//! Finds files already landed under `<local_output>/source/` (CLI-0112),
 //! used as one of the pipeline's two dispatch sources alongside the pull
 //! subprocess's live tail (`transform::worker`'s module doc comment).
 //! "Already done" is no longer decided here -- `transform` runs on a
 //! freshly-provisioned, ephemeral VM per invocation, so a local checkpoint
 //! never survives a VM replacement and was proven dead weight in production
-//! (ADR-0120). `worker::enqueue` now answers "already done" by checking
+//! (CLI-0120). `worker::enqueue` now answers "already done" by checking
 //! `destination::list_existing_filenames` instead, keyed off each file's
 //! deterministic `placement::compute_destination_name`.
 
@@ -16,19 +16,19 @@ use crate::core::data::collect_files;
 /// One pending file discovered under `<local_output>/source/`. `relative_path`
 /// is relative to `source_dir`, using `/`-separated components regardless of
 /// host OS -- this is also half of `placement`'s destination-name hash input
-/// (ADR-0112 Decision §5).
+/// (CLI-0112 Decision §5).
 pub(crate) struct PendingFile {
     /// The file's key at `--source`, relative to the source prefix.
     ///
     /// This is the file's **identity**, not its location: it is half of
-    /// `placement::group_key`'s hash input, the ADR-0130 reconciliation
+    /// `placement::group_key`'s hash input, the CLI-0130 reconciliation
     /// key, and what the report and tracing fields name. `absolute_path`
-    /// is the location, and ADR-0152 is where the two stop coinciding --
+    /// is the location, and CLI-0152 is where the two stop coinciding --
     /// a source key that collides with another under case-folding is
     /// pulled to a disambiguated local path, so its bytes live somewhere
     /// its key does not describe.
     ///
-    /// Named `relative_path` until ADR-0152, which was accurate while the
+    /// Named `relative_path` until CLI-0152, which was accurate while the
     /// two were always the same string and actively misleading once they
     /// were not.
     pub source_key: String,
@@ -64,7 +64,7 @@ fn relative_path_string(base: &Path, path: &Path) -> Option<String> {
 /// The check is a membership test over `InputFileType::extensions`, not an
 /// equality test against one canonical string: a `.jpg` file under a
 /// `--input-file-type=jpeg` run is legitimate and must not be dropped
-/// (ADR-0139). This was a second, independent gate failing the same way as
+/// (CLI-0139). This was a second, independent gate failing the same way as
 /// the source listing's filter, and would have silently skipped any `.jpg`
 /// already staged on local disk even once that filter was fixed.
 pub(crate) fn gather_pending(
@@ -127,7 +127,7 @@ mod tests {
         assert_eq!(pending[0].source_key, "screenshots/img.heic");
     }
 
-    /// ADR-0139's second gate: a `.jpg` staged on local disk under a
+    /// CLI-0139's second gate: a `.jpg` staged on local disk under a
     /// `jpeg` run must be picked up, not warned-and-skipped. Before the
     /// membership test, this gate dropped them even once the source
     /// listing's filter was fixed.

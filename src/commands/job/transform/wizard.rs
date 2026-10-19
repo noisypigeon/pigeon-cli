@@ -1,4 +1,4 @@
-//! CLI dispatch for `pigeon job run transform` (ADR-0112). `SourceBucketInput`/
+//! CLI dispatch for `pigeon job run transform` (CLI-0112). `SourceBucketInput`/
 //! `DestinationBucketInput`/`TransfersInput`/`CheckersInput`/`TpslimitInput`
 //! are structurally identical to `rclone::wizard`'s own versions of the same
 //! prompts -- kept local rather than hoisted, since this is only the second
@@ -24,7 +24,7 @@ use super::{TransformJob, documents, media, soffice, worker};
 
 /// The interactive `--input-file-type` menu. A list the compiler cannot
 /// check against `InputFileType`, so a test pins that every entry parses
-/// and that no kind is missing (ADR-0160, which found ADR-0159's eleven
+/// and that no kind is missing (CLI-0160, which found CLI-0159's eleven
 /// kinds absent from it).
 const INTERACTIVE_INPUT_FILE_TYPES: &[&str] = &[
     "png",
@@ -58,8 +58,8 @@ const INTERACTIVE_INPUT_FILE_TYPES: &[&str] = &[
     "rst",
     "textclipping",
     "tsv",
-    // ADR-0159's eleven kinds never reached this menu; added with
-    // ADR-0160's four, which found the gap.
+    // CLI-0159's eleven kinds never reached this menu; added with
+    // CLI-0160's four, which found the gap.
     "avif",
     "tif",
     "tiff",
@@ -107,7 +107,7 @@ impl WizardInput for InputFileTypeInput {
     }
 }
 
-/// Resolves `--video-quality` (ADR-0122) -- only consulted when
+/// Resolves `--video-quality` (CLI-0122) -- only consulted when
 /// `input_file_type.is_video()`; `dispatch_async` skips calling this
 /// entirely otherwise, so png/jpeg/heic runs are never prompted. Unlike
 /// `InputFileTypeInput`, a missing value defaults to `Medium` rather than
@@ -141,14 +141,14 @@ impl WizardInput for VideoQualityInput {
     }
 }
 
-/// Resolves `--audio-quality` (ADR-0153) -- only consulted when
+/// Resolves `--audio-quality` (CLI-0153) -- only consulted when
 /// `input_file_type.is_audio()`, exactly as `VideoQualityInput` is gated on
 /// `is_video()`, so an image, spreadsheet or document run is never
 /// prompted.
 ///
 /// Unlike the video menu, the fallback is **not** a single constant: it is
 /// `input_file_type.default_audio_quality()`, so `mp4-audio` keeps
-/// ADR-0142's 48k while a music kind gets the top tier. The default is the
+/// CLI-0142's 48k while a music kind gets the top tier. The default is the
 /// load-bearing part -- a menu that defaulted to 48k everywhere would still
 /// quietly destroy a music library, which is the whole reason this flag
 /// exists.
@@ -186,8 +186,8 @@ impl WizardInput for AudioQualityInput<'_> {
 
 /// Resolves `--source`, a pigeon keyring `BucketConfig` alias optionally
 /// composed with a prefix within it -- `source` is the whole bucket,
-/// `source:mp4/` its `mp4/` directory (ADR-0138, restoring the addressing
-/// ADR-0136 removed and ADR-0137 compounded). `rclone` only ever sees a
+/// `source:mp4/` its `mp4/` directory (CLI-0138, restoring the addressing
+/// CLI-0136 removed and CLI-0137 compounded). `rclone` only ever sees a
 /// config file pigeon itself generates from the alias half, which is
 /// validated against the keyring exactly as before.
 ///
@@ -195,7 +195,7 @@ impl WizardInput for AudioQualityInput<'_> {
 /// the flag names a bucket but no prefix (`--source source` with
 /// `--input-file-type mp4` → `source:mp4/`). An explicitly-given prefix is
 /// always kept verbatim. The **alias** half is never inferred -- that was
-/// ADR-0137's mechanism, reversed by ADR-0138 because it assumed a
+/// CLI-0137's mechanism, reversed by CLI-0138 because it assumed a
 /// per-file-type bucket naming convention this deployment does not use.
 struct SourceBucketInput<'a> {
     flag: Option<String>,
@@ -224,7 +224,7 @@ impl WizardInput for SourceBucketInput<'_> {
 
 /// Resolves `--destination`. Same shape as `SourceBucketInput`, composed
 /// form included; `default_prefix` is `input_file_type.output_extension()`
-/// (ADR-0138), so a `--destination destination` for an mp4 run addresses
+/// (CLI-0138), so a `--destination destination` for an mp4 run addresses
 /// `destination:mp4/`.
 struct DestinationBucketInput<'a> {
     flag: Option<String>,
@@ -389,9 +389,9 @@ impl WizardInput for LocalOutputInput {
     }
 }
 
-/// Entry point for `pigeon job run transform` (ADR-0112, video input kinds
-/// added by ADR-0122, download/upload concurrency split and backpressure
-/// added by ADR-0129).
+/// Entry point for `pigeon job run transform` (CLI-0112, video input kinds
+/// added by CLI-0122, download/upload concurrency split and backpressure
+/// added by CLI-0129).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     input_file_type: Option<String>,
@@ -437,14 +437,14 @@ pub fn dispatch(
 }
 
 /// Confirms the external converter this run's input kind actually needs is
-/// on `PATH` (ADR-0149 §6).
+/// on `PATH` (CLI-0149 §6).
 ///
-/// Before ADR-0149 this job unconditionally required `ffmpeg`/`ffprobe`,
+/// Before CLI-0149 this job unconditionally required `ffmpeg`/`ffprobe`,
 /// which was correct when every input kind was media. It no longer is:
 /// `xlsx`/`xls`/`csv` are read and written in-process by `sheets`, and
 /// `numbers` needs `soffice` instead. Demanding the union would make a
 /// pure-spreadsheet deployment install a transcoder it never invokes --
-/// and since ADR-0154 the union is four binaries, not two.
+/// and since CLI-0154 the union is four binaries, not two.
 async fn required_converter_available(input_file_type: InputFileType) -> Result<(), String> {
     match converter_for(input_file_type) {
         Converter::None => Ok(()),
@@ -466,20 +466,20 @@ enum Converter {
     None,
     Ffmpeg,
     Soffice,
-    /// Calibre's `ebook-convert`, for `epub` alone (ADR-0154).
+    /// Calibre's `ebook-convert`, for `epub` alone (CLI-0154).
     Calibre,
     Pandoc,
     /// `gs` interprets the PostScript to PDF, then `soffice` exports SVG:
-    /// `eps` alone, the first kind needing two binaries (ADR-0160 §3).
+    /// `eps` alone, the first kind needing two binaries (CLI-0160 §3).
     GhostscriptThenSoffice,
 }
 
-/// An **exhaustive** match, which is the whole point of it (ADR-0154 §5).
+/// An **exhaustive** match, which is the whole point of it (CLI-0154 §5).
 ///
 /// This was `_ => media::check_ffmpeg_available()`, so any kind added
 /// without touching it silently demanded `ffmpeg` and never checked its
 /// real converter -- a `docx` run would have passed preflight on a host
-/// with no LibreOffice and then failed on the first file. ADR-0149 §7
+/// with no LibreOffice and then failed on the first file. CLI-0149 §7
 /// catalogued four places a new variant must be added that the compiler
 /// cannot check and missed this fifth, which that same ADR introduced.
 /// Exhaustive here hands it to the compiler permanently.
@@ -497,7 +497,7 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Aac
         | InputFileType::Wav
         | InputFileType::Opus
-        // ADR-0159: `icns` too -- its image is extracted in-process, but
+        // CLI-0159: `icns` too -- its image is extracted in-process, but
         // ffmpeg still does the conversion.
         | InputFileType::Avif
         | InputFileType::Tif
@@ -505,7 +505,7 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Webp
         | InputFileType::Ico
         | InputFileType::Icns
-        // ADR-0160.
+        // CLI-0160.
         | InputFileType::Bmp => Converter::Ffmpeg,
         InputFileType::Numbers
         | InputFileType::Doc
@@ -530,10 +530,10 @@ fn converter_for(input_file_type: InputFileType) -> Converter {
         | InputFileType::Txt
         | InputFileType::Textclipping
         | InputFileType::Svg
-        // ADR-0159: zip, plist, LZO and PNG all in-process.
+        // CLI-0159: zip, plist, LZO and PNG all in-process.
         | InputFileType::Procreate
         | InputFileType::Procreate2
-        // ADR-0160: parsed and rendered by `vobject`.
+        // CLI-0160: parsed and rendered by `vobject`.
         | InputFileType::Ics
         | InputFileType::Vcf => Converter::None,
     }
@@ -558,14 +558,14 @@ async fn dispatch_async(
     non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as every
-    // other job's dispatch_async (ADR-0073).
+    // other job's dispatch_async (CLI-0073).
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
-    // ADR-0149 §6: the input kind resolves *first*, because which external
+    // CLI-0149 §6: the input kind resolves *first*, because which external
     // binaries this run needs depends on it -- an in-process kind needs
     // none, a `numbers`/document kind needs `soffice` rather than `ffmpeg`,
-    // and since ADR-0154 `epub` needs `ebook-convert` and `md`/`rst` need
+    // and since CLI-0154 `epub` needs `ebook-convert` and `md`/`rst` need
     // `pandoc`. `converter_for` is the authority. Resolving it here rather than after
     // `load_keyring` keeps the property the original ordering protected:
     // the binary check still happens before any prompt that could block on
@@ -582,7 +582,7 @@ async fn dispatch_async(
 
     // Fail immediately on a missing binary, not partway through a
     // long-running pipeline. `rclone`'s own equivalent check lives in
-    // `prepare_rclone` below (ADR-0145 §5) and applies to every kind.
+    // `prepare_rclone` below (CLI-0145 §5) and applies to every kind.
     if let Err(err) = required_converter_available(input_file_type).await {
         return fail(err);
     }
@@ -594,7 +594,7 @@ async fn dispatch_async(
     if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
-    // Only consulted for a video input kind (ADR-0122) -- png/jpeg/heic runs
+    // Only consulted for a video input kind (CLI-0122) -- png/jpeg/heic runs
     // are never prompted for this and the value goes unused.
     let video_quality = if input_file_type.is_video() {
         match (VideoQualityInput {
@@ -608,7 +608,7 @@ async fn dispatch_async(
     } else {
         VideoQuality::Medium
     };
-    // Only consulted for an audio input kind (ADR-0153); every other kind
+    // Only consulted for an audio input kind (CLI-0153); every other kind
     // is never prompted and the value goes unused.
     let audio_quality = if input_file_type.is_audio() {
         match (AudioQualityInput {
@@ -768,7 +768,7 @@ async fn dispatch_async(
                  {failed} failed; pushed {} output file(s).",
                 summary.pulled, summary.pushed
             );
-            // ADR-0130: a run that correctly skipped a large already-done
+            // CLI-0130: a run that correctly skipped a large already-done
             // tree used to read identically to one that found nothing, and a
             // failure gave no indication of which stage it came from.
             if summary.skipped_already_done > 0 || summary.skipped_apple_double > 0 {
@@ -820,7 +820,7 @@ mod tests {
     use super::*;
 
     /// Every kind is offered by the interactive menu, and every entry
-    /// parses (ADR-0160). The `match` makes a new variant a compile error
+    /// parses (CLI-0160). The `match` makes a new variant a compile error
     /// here, so it cannot be added without this list -- and so the menu --
     /// being revisited.
     #[test]
@@ -1002,7 +1002,7 @@ mod tests {
         store
     }
 
-    /// The exact regression ADR-0138 fixes: a bare bucket alias plus
+    /// The exact regression CLI-0138 fixes: a bare bucket alias plus
     /// `--input-file-type mp4` must address that bucket's `mp4/` directory,
     /// not its root.
     #[test]
@@ -1047,7 +1047,7 @@ mod tests {
         );
     }
 
-    /// ADR-0138 reverses ADR-0137's alias inference: with no `--source` at
+    /// CLI-0138 reverses CLI-0137's alias inference: with no `--source` at
     /// all there is no alias to guess, so a non-interactive run errors.
     #[test]
     fn source_bucket_input_non_interactive_fallback_errors_without_a_flag() {
@@ -1106,7 +1106,7 @@ mod tests {
     }
 
     /// Source and destination can address the *same* bucket, distinguished
-    /// only by prefix -- the layout ADR-0137's alias inference could not
+    /// only by prefix -- the layout CLI-0137's alias inference could not
     /// express, and which collided outright for video kinds (every one of
     /// them outputs `mp4`).
     #[test]

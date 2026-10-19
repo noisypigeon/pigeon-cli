@@ -1,10 +1,10 @@
 /// Behavior shared by every job type this CLI can run. Introduced per
 /// explicit direction as a consistency/extensibility choice rather than a
-/// response to a second job type actually existing (ADR-0021 deliberately
-/// scoped that out; ADR-0023's Consequences names the cost plainly) -- the
+/// response to a second job type actually existing (CLI-0021 deliberately
+/// scoped that out; CLI-0023's Consequences names the cost plainly) -- the
 /// genericity is now backed by every job type, each of which implements it.
 /// Deliberately count-free: the implementor list has been rewritten by
-/// ADR-0028, ADR-0134, and ADR-0147 in turn, so naming a number here only
+/// CLI-0028, CLI-0134, and CLI-0147 in turn, so naming a number here only
 /// guarantees it goes stale again.
 ///
 /// `gather`/`run` use native async fn in traits (stable since Rust 1.75,
@@ -19,7 +19,7 @@ pub(crate) trait Job {
     type Plan;
     type Summary;
 
-    /// Discover pending work without doing any of it (ADR-0021 §3/§4).
+    /// Discover pending work without doing any of it (CLI-0021 §3/§4).
     async fn gather(&self) -> Result<Self::Plan, String>;
 
     /// Execute `plan` at the given concurrency, after the wizard's confirm
@@ -28,8 +28,8 @@ pub(crate) trait Job {
     /// upload phase independently of `concurrency` (which sizes its primary
     /// download/hash/transform/fetch work) -- a network-round-trip-bound
     /// phase has no principled reason to share a dial with CPU-bound or
-    /// IMAP-bound work (ADR-0091 §3). A job with no upload phase is free to
-    /// accept and ignore it, matching ADR-0090's "not uniformly" precedent
+    /// IMAP-bound work (CLI-0091 §3). A job with no upload phase is free to
+    /// accept and ignore it, matching CLI-0090's "not uniformly" precedent
     /// for a concurrency-shaped change that doesn't apply to every
     /// implementor.
     async fn run(

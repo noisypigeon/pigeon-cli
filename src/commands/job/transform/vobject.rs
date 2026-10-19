@@ -1,4 +1,4 @@
-//! iCalendar (`.ics`) and vCard (`.vcf`) to readable text (ADR-0160 §4).
+//! iCalendar (`.ics`) and vCard (`.vcf`) to readable text (CLI-0160 §4).
 //!
 //! Both formats are vObject content lines -- `NAME;PARAM=VALUE:VALUE`,
 //! folded across physical lines -- so one parser serves both, and no crate
@@ -6,14 +6,14 @@
 //! the real work, would be written either way.
 //!
 //! The rendering is **lossy on purpose**, as `md`/`rst` already are
-//! (ADR-0154 §8): this family's output is meant to be read. Time zones are
+//! (CLI-0154 §8): this family's output is meant to be read. Time zones are
 //! named, never converted; recurrence rules are shown as written; base64
 //! payloads (contact photos) and `X-` metadata are dropped. The source is
-//! untouched (ADR-0112), so nothing dropped here is lost.
+//! untouched (CLI-0112), so nothing dropped here is lost.
 //!
 //! One input, one output: a contacts export holding 679 cards becomes one
 //! file of 679 blocks, which keeps `placement::compute_destination_name` a
-//! pure forward function (ADR-0124).
+//! pure forward function (CLI-0124).
 
 use std::path::Path;
 
@@ -917,8 +917,8 @@ TEL;CELL;PREF:555-0100\r\nNOTE;QUOTED-PRINTABLE:caf=E9\r\nEND:VCARD\r\n");
         assert_eq!(unescape(r"a\nb\,c\;d\\e\qf\"), "a\nb,c;d\\e\\qf\\");
     }
 
-    /// ADR-0154 §2's precedent: check the input positively. A file that is
-    /// not the claimed kind is wrong-input-kind, so ADR-0143 drops it.
+    /// CLI-0154 §2's precedent: check the input positively. A file that is
+    /// not the claimed kind is wrong-input-kind, so CLI-0143 drops it.
     #[test]
     fn each_kind_refuses_a_file_that_is_not_one() {
         for (input, convert) in [

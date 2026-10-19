@@ -34,10 +34,10 @@ pub(crate) struct RcloneDeleteSummary {
 }
 
 /// Runs `rclone copy <source> <destination>` with `transfers`/`checkers`/
-/// `tpslimit` resolved per-run (ADR-0108) and every other performance/retry
+/// `tpslimit` resolved per-run (CLI-0108) and every other performance/retry
 /// flag still fixed, plus the sandboxed `--config` every `core::rclone`
-/// invocation gets (ADR-0136). Copy has no separate "local work" phase the
-/// way download/hash/placement jobs do (ADR-0093's gauge was designed for
+/// invocation gets (CLI-0136). Copy has no separate "local work" phase the
+/// way download/hash/placement jobs do (CLI-0093's gauge was designed for
 /// that split) -- its entire body of work *is* the transfer, so this sets
 /// `pigeon_job_macro_phase` to "uploading" for the whole call, unlike
 /// `transform`, which only flips it true once its own separate push phase
@@ -75,7 +75,7 @@ pub(crate) async fn run_copy_job(
     })
 }
 
-/// Runs `rclone purge <source>` (ADR-0110) -- a recursive, irreversible
+/// Runs `rclone purge <source>` (CLI-0110) -- a recursive, irreversible
 /// delete of everything under `source`. `--checkers` is still meaningful
 /// (purge enumerates objects before deleting them) and `--fast-list` is
 /// kept for the same reason (a listing optimization, not a transfer one).
@@ -147,7 +147,7 @@ mod tests {
     }
 
     /// A `Some(tpslimit)` must not break the rclone invocation -- the
-    /// ADR-0106 default this ADR-0108 reverted is still a valid value to
+    /// CLI-0106 default this CLI-0108 reverted is still a valid value to
     /// opt back into per-destination.
     #[tokio::test]
     async fn copies_a_file_with_a_tpslimit_set() {

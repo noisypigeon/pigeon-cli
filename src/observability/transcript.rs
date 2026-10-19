@@ -1,5 +1,5 @@
 //! A plain-text recording of what a single `job run` invocation printed to
-//! the user (ADR-0100) -- a different artifact from `pigeon.jsonl`'s
+//! the user (CLI-0100) -- a different artifact from `pigeon.jsonl`'s
 //! structured per-event log, meant to be read by a person after the fact
 //! when they weren't watching the terminal live. Deliberately not a raw
 //! stdout/PTY byte capture (progress-bar redraw escape codes would make that

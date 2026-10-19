@@ -1,4 +1,4 @@
-//! Document conversion (ADR-0154), kept separate from `media.rs` so that
+//! Document conversion (CLI-0154), kept separate from `media.rs` so that
 //! module stays `ffmpeg`-only and from `sheets.rs` so that one stays about
 //! workbooks.
 //!
@@ -14,7 +14,7 @@
 //! - `tsv` to `.csv` in-process via the `csv` crate.
 //!
 //! `pdf` and `txt` input never reach this module -- they are copied through
-//! by `media::copy_through`, the same treatment ADR-0112 gives a `jpeg`.
+//! by `media::copy_through`, the same treatment CLI-0112 gives a `jpeg`.
 
 use std::path::{Path, PathBuf};
 
@@ -81,7 +81,7 @@ async fn check_binary(binary: &str, args: &[&str], why: &str) -> Result<(), Stri
 }
 
 /// Rejects a `.key` that is not an iWork document, before any converter
-/// sees it (ADR-0154 §2).
+/// sees it (CLI-0154 §2).
 ///
 /// `.key` is Apple Keynote and also the conventional extension for a PEM
 /// private key. LibreOffice does **not** refuse the second: it imports the
@@ -95,7 +95,7 @@ async fn check_binary(binary: &str, args: &[&str], why: &str) -> Result<(), Stri
 /// are not Keynote is open-ended: PKCS#8, PKCS#12, DER and whatever else
 /// arrives carrying this extension.
 ///
-/// A rejection is classified wrong-input-kind, so ADR-0143 deletes the
+/// A rejection is classified wrong-input-kind, so CLI-0143 deletes the
 /// local copy and the key does not linger on the transform host. The source
 /// object at `--source` is untouched, which is where it already was.
 pub(crate) fn ensure_keynote(input: &Path) -> Result<(), String> {
@@ -143,13 +143,13 @@ pub(crate) async fn to_pdf(
 }
 
 /// Converts a vector drawing (`.ai`, `.emz`) to SVG inside `work_dir`,
-/// returning the produced path (ADR-0159).
+/// returning the produced path (CLI-0159).
 ///
 /// LibreOffice Draw does both: an Illustrator file through its PDF import
 /// (every modern `.ai` is PDF-compatible), and a gzip'd EMF directly. Two
 /// recorded limitations: only the first page or artboard is exported, and
 /// an EMF keeps Draw's page around it rather than being cropped to its own
-/// bounds. Not retried, on ADR-0154's reasoning for document kinds.
+/// bounds. Not retried, on CLI-0154's reasoning for document kinds.
 pub(crate) async fn to_svg(input: &Path, work_dir: &Path) -> Result<PathBuf, String> {
     super::soffice::convert(input, work_dir, "svg", NOT_A_DOCUMENT_SIGNATURE).await
 }
@@ -157,11 +157,11 @@ pub(crate) async fn to_svg(input: &Path, work_dir: &Path) -> Result<PathBuf, Str
 /// How long Ghostscript gets per file before being treated as hung.
 ///
 /// An EPS is a **program**, and a PostScript program can loop forever; the
-/// same reasoning ADR-0158 applied to `soffice`. The one real file took
+/// same reasoning CLI-0158 applied to `soffice`. The one real file took
 /// under a second.
 const GHOSTSCRIPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Confirms Ghostscript's `gs` is on `PATH`, for an `eps` run (ADR-0160 §3).
+/// Confirms Ghostscript's `gs` is on `PATH`, for an `eps` run (CLI-0160 §3).
 pub(crate) async fn check_ghostscript_available() -> Result<(), String> {
     check_binary(
         "gs",
@@ -173,7 +173,7 @@ pub(crate) async fn check_ghostscript_available() -> Result<(), String> {
 }
 
 /// Converts an EPS to SVG inside `work_dir`, returning the produced path
-/// (ADR-0160 §3).
+/// (CLI-0160 §3).
 ///
 /// Not `to_svg` directly: run on the bucket's real Illustrator EPS,
 /// `soffice` **exits 0 and writes an empty SVG** -- a Letter page holding
@@ -244,7 +244,7 @@ pub(crate) async fn eps_to_svg(input: &Path, work_dir: &Path) -> Result<PathBuf,
     Ok(svg)
 }
 
-/// Whether an SVG draws anything (ADR-0160 §3).
+/// Whether an SVG draws anything (CLI-0160 §3).
 ///
 /// Counts a drawing element anywhere outside `<defs>` -- where `soffice`
 /// puts the bullet-character templates it writes into every SVG, so those
@@ -299,7 +299,7 @@ fn strip_defs(svg: &str) -> String {
 ///
 /// Calibre infers the output format from the output file's extension, so
 /// unlike every `ffmpeg` call in this job -- which writes to a
-/// `.scratch`-suffixed path and needs an explicit `-f` muxer (ADR-0115) --
+/// `.scratch`-suffixed path and needs an explicit `-f` muxer (CLI-0115) --
 /// this one genuinely requires a real `.pdf` name.
 pub(crate) async fn epub_to_pdf(input: &Path, work_dir: &Path) -> Result<PathBuf, String> {
     std::fs::create_dir_all(work_dir)
@@ -335,9 +335,9 @@ pub(crate) async fn epub_to_pdf(input: &Path, work_dir: &Path) -> Result<PathBuf
 /// Renders Markdown or reStructuredText to plain prose at `output`.
 ///
 /// `-t plain` **discards link URLs and all inline markup** -- lossy and
-/// deliberate (ADR-0154 §8). It is also what makes writing to a
+/// deliberate (CLI-0154 §8). It is also what makes writing to a
 /// `.scratch`-suffixed path safe: pandoc would otherwise infer the output
-/// format from the extension, the same class of trap ADR-0115 hit when
+/// format from the extension, the same class of trap CLI-0115 hit when
 /// `ffmpeg` was left to infer a muxer from one.
 pub(crate) async fn markup_to_text(
     input: &Path,
@@ -382,7 +382,7 @@ pub(crate) async fn markup_to_text(
 /// Extracts the text from a macOS `.textclipping` to `output`.
 ///
 /// A modern clipping is a **data-fork binary property list** (measured,
-/// ADR-0154), not the resource fork the format's age suggests: one
+/// CLI-0154), not the resource fork the format's age suggests: one
 /// `UTI-Data` key holding the same text under several pasteboard UTIs.
 /// `public.utf8-plain-text` is preferred; the Mac-Roman-era key is the
 /// fallback. A pre-OS-X resource-fork clipping is refused rather than
@@ -434,7 +434,7 @@ fn plain_text(value: &plist::Value) -> Option<String> {
 ///
 /// Not a tab-to-comma substitution: a field containing a comma has to
 /// become a *quoted* CSV field, and a naive replacement would silently
-/// corrupt the table. The `csv` crate ADR-0149 added for exactly this
+/// corrupt the table. The `csv` crate CLI-0149 added for exactly this
 /// reason ("Quoting/escaping untrusted cell text is not worth
 /// hand-rolling") does both halves.
 ///
@@ -498,7 +498,7 @@ pub(crate) fn tsv_to_csv(input: &Path, output: &Path) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    /// ADR-0159: a PDF-compatible Illustrator file -- here a one-page PDF
+    /// CLI-0159: a PDF-compatible Illustrator file -- here a one-page PDF
     /// that soffice itself writes, renamed `.ai` -- comes out as SVG.
     #[tokio::test]
     async fn an_ai_file_converts_to_svg() {
@@ -526,7 +526,7 @@ mod tests {
         tempfile::tempdir().expect("tempdir")
     }
 
-    // --- ADR-0154 §2: the private-key guard ---
+    // --- CLI-0154 §2: the private-key guard ---
 
     /// **The decision this ADR exists for.** LibreOffice converts a PEM
     /// private key named `.key` into a valid PDF with the key legible in
@@ -593,7 +593,7 @@ mod tests {
         assert!(err.contains(media::NOT_A_KEYNOTE_SIGNATURE), "{err}");
     }
 
-    // --- ADR-0154: tsv -> csv ---
+    // --- CLI-0154: tsv -> csv ---
 
     /// **The reason this is a conversion and not a tab-to-comma
     /// substitution.** A field holding a comma has to come out quoted, or
@@ -653,7 +653,7 @@ mod tests {
         assert!(media::is_non_retryable_transcode_error(&err), "{err}");
     }
 
-    // --- ADR-0154: textclipping ---
+    // --- CLI-0154: textclipping ---
 
     /// Built from the structure measured on a real clipping: one
     /// `UTI-Data` key holding the same text under several pasteboard UTIs.
@@ -756,7 +756,7 @@ mod tests {
         assert!(err.contains(media::NOT_A_TEXTCLIPPING_SIGNATURE), "{err}");
     }
 
-    // --- ADR-0154: markup, and the binary preflights ---
+    // --- CLI-0154: markup, and the binary preflights ---
 
     #[tokio::test]
     async fn markup_to_text_rejects_a_kind_pandoc_does_not_read() {
@@ -773,7 +773,7 @@ mod tests {
 
     /// Deliberately **not** gated on `check_ffmpeg_available`: these kinds
     /// invoke no `ffmpeg`, so gating on it would make this silently never
-    /// run -- the ADR-0139 mistake ADR-0149 named.
+    /// run -- the CLI-0139 mistake CLI-0149 named.
     #[tokio::test]
     async fn markdown_renders_to_prose_with_markup_discarded() {
         if check_pandoc_available().await.is_err() {
@@ -796,7 +796,7 @@ mod tests {
         let text = std::fs::read_to_string(&output).expect("read txt");
         assert!(text.contains("Heading"), "{text}");
         assert!(text.contains("bold"), "{text}");
-        // ADR-0154 §8's recorded loss, pinned so it is a decision and not a
+        // CLI-0154 §8's recorded loss, pinned so it is a decision and not a
         // surprise: the URL does not survive.
         assert!(!text.contains("example.com"), "{text}");
         assert!(!text.contains("**"), "{text}");
@@ -837,7 +837,7 @@ mod tests {
         }
     }
 
-    // --- ADR-0160 §3: EPS through Ghostscript ---
+    // --- CLI-0160 §3: EPS through Ghostscript ---
 
     /// Reduced from what `soffice` alone wrote for the bucket's real EPS:
     /// bullet templates and a clip rect inside `<defs>`, an empty `<use>`,

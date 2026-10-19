@@ -20,7 +20,7 @@ pub(crate) struct Copy {
     pub checkers: usize,
     pub tpslimit: Option<usize>,
     /// Restricts the copy to exactly the relative paths listed in this
-    /// file, via `--files-from-raw` (ADR-0124) -- a literal filename, never
+    /// file, via `--files-from-raw` (CLI-0124) -- a literal filename, never
     /// reinterpreted as a glob pattern.
     pub files_from: Option<PathBuf>,
     pub job: &'static str,
@@ -199,19 +199,19 @@ pub(crate) struct Lsjson {
     /// Restricts the listing to these extensions, one `--include
     /// '*.<ext>'` per entry (rclone ORs repeated `--include` flags).
     /// A collection rather than one string because a single input kind can
-    /// have several on-disk spellings -- `.jpg` and `.jpeg` (ADR-0139);
+    /// have several on-disk spellings -- `.jpg` and `.jpeg` (CLI-0139);
     /// when this held one `Option<String>`, a `jpeg` run over a directory
     /// of `.jpg` files silently matched nothing. Empty means no filter.
     pub include_extensions: Vec<String>,
     /// Whether a path that doesn't exist resolves to an empty listing
-    /// instead of an error (ADR-0140). Only a *destination* listing wants
-    /// this -- the brand-new-destination case (ADR-0120). A source listing
+    /// instead of an error (CLI-0140). Only a *destination* listing wants
+    /// this -- the brand-new-destination case (CLI-0120). A source listing
     /// leaves it `false`: a source rclone cannot find is a misconfigured
     /// address, and swallowing it produced a run indistinguishable from a
     /// successful no-op (0 pulled, 0 failed, exit 0), which is exactly how
-    /// ADR-0140's dropped bucket name stayed invisible through two runs.
+    /// CLI-0140's dropped bucket name stayed invisible through two runs.
     pub missing_ok: bool,
-    /// Reads this config instead of the keyring-derived one (ADR-0148 §3).
+    /// Reads this config instead of the keyring-derived one (CLI-0148 §3).
     /// Only the `keyring add`/`modify bucket` probe sets it, to reach a
     /// bucket that is not in the keyring yet.
     pub config_path: Option<PathBuf>,
@@ -272,7 +272,7 @@ impl RcloneCommand for Lsjson {
     /// (issue #63) -- reconfirm this text against whatever `rclone` version
     /// is actually deployed before relying on it in production.
     ///
-    /// Without `missing_ok` the same failure propagates (ADR-0140). On S3
+    /// Without `missing_ok` the same failure propagates (CLI-0140). On S3
     /// that costs nothing in false positives: a missing *prefix* inside an
     /// existing bucket exits 0 with `[]` (verified against the live
     /// remote), so `"directory not found"` there only ever means the bucket
@@ -318,7 +318,7 @@ impl RcloneCommand for Lsjson {
 /// single-file-to-single-file-path primitive: no directory listing round
 /// trip for one named object, unlike the bulk-tree `Copy`. Symmetric in
 /// direction (both sides are plain strings, local or remote) -- `transform`'s
-/// push uses it local-to-remote; `deduplicate`'s pull (ADR-0136) uses it
+/// push uses it local-to-remote; `deduplicate`'s pull (CLI-0136) uses it
 /// remote-to-local.
 #[derive(Default)]
 pub(crate) struct CopyTo {
@@ -333,7 +333,7 @@ pub(crate) struct CopyTo {
     /// `false`, matching `Copy`'s own `upload_metrics` convention.
     pub emit_upload_metrics: bool,
     /// The local file's size, read by the caller before construction when
-    /// `emit_upload_metrics` is set -- `ADR-0124`'s GC may delete the local
+    /// `emit_upload_metrics` is set -- `CLI-0124`'s GC may delete the local
     /// file immediately after a successful push, so it's unavailable
     /// afterwards. Unused otherwise.
     pub bytes: u64,
@@ -367,7 +367,7 @@ impl RcloneCommand for CopyTo {
         }
     }
 
-    /// Emits the shared `pigeon_upload_*` counters itself (ADR-0130) when
+    /// Emits the shared `pigeon_upload_*` counters itself (CLI-0130) when
     /// `emit_upload_metrics` is set -- unlike `Copy`, there's no live log
     /// to poll deltas from, so this emits once, from the final outcome,
     /// same series as before this moved out of `push.rs`'s own caller-side
@@ -416,7 +416,7 @@ impl RcloneCommand for CopyTo {
     }
 
     /// A destination-endpoint outage lasts far longer than a few seconds,
-    /// so this budget has to too (ADR-0144). The 6-second budget this
+    /// so this budget has to too (CLI-0144). The 6-second budget this
     /// replaced -- `(3, 2s)`, i.e. attempts at t=0/+2s/+6s under
     /// `retry_with_backoff`'s linear schedule -- was over 12x too short for
     /// the real 74-second DNS blackout that motivated the change, and
@@ -425,7 +425,7 @@ impl RcloneCommand for CopyTo {
     /// 30s)` gives t=0/+30s/+90s/+180s, about five minutes.
     ///
     /// `Lsjson`'s own `(3, 2s)` is deliberately left alone: it runs once
-    /// per run rather than once per file, and ADR-0140 specifically wanted
+    /// per run rather than once per file, and CLI-0140 specifically wanted
     /// an unresolvable *source* to fail the run fast rather than pull zero
     /// files and exit 0.
     fn retry(&self) -> Option<(usize, Duration)> {
@@ -437,7 +437,7 @@ impl RcloneCommand for CopyTo {
 mod tests {
     use super::*;
 
-    /// First argv coverage for any implementor (ADR-0139): the `--include`
+    /// First argv coverage for any implementor (CLI-0139): the `--include`
     /// construction was previously untested, which is how a filter that
     /// could only ever express one extension spelling went unnoticed.
     #[test]
@@ -484,7 +484,7 @@ mod tests {
         assert!(args.contains(&"--files-only".to_string()));
     }
 
-    /// ADR-0148 §3: the probe's config override must reach
+    /// CLI-0148 §3: the probe's config override must reach
     /// `config_path()`, which is what `execute` reads instead of the
     /// keyring-derived path. Asserted on the trait method rather than on
     /// argv, since `execute` assembles that and needs a subprocess.
@@ -523,7 +523,7 @@ mod tests {
         }
     }
 
-    /// ADR-0140: only a `missing_ok` listing may turn a failed invocation
+    /// CLI-0140: only a `missing_ok` listing may turn a failed invocation
     /// into an empty result.
     #[test]
     fn lsjson_finish_treats_a_missing_path_as_empty_only_when_missing_ok() {

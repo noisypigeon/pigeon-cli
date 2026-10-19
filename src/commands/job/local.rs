@@ -1,12 +1,12 @@
 //! Disk-space and content-hashing helpers shared by every job that works
 //! with local files (originally the private helpers of the since-removed
-//! `pull_transform::worker`, ADR-0076; hoisted here once `deduplicate`
-//! needed the exact same behavior, ADR-0082 §0). Renamed from `download.rs`
-//! (ADR-0136) once `deduplicate`'s data legs moved onto `core::rclone` and
+//! `pull_transform::worker`, CLI-0076; hoisted here once `deduplicate`
+//! needed the exact same behavior, CLI-0082 §0). Renamed from `download.rs`
+//! (CLI-0136) once `deduplicate`'s data legs moved onto `core::rclone` and
 //! this module's own download helpers (`download_with_retry`,
 //! `DownloadAnnounce`) reached zero consumers and were deleted -- nothing
 //! here downloads anything anymore, only `transform` (`sha256_hex`,
-//! ADR-0112; `check_disk_space`, ADR-0130) and `deduplicate`
+//! CLI-0112; `check_disk_space`, CLI-0130) and `deduplicate`
 //! (`check_disk_space`, `sha256_file`) remain.
 
 use std::fs::File;
@@ -16,7 +16,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 /// A hard floor on free disk space a job insists on before starting a
-/// download or a zip expansion (ADR-0076) -- disk, not memory, is the
+/// download or a zip expansion (CLI-0076) -- disk, not memory, is the
 /// resource a run can actually exhaust once everything is streamed rather
 /// than buffered. Deliberately a flat safety margin, not a precise
 /// prediction: a zip's expanded size isn't knowable up front, and a
@@ -45,7 +45,7 @@ pub(crate) fn available_disk_space(path: &Path) -> Option<u64> {
 /// Fails fast, before starting a download or zip expansion, if the disk
 /// backing `path` doesn't have at least `needed` (or `MIN_FREE_DISK_BYTES`,
 /// whichever is larger) free -- disk space, not memory, is what a job can
-/// actually run out of once everything is disk-streamed (ADR-0076). Fails
+/// actually run out of once everything is disk-streamed (CLI-0076). Fails
 /// only the one item calling this, not the whole run.
 pub(crate) fn check_disk_space(path: &Path, needed: u64) -> Result<(), String> {
     let Some(available) = available_disk_space(path) else {
@@ -69,7 +69,7 @@ pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Hashes a file by streaming it through `Sha256` in fixed-size chunks
-/// (ADR-0076) -- avoids pulling a whole (potentially huge) file into memory
+/// (CLI-0076) -- avoids pulling a whole (potentially huge) file into memory
 /// purely to hash it.
 pub(crate) fn sha256_file(path: &Path) -> Result<String, String> {
     let mut file =

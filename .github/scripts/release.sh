@@ -2,8 +2,8 @@
 # Cut a release: bump Cargo.toml's patch version, cut CHANGELOG.md's
 # [Unreleased] section, commit+tag+push, then publish to crates.io --
 # push runs BEFORE publish so a merge that lands mid-run defers this
-# release instead of burning a crates.io version. See docs/adr/0150,
-# which reverses docs/adr/0117's original publish-then-push ordering.
+# release instead of burning a crates.io version. See adr/CLI-0150,
+# which reverses adr/CLI-0117's original publish-then-push ordering.
 #
 # Invoked as a single-line passthrough from `mise run release -- "$@"`
 # rather than parsing "$@" inline in .mise.toml -- mise appends extra CLI
@@ -33,7 +33,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# ADR-0150 §3: is this version already on crates.io? Answers via the sparse
+# CLI-0150 §3: is this version already on crates.io? Answers via the sparse
 # index -- one newline-delimited JSON record per published version, no auth,
 # no tooling beyond curl, and no registry mutation.
 #
@@ -72,7 +72,7 @@ if [ "$dry_run" -eq 1 ]; then
   exit 0
 fi
 
-# ADR-0150 §1: commit, tag, and push BEFORE publishing. A rejected push
+# CLI-0150 §1: commit, tag, and push BEFORE publishing. A rejected push
 # costs nothing here -- nothing has been published, main is untouched, the
 # on-disk bump dies with the runner, and the accumulated [Unreleased]
 # bullets roll into the next merge's release.
@@ -86,21 +86,21 @@ git tag "v${new_version}"
 if ! git push origin HEAD:main; then
   echo "" >&2
   echo "Push to main was rejected -- a merge landed while this release was" >&2
-  echo "building, so this release is deferred (ADR-0150 §1). Nothing was" >&2
+  echo "building, so this release is deferred (CLI-0150 §1). Nothing was" >&2
   echo "published and main is unchanged; the next merge will cut it." >&2
   exit 1
 fi
 git push origin "v${new_version}"
 
-# ADR-0150 §3: skip rather than die if this version is somehow already
+# CLI-0150 §3: skip rather than die if this version is somehow already
 # published -- that is what wedged the pipeline for five merges before this
 # ADR. The tree is clean by now (the bump is committed above), so no
 # --allow-dirty: `cargo publish`'s uncommitted-changes check is live again
-# for the first time since ADR-0117.
+# for the first time since CLI-0117.
 if [ "$published" = "present" ]; then
   echo "" >&2
   echo "WARNING: pigeon-cli@${new_version} is already on crates.io; skipping" >&2
-  echo "publish (ADR-0150 §3). The release commit and tag were still pushed." >&2
+  echo "publish (CLI-0150 §3). The release commit and tag were still pushed." >&2
 else
   cargo publish
 fi

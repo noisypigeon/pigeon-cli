@@ -1,10 +1,10 @@
-//! Concurrent download + zip-expansion pipeline (ADR-0082 §4): every item is
+//! Concurrent download + zip-expansion pipeline (CLI-0082 §4): every item is
 //! either a zip (expanded, never itself hashed/placed -- members requeued)
 //! or a plain file (hashed via `local::sha256_file` and staged for the
 //! sequential dedup+placement pass, `dedup.rs`). No classification beyond
 //! "is this a zip" -- no media recoding and no date extraction at all;
 //! every file is always processed and every zip is always expanded
-//! (ADR-0082 §1).
+//! (CLI-0082 §1).
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs;
@@ -49,7 +49,7 @@ fn is_zip_key(key: &str) -> bool {
 /// task's own `display_key`, unchanged through every descendant -- it never
 /// participates in path computation, only in tracking whether *any*
 /// descendant of a given root failed or lost data, so that root can be
-/// excluded from the checkpoint (ADR-0098). `bucket_alias` (ADR-0109) names
+/// excluded from the checkpoint (CLI-0098). `bucket_alias` (CLI-0109) names
 /// which of this run's (possibly several) source buckets this item's root
 /// task came from -- copied unchanged onto every zip-member descendant,
 /// since a zip's members always share their parent's bucket.
@@ -93,7 +93,7 @@ enum ItemOutcome {
     /// `display_key`/`depth` identify the zip that was expanded (checkpoint
     /// candidate iff `depth == 0`); `members` are queued for the next pass.
     /// `dropped` is how many members this zip lost to the per-archive
-    /// extraction-ratio cap (ADR-0098) -- nonzero here means real data was
+    /// extraction-ratio cap (CLI-0098) -- nonzero here means real data was
     /// discarded, so the caller both counts it as a failure and taints this
     /// item's root out of the checkpoint.
     ZipExpanded {
@@ -107,7 +107,7 @@ enum ItemOutcome {
         file: HashedFile,
     },
     /// A top-level (or, defensively, nested) AppleDouble object (`._*`)
-    /// skipped before any download/open attempt (ADR-0107). Never a
+    /// skipped before any download/open attempt (CLI-0107). Never a
     /// failure; `depth` decides whether the caller checkpoints it.
     SkippedAppleDouble {
         depth: u32,
@@ -116,7 +116,7 @@ enum ItemOutcome {
     /// required, corrupt, etc.) -- as opposed to the depth-cap/disk-space
     /// preconditions, which stay under `Failed { category: Archive }`
     /// unchanged. Carries the key/error so the caller can itemize it
-    /// (ADR-0107).
+    /// (CLI-0107).
     ArchiveOpenFailed {
         key: String,
         error: String,
@@ -127,15 +127,15 @@ enum ItemOutcome {
 }
 
 /// Downloads (if not already on disk) then either expands `item` (a zip --
-/// its own bytes are discarded, never hashed or placed, per ADR-0082 §4) or
+/// its own bytes are discarded, never hashed or placed, per CLI-0082 §4) or
 /// hashes it for the placement pass. The expansion/hash itself runs via
-/// `tokio::task::spawn_blocking` (ADR-0088) -- both are CPU-bound, so they're
+/// `tokio::task::spawn_blocking` (CLI-0088) -- both are CPU-bound, so they're
 /// handed to tokio's blocking-thread pool rather than occupying one of the
 /// runtime's own async worker threads for the whole call. Returns the
 /// item's `root_key` alongside the outcome: neither `spawn_blocking` nor the
 /// caller's own `tokio::spawn` propagate the ambient `tracing` span on
 /// their own, so each blocking closure below explicitly re-enters the span
-/// captured just before it was spawned (ADR-0098) -- without this, every
+/// captured just before it was spawned (CLI-0098) -- without this, every
 /// warning logged here would be missing the `command`/`instance` fields
 /// the rest of `pigeon.jsonl` relies on.
 async fn process_item(
@@ -266,7 +266,7 @@ async fn process_item(
         let outcome = match expand_result {
             Ok(Ok((raw_members, dropped))) => {
                 // The zip container itself is never hashed or placed -- only
-                // its extracted members are (ADR-0082 §4).
+                // its extracted members are (CLI-0082 §4).
                 let _ = fs::remove_file(&path);
                 let members = raw_members
                     .into_iter()
@@ -346,20 +346,20 @@ pub(crate) struct DeduplicateSummary {
     pub failure_breakdown: FailureBreakdown,
     pub duplicates_skipped: usize,
     /// Zip members dropped by the per-archive extraction-ratio cap
-    /// (ADR-0098) -- already folded into `failed`/`failure_breakdown.archive`
+    /// (CLI-0098) -- already folded into `failed`/`failure_breakdown.archive`
     /// too, since dropped data is a real failure, but broken out here so
     /// the wizard can print it as its own distinct, named count.
     pub dropped_members: usize,
     /// Top-level AppleDouble objects (`._*`) skipped before any
-    /// download/open attempt (ADR-0107) -- never counted in `failed`.
+    /// download/open attempt (CLI-0107) -- never counted in `failed`.
     pub skipped_apple_double: usize,
     /// Archives that genuinely failed to open (password-protected,
     /// corrupt, etc.), already folded into `failed`/
     /// `failure_breakdown.archive` too, but kept here (and written into
     /// `deduplicate-report.txt`) so they're individually actionable
-    /// (ADR-0107).
+    /// (CLI-0107).
     pub archive_failures: Vec<archive::ArchiveFailure>,
-    /// From `RcloneLogSummary.transferred` (ADR-0136) -- rclone's own
+    /// From `RcloneLogSummary.transferred` (CLI-0136) -- rclone's own
     /// size/modtime comparison is this job's "skip if unchanged" mechanism
     /// now, so there's no separate "unchanged" count the old per-file
     /// `minio` upload path used to report.
@@ -371,7 +371,7 @@ pub(crate) struct DeduplicateSummary {
 /// filtered against the `.processed` checkpoint) are downloaded/expanded/
 /// hashed concurrently at `concurrency`, placed sequentially (dedup +
 /// report), then uploaded (if `remote` is given) -- always unencrypted.
-/// `source_buckets` (ADR-0109) holds every source bucket this run can pull
+/// `source_buckets` (CLI-0109) holds every source bucket this run can pull
 /// from, keyed by alias at the top so each queued item's own
 /// `bucket_alias` resolves to the right `(BucketConfig, secret)` pair.
 #[allow(clippy::too_many_arguments)]
@@ -425,7 +425,7 @@ pub(crate) async fn run_deduplicate_job(
     let in_flight = Arc::new(AtomicUsize::new(0));
 
     let hashed_files = Arc::new(Mutex::new(Vec::<HashedFile>::new()));
-    // `(bucket_alias, root_key)` -- compound-keyed (ADR-0109), same
+    // `(bucket_alias, root_key)` -- compound-keyed (CLI-0109), same
     // collision reasoning as the `.processed` checkpoint itself: two
     // different source buckets can share an identical root key string, so
     // tracking by bare key alone could taint/finish the wrong bucket's root.
@@ -436,18 +436,18 @@ pub(crate) async fn run_deduplicate_job(
     // extraction-ratio cap, is excluded from the checkpoint below -- a root
     // zip was previously checkpointed unconditionally the moment it
     // expanded, regardless of what happened to its members, so a rerun
-    // could never retry silently-dropped data (ADR-0098). Compound-keyed by
+    // could never retry silently-dropped data (CLI-0098). Compound-keyed by
     // `(bucket_alias, root_key)` for the same reason as `finished_root_keys`
     // above.
     let tainted_roots = Arc::new(Mutex::new(HashSet::<(String, String)>::new()));
     // Top-level AppleDouble objects skipped before any download/open
     // attempt -- checkpointed unconditionally, separately from
-    // `finished_root_keys` (ADR-0107; see the checkpoint loop below for why
+    // `finished_root_keys` (CLI-0107; see the checkpoint loop below for why
     // these can't just reuse that list's `is_zip_key` retain gate).
     let apple_double_skipped_roots = Arc::new(Mutex::new(Vec::<(String, String)>::new()));
     // Archives that genuinely failed to open (password-protected, corrupt,
     // etc.), itemized by key/error so a run's report can point at exactly
-    // which ones need a human, instead of only a count (ADR-0107).
+    // which ones need a human, instead of only a count (CLI-0107).
     let archive_failures = Arc::new(Mutex::new(Vec::<archive::ArchiveFailure>::new()));
     let command_span = tracing::Span::current();
 
@@ -544,7 +544,7 @@ pub(crate) async fn run_deduplicate_job(
                                     .push((bucket_alias, root_key));
                             }
                             // Deliberately no failure_breakdown/metrics bump
-                            // -- this is not a failure (ADR-0107's whole
+                            // -- this is not a failure (CLI-0107's whole
                             // point).
                         }
                         ItemOutcome::ArchiveOpenFailed { key, error } => {
@@ -658,7 +658,7 @@ pub(crate) async fn run_deduplicate_job(
     // duplicate-heavy bucket), and `placed_keys` all live only inside this
     // block, so they're dropped here, before the upload phase runs, instead
     // of surviving in `run_deduplicate_job`'s own scope through the whole upload
-    // phase afterward (ADR-0089 -- this is what let a real run's RSS keep
+    // phase afterward (CLI-0089 -- this is what let a real run's RSS keep
     // climbing well past the fetch+hash phase and eventually get OOM-killed
     // partway through upload).
     let placement_summary = {
@@ -683,7 +683,7 @@ pub(crate) async fn run_deduplicate_job(
         // `finished_root_keys` above -- an AppleDouble object has no
         // members, so it can never satisfy that list's `placed_keys`/
         // `is_zip_key` retain gate, and it can never be tainted either
-        // (ADR-0107).
+        // (CLI-0107).
         for (bucket_alias, key) in &apple_double_skipped_roots {
             manifest::append_checkpoint(&staging_dir, bucket_alias, key)?;
         }
@@ -711,7 +711,7 @@ pub(crate) async fn run_deduplicate_job(
     };
     summary.failure_breakdown.merge(&failure_breakdown);
     // `place_and_report`'s placement failures were previously logged but
-    // never counted anywhere at all (ADR-0093 fixes this as a side effect
+    // never counted anywhere at all (CLI-0093 fixes this as a side effect
     // of adding the live per-phase metric at that same call site).
     summary.failure_breakdown.placement = placement_summary.failed;
 
@@ -727,8 +727,8 @@ pub(crate) async fn run_deduplicate_job(
     Ok(summary)
 }
 
-/// Logs the upload phase's completion (ADR-0104), matching the shape of
-/// `run_deduplicate_job`'s other three phase-boundary lines (ADR-0099) --
+/// Logs the upload phase's completion (CLI-0104), matching the shape of
+/// `run_deduplicate_job`'s other three phase-boundary lines (CLI-0099) --
 /// extracted into its own function so it's unit-testable without standing
 /// up a full `run_deduplicate_job`/mock-bucket fixture.
 fn log_upload_phase_complete(summary: &crate::core::rclone::RcloneLogSummary) {
@@ -740,7 +740,7 @@ fn log_upload_phase_complete(summary: &crate::core::rclone::RcloneLogSummary) {
 }
 
 /// Uploads `local_output/result/` to `remote` via one bulk `rclone copy`
-/// (ADR-0136) -- replaces the old per-file `minio` upload phase (`upload.rs`'s
+/// (CLI-0136) -- replaces the old per-file `minio` upload phase (`upload.rs`'s
 /// `pending_upload_tasks`/`run_upload_phase`/`UploadedIndex`) entirely.
 /// rclone's own size/modtime comparison is this job's "skip if unchanged"
 /// mechanism now, so there's no longer a distinct "unchanged" count the way
@@ -772,7 +772,7 @@ async fn upload_result(
 }
 
 /// Resumes uploading an already-completed local deduplicate run, skipping the
-/// bucket listing/download/hash/placement phases entirely (ADR-0089's
+/// bucket listing/download/hash/placement phases entirely (CLI-0089's
 /// `--upload-only`). Reuses `upload_result`, the same helper
 /// `run_deduplicate_job`'s own upload tail calls.
 pub(crate) async fn run_upload_only(
@@ -924,7 +924,7 @@ mod tests {
 
     /// Mirrors the `CapturedEvents`/`CaptureLayer` pattern already
     /// established in the since-removed `email_sync/transform.rs`'s test
-    /// module (ADR-0080);
+    /// module (CLI-0080);
     /// duplicated here per this codebase's "duplicate until the third
     /// consumer" precedent.
     #[derive(Clone, Default)]

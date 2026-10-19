@@ -1,7 +1,7 @@
-//! The fetch/push pipeline (ADR-0146 §5).
+//! The fetch/push pipeline (CLI-0146 §5).
 //!
 //! Shaped like `email_pull::worker`'s interleaved queue plus per-identity
-//! connection semaphore (ADR-0021 §6 addendum, ADR-0071), with three
+//! connection semaphore (CLI-0021 §6 addendum, CLI-0071), with three
 //! substantive differences: every fetch reserves its rate window first
 //! (§4), every message is pushed and then deleted immediately rather than
 //! accumulating for a later upload phase (§5), and both legs park on a
@@ -39,15 +39,15 @@ type WorkQueue = Arc<Mutex<VecDeque<QueueItem>>>;
 
 /// Connect budget. `retry_with_backoff`'s schedule is linear, so `(4, 30s)`
 /// attempts at t=0/+30s/+90s/+180s -- three minutes of patience, the same
-/// schedule `CopyTo::retry()` uses since ADR-0144. (That function's doc
+/// schedule `CopyTo::retry()` uses since CLI-0144. (That function's doc
 /// comment calls the same schedule "about five minutes", which sums the
 /// attempt timestamps rather than the sleeps; the wall clock is 180s. Noted
 /// here so the two are not read as different budgets -- correcting the
-/// wording there is ADR-0144's to do, not this ADR's.)
+/// wording there is CLI-0144's to do, not this ADR's.)
 ///
 /// Either way it is an order of magnitude more patient than the sibling
 /// email jobs' `(3, 5s)` -- fifteen seconds, far too short for the real
-/// 74-second outage ADR-0144 documented, and structurally futile against a
+/// 74-second outage CLI-0144 documented, and structurally futile against a
 /// negative-TTL-cached DNS answer.
 const CONNECT_RETRIES: usize = 4;
 const CONNECT_BACKOFF: Duration = Duration::from_secs(30);
@@ -72,7 +72,7 @@ const PUSH_RECOVERY_BACKOFF: Duration = Duration::from_secs(30);
 /// A deliberate near-duplicate of the sibling jobs' `connect_with_retry`
 /// (both of which live in private `mod worker`s and are unreachable from
 /// here anyway), differing in its budget -- which is the whole point
-/// (ADR-0146 §2, §4).
+/// (CLI-0146 §2, §4).
 #[tracing::instrument(skip_all, fields(identity = %ctx.identity.alias))]
 pub(crate) async fn connect_with_retry(ctx: &ImportContext) -> Result<ImapSession, String> {
     retry_with_backoff(CONNECT_RETRIES, CONNECT_BACKOFF, || {
@@ -89,7 +89,7 @@ pub(crate) async fn connect_with_retry(ctx: &ImportContext) -> Result<ImapSessio
 
 /// A `failed` count broken down by cause. Every variant is a message that
 /// did **not** reach the destination, so these sum to the flat `failed`
-/// counter (ADR-0033).
+/// counter (CLI-0033).
 #[derive(Debug, Default)]
 pub(crate) struct FailureBreakdown {
     pub connect: usize,
@@ -133,7 +133,7 @@ pub(crate) struct JobSummary {
     /// Informational, deliberately **not** part of `failed`: the raw `.eml`
     /// is this job's primary deliverable and already contains every
     /// attachment inline, so an unparseable message is still delivered
-    /// (ADR-0081's precedent, same reasoning).
+    /// (CLI-0081's precedent, same reasoning).
     pub attachment_extraction_failed: usize,
     /// How many items failed because a `RecoveryGate` had latched.
     /// Informational and overlapping with `failed`, so not part of the
@@ -531,13 +531,13 @@ async fn process_batch_on_session(
 /// attachment, then **always** delete the local copies.
 ///
 /// The unconditional delete is this job's deliberate divergence from
-/// ADR-0124's retain-on-failure rule, and is strictly safer than it: a
+/// CLI-0124's retain-on-failure rule, and is strictly safer than it: a
 /// message whose push failed is still on the IMAP server, undamaged, where
 /// a rerun refetches it anyway -- the same "non-destructive, still at the
-/// source" reasoning ADR-0143 used. `transform` retains a failure because a
+/// source" reasoning CLI-0143 used. `transform` retains a failure because a
 /// transcode result is not trivially reproducible; nothing here is. The
 /// consequence is that local disk is bounded to the in-flight window
-/// unconditionally, making ADR-0143's retention pathology structurally
+/// unconditionally, making CLI-0143's retention pathology structurally
 /// impossible rather than merely unlikely.
 #[allow(clippy::too_many_arguments)]
 async fn deliver_one(
@@ -648,7 +648,7 @@ async fn deliver_one(
         crate::observability::metrics::record_phase(JOB, "push", "failed", None);
     }
 
-    // ADR-0146 §5: always, on success and on failure alike.
+    // CLI-0146 §5: always, on success and on failure alike.
     remove_local_copy(&eml_path);
     remove_local_dir(&uid_dir);
 
@@ -686,7 +686,7 @@ async fn push_with_gate(path: &Path, key: &str, shared: &Arc<Shared>) -> Result<
 }
 
 /// Best-effort delete. A failure is logged and never flips a successful
-/// delivery into a failure (ADR-0124's discipline).
+/// delivery into a failure (CLI-0124's discipline).
 fn remove_local_copy(path: &Path) {
     if let Err(err) = std::fs::remove_file(path)
         && err.kind() != std::io::ErrorKind::NotFound
@@ -723,8 +723,8 @@ fn relative_key(mailbox_relpath: &Path) -> String {
 /// derived number of workers, and one shared pacer, push semaphore, and
 /// pair of gates.
 ///
-/// Deliberately never calls `set_macro_phase` (ADR-0146 §8, following
-/// ADR-0130's precedent for `transform`): that gauge encodes ADR-0019's
+/// Deliberately never calls `set_macro_phase` (CLI-0146 §8, following
+/// CLI-0130's precedent for `transform`): that gauge encodes CLI-0019's
 /// one-way local-work-then-upload transition, which a job pushing inline
 /// never performs.
 pub(crate) async fn run_email_import_job(
@@ -743,7 +743,7 @@ pub(crate) async fn run_email_import_job(
 
     // Interleaved round-robin rather than identity-by-identity: a
     // front-loaded queue would stall every worker on one identity's
-    // connection semaphore (ADR-0071).
+    // connection semaphore (CLI-0071).
     let mut per_identity: Vec<VecDeque<Batch>> = pending_by_identity
         .iter()
         .map(|pending| super::batches_from_pending(pending, batch_size).into())
@@ -768,7 +768,7 @@ pub(crate) async fn run_email_import_job(
         .map(|(_, batch, _)| batch.uids.len())
         .sum();
 
-    // No `--concurrency` flag (ADR-0146 §1): throughput is the pacer's job,
+    // No `--concurrency` flag (CLI-0146 §1): throughput is the pacer's job,
     // so worker count only needs to be enough to keep every identity's
     // allowed connections busy.
     let worker_count = (max_connections * contexts.len().max(1))
@@ -792,7 +792,7 @@ pub(crate) async fn run_email_import_job(
         contexts
             .iter()
             .map(|ctx| {
-                // ADR-0080's per-identity override still wins over this
+                // CLI-0080's per-identity override still wins over this
                 // job's own default, exactly as for the sibling jobs.
                 let cap = ctx
                     .identity
@@ -829,11 +829,11 @@ pub(crate) async fn run_email_import_job(
     let multi_progress = MultiProgress::new();
     let started = Instant::now();
 
-    // ADR-0141: `tokio::spawn` drops the ambient span, so every per-message
+    // CLI-0141: `tokio::spawn` drops the ambient span, so every per-message
     // warning would otherwise land in `pigeon.jsonl` with no `command`
     // field and be invisible to the `analyze-job-run` skill's documented
     // filter. Captured and re-attached here rather than discovered from a
-    // failed run, which is what ADR-0098 and ADR-0141 both had to do.
+    // failed run, which is what CLI-0098 and CLI-0141 both had to do.
     let command_span = tracing::Span::current();
 
     let mut handles = Vec::with_capacity(worker_count);
@@ -933,7 +933,7 @@ mod tests {
         assert_eq!(relative_key(&PathBuf::new()), "");
     }
 
-    /// The connect budget must be the patient one ADR-0144's evidence calls
+    /// The connect budget must be the patient one CLI-0144's evidence calls
     /// for, not the sibling jobs' 15 seconds. `retry_with_backoff` sleeps
     /// `backoff * attempt` before every attempt after the first, so the
     /// final attempt starts three minutes in.
@@ -946,7 +946,7 @@ mod tests {
         assert_eq!(total, Duration::from_secs(180));
         assert!(
             total >= Duration::from_secs(74),
-            "must outlast the 74-second outage ADR-0144 measured"
+            "must outlast the 74-second outage CLI-0144 measured"
         );
     }
 

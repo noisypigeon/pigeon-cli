@@ -1,4 +1,4 @@
-//! Full-resolution PNG export of a Procreate document (ADR-0159).
+//! Full-resolution PNG export of a Procreate document (CLI-0159).
 //!
 //! A `.procreate` file is a zip. Its `Document.archive` is an
 //! NSKeyedArchiver binary plist describing the canvas, and every layer's
@@ -40,7 +40,7 @@ const MAX_SIDE: u32 = 16_384;
 /// Mean absolute RGB difference, in 0-255 units, above which an export is
 /// refused as not matching its thumbnail.
 ///
-/// Calibrated in ADR-0159 on five real documents: every correct export
+/// Calibrated in CLI-0159 on five real documents: every correct export
 /// scored 0.01-1.66, and every wrong orientation of the same documents
 /// scored 13.27-44.72 (the lowest a mostly-white drawing). 6 sits well
 /// clear of both.
@@ -61,7 +61,7 @@ fn unreadable(detail: impl std::fmt::Display) -> String {
 }
 
 /// Converts `input` to a PNG at `output`. Blocking: call it from
-/// `spawn_blocking` (ADR-0090).
+/// `spawn_blocking` (CLI-0090).
 pub(crate) fn export_png(input: &Path, output: &Path) -> Result<(), String> {
     let file = std::fs::File::open(input)
         .map_err(|err| format!("failed to open {}: {err}", input.display()))?;

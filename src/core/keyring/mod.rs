@@ -1,10 +1,10 @@
 pub mod credentials;
 
 /// Behavior shared by every kind of secret this CLI manages under one
-/// `keyring.toml` (ADR-0022, secret storage per ADR-0135), implemented by
+/// `keyring.toml` (CLI-0022, secret storage per CLI-0135), implemented by
 /// `commands::keyring::email::Identity`, `commands::keyring::bucket::
 /// BucketConfig`, and the concrete `Entry` enum that wraps both
-/// (`commands::keyring::store::Entry`) for storage (ADR-0023).
+/// (`commands::keyring::store::Entry`) for storage (CLI-0023).
 pub(crate) trait KeyringEntry {
     fn alias(&self) -> &str;
     /// `"email"` / `"bucket"` -- matches the serde tag value used to

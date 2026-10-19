@@ -8,7 +8,7 @@ concurrent operations, and rate-limited transfers.
 ## Structure
 
 - [`src/`](src/) — the Rust CLI source.
-- [`docs/adr/`](docs/adr/) — architecture decision records governing every
+- [`adr/`](adr/) — architecture decision records governing every
   change in this repo.
 - [`docs/report/`](docs/report/) — job-run log analysis reports produced
   by the `analyze-job-run` Claude Code skill.
@@ -39,7 +39,7 @@ This installs a binary named `pigeon`.
 ## Run via Docker
 
 An alternative to installing the converters locally: build and run `pigeon`
-in a container that bundles everything it needs (see ADR-0087) — `ffmpeg`,
+in a container that bundles everything it needs (see CLI-0087) — `ffmpeg`,
 LibreOffice, Calibre and pandoc between them are a substantial install, so
 this route is usually the easier one. Image targets `linux/arm64` only.
 
@@ -54,7 +54,7 @@ persists it across runs. `PIGEON_CONFIG_DIR` and `PIGEON_LOG_DIR` are
 pre-set to `/data/config`/`/data/logs`.
 
 Because a container restart doesn't preserve the OS keyring (see
-ADR-0085's Linux caveat), non-interactive/restarted use works in two
+CLI-0085's Linux caveat), non-interactive/restarted use works in two
 phases:
 
 1. **One-time setup**: run `pigeon keyring add <kind> <alias>` once to
@@ -77,9 +77,9 @@ is left to your own infrastructure.
 ## Local observability stack (Grafana/Prometheus/Loki)
 
 Previously, `pigeon` job runs on Scaleway compute were observed via
-Scaleway's managed Cockpit (see ADR-0092/0093), fed by an on-host Grafana
+Scaleway's managed Cockpit (see CLI-0092/0093), fed by an on-host Grafana
 Alloy agent. Running `pigeon` bare-metal on your own machine instead (see
-ADR-0128) drops that path entirely — nothing ships `/metrics` or
+CLI-0128) drops that path entirely — nothing ships `/metrics` or
 `pigeon.jsonl` anywhere by default. `observability/` provides an
 equivalent local stack via Docker Compose.
 
@@ -99,7 +99,7 @@ observability-logs` tails the stack's own container logs (not pigeon's),
 for debugging the stack itself.
 
 Known v1 limitation: no host-wide metrics (CPU/mem/disk for the whole
-machine, not just pigeon's own process tree) — see ADR-0128.
+machine, not just pigeon's own process tree) — see CLI-0128.
 
 ## Commands
 
@@ -115,7 +115,7 @@ machine, not just pigeon's own process tree) — see ADR-0128.
 
 Run `pigeon --help`, `pigeon keyring --help`, or `pigeon job --help` for the full command reference.
 
-The full design rationale for every decision behind this crate lives in [`docs/adr/`](docs/adr/), as a sequence of architecture decision records.
+The full design rationale for every decision behind this crate lives in [`adr/`](adr/), as a sequence of architecture decision records.
 
 ## License
 

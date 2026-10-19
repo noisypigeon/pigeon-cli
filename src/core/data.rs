@@ -2,12 +2,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-/// One hash's committed entry: the final relative path, plus (ADR-0099) the
+/// One hash's committed entry: the final relative path, plus (CLI-0099) the
 /// original source key of whichever file was kept under that path --
-/// empty when the entry predates ADR-0099 or was committed by a caller that
+/// empty when the entry predates CLI-0099 or was committed by a caller that
 /// only ever uses the plain `Dedup::commit` (original key is never
 /// retroactively backfilled, since a hash is only ever committed once).
-/// `source_bucket_alias` (ADR-0109) is likewise empty unless committed via
+/// `source_bucket_alias` (CLI-0109) is likewise empty unless committed via
 /// `commit_with_key_and_bucket` -- only `deduplicate::dedup` does that
 /// today, to record which of its (possibly several) source buckets a kept
 /// file came from.
@@ -19,12 +19,12 @@ struct ContentIndexEntry {
 }
 
 /// One dotfile's worth of `<hex-md5>\t<relative-path>\t<original-key>`
-/// entries (optionally a 4th `\t<source-bucket-alias>` field, ADR-0109) --
+/// entries (optionally a 4th `\t<source-bucket-alias>` field, CLI-0109) --
 /// a durable, append-only content-hash index backing byte-identical-content
-/// deduplication (originally ADR-0012, for `pigeon email`'s message/
-/// attachment dedup; genericized by ADR-0020 for reuse by other
-/// transforms; relocated by ADR-0023; gained the tab-separated
-/// `original-key` field in ADR-0099). The relative path stored is
+/// deduplication (originally CLI-0012, for `pigeon email`'s message/
+/// attachment dedup; genericized by CLI-0020 for reuse by other
+/// transforms; relocated by CLI-0023; gained the tab-separated
+/// `original-key` field in CLI-0099). The relative path stored is
 /// caller-defined -- typically relative to wherever that caller's own
 /// transformed output lives.
 pub(crate) struct ContentIndex {
@@ -39,7 +39,7 @@ impl ContentIndex {
     /// `<hash>\t<relative_path>\t<original_key>\t<source_bucket_alias>`
     /// format (the trailing `original_key`/`source_bucket_alias` fields are
     /// each optional, for forward compatibility with older 2-/3-field
-    /// lines); a line with no tab falls back to the pre-ADR-0099
+    /// lines); a line with no tab falls back to the pre-CLI-0099
     /// `<hash> <relative_path>` format, with both trailing fields
     /// defaulting to `""`. Lines matching neither shape are skipped
     /// leniently.
@@ -89,8 +89,8 @@ impl ContentIndex {
         })
     }
     /// Like `check`, but also returns the original source key of the kept
-    /// file (ADR-0099) and the source bucket alias it was downloaded from
-    /// (ADR-0109) -- both `""` when the entry predates the respective ADR
+    /// file (CLI-0099) and the source bucket alias it was downloaded from
+    /// (CLI-0109) -- both `""` when the entry predates the respective ADR
     /// or was committed via the plain `commit`/`commit_with_key`/
     /// `Dedup::commit`. Only `deduplicate::dedup` calls this today; every
     /// other `ContentIndex` consumer has no multi-bucket concept and
@@ -108,11 +108,11 @@ impl ContentIndex {
         })
     }
     /// Like `commit_with_key`, but also durably records which source
-    /// bucket-config `original_key` was downloaded from (ADR-0109), as a
+    /// bucket-config `original_key` was downloaded from (CLI-0109), as a
     /// 4th tab-separated field -- so a later duplicate's report row can
     /// name not just which key was kept, but which of this run's (possibly
     /// several) source buckets it came from. Only `deduplicate::dedup`
-    /// calls this, and since ADR-0147 removed the two email jobs it is the
+    /// calls this, and since CLI-0147 removed the two email jobs it is the
     /// only consumer left -- so every line written today carries all four
     /// fields. The 2- and 3-field forms are still read (see `load`), since
     /// an index written by an older build is still valid on disk.
@@ -180,11 +180,11 @@ const MAX_FILENAME_LENGTH: usize = 100;
 /// Reduces an untrusted, externally-sourced name to a safe filename: keeps
 /// only the final path component (so an embedded `/` can't make
 /// `Path::join` create an implicit, never-created subdirectory, per
-/// ADR-0013), caps its length (an externally-sourced name can be
+/// CLI-0013), caps its length (an externally-sourced name can be
 /// arbitrarily long), and falls back to `"file"` if nothing usable remains.
 /// Extension is preserved where reasonable, unlike
 /// `email::identity::sanitize_segment`, which would corrupt it. Originally
-/// ADR-0013's MIME-attachment-name fix; genericized by ADR-0020.
+/// CLI-0013's MIME-attachment-name fix; genericized by CLI-0020.
 pub(crate) fn sanitize_filename(name: &str) -> String {
     let base = match Path::new(name).file_name().and_then(|f| f.to_str()) {
         Some(base) if !base.is_empty() => base,
@@ -256,31 +256,31 @@ fn visit_dir(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
 /// name (via `archive::is_apple_metadata_entry`, which additionally treats a
 /// `__MACOSX/` path prefix as metadata, a convention with no equivalent on a
 /// plain bucket key), directly on a top-level bucket object's own display key
-/// (ADR-0107), or on a source-tree relative path (`transform`, ADR-0130 --
+/// (CLI-0107), or on a source-tree relative path (`transform`, CLI-0130 --
 /// these 82-byte stubs match an `--include '*.<ext>'` filter but are not
 /// decodable media, and feeding one to `ffmpeg` produces a non-retryable
 /// error that can trip the circuit breaker). Hoisted here on its second
-/// consumer (ADR-0130), alongside this module's other filename predicates;
+/// consumer (CLI-0130), alongside this module's other filename predicates;
 /// `commands::job::archive` is the other caller.
 pub(crate) fn is_apple_double_basename(key: &str) -> bool {
     key.rsplit('/').next().unwrap_or(key).starts_with("._")
 }
 
 /// Whether `key`'s final path component is an Excel lock file (`~$<name>`),
-/// the stub Excel leaves beside an open workbook (ADR-0149).
+/// the stub Excel leaves beside an open workbook (CLI-0149).
 ///
 /// Same shape and the same two choke points as
 /// `is_apple_double_basename`, and for the same reason: these match an
 /// `--include '*.xlsx'` filter but are not workbooks, so without this they
 /// arrive as *failures* rather than skips -- and a deterministic,
-/// non-retryable failure class is exactly what can trip ADR-0121's circuit
+/// non-retryable failure class is exactly what can trip CLI-0121's circuit
 /// breaker into aborting a whole run.
 pub(crate) fn is_excel_lock_basename(key: &str) -> bool {
     key.rsplit('/').next().unwrap_or(key).starts_with("~$")
 }
 
 /// Longest a sheet-name slug may be, in bytes, inside a destination
-/// filename (ADR-0149).
+/// filename (CLI-0149).
 ///
 /// The budget: a `MAX_FILENAME_LENGTH` stem (100) + `-` + 16 hex digest +
 /// `-` + a `NNofTT` marker (8 at three digits each) + `-` + this (40) +
@@ -289,7 +289,7 @@ pub(crate) fn is_excel_lock_basename(key: &str) -> bool {
 const MAX_SHEET_SLUG_LENGTH: usize = 40;
 
 /// Reduces a workbook sheet name to a filename-safe, report-safe slug
-/// (ADR-0149): keeps `[A-Za-z0-9._-]`, maps every other character to `-`,
+/// (CLI-0149): keeps `[A-Za-z0-9._-]`, maps every other character to `-`,
 /// collapses runs, trims leading/trailing `-`, truncates to
 /// `MAX_SHEET_SLUG_LENGTH`, and falls back to `"sheet"` when nothing
 /// usable remains.
@@ -302,7 +302,7 @@ const MAX_SHEET_SLUG_LENGTH: usize = 40;
 /// report's comma-joined `destination_filenames` column. A sheet name
 /// containing a tab, a newline, or a comma would corrupt all three.
 /// Sheet names are author-controlled text, so this is the same class of
-/// problem ADR-0033 fixed for `yaml_quote`, solved the same way: restrict
+/// problem CLI-0033 fixed for `yaml_quote`, solved the same way: restrict
 /// the character set at the producer rather than escape at each consumer.
 ///
 /// The report's comma-join depends on this excluding `,`. Do not widen the
@@ -312,14 +312,14 @@ pub(crate) fn sheet_slug(name: &str) -> String {
 }
 
 /// A filename stem reduced to the same safe character set as `sheet_slug`,
-/// at `MAX_FILENAME_LENGTH`'s larger budget (ADR-0151).
+/// at `MAX_FILENAME_LENGTH`'s larger budget (CLI-0151).
 ///
 /// Used by `transform`'s `placement::group_key` for **spreadsheet input
 /// kinds only**. The reason is narrow and worth stating: those are the only
 /// kinds that can produce more than one output per input, so they are the
 /// only ones whose `transform-report.txt` filename column holds a
 /// *multi-value* list -- and a separator can only mislead when there is
-/// more than one value to separate. ADR-0149 secured the sheet-name half of
+/// more than one value to separate. CLI-0149 secured the sheet-name half of
 /// such a name and missed this half, so a real run produced
 /// `Budget (Normal, Reduced, Crisis)-ee7a9c8a4c2e5342.csv`: one file whose
 /// own name reads as three comma-separated ones.
@@ -327,7 +327,7 @@ pub(crate) fn sheet_slug(name: &str) -> String {
 /// Deliberately **not** applied to the image, video, audio, or document
 /// kinds.
 /// `group_key` feeds every destination name this job has ever written, and
-/// `transform` never deletes at the destination (ADR-0112), so widening
+/// `transform` never deletes at the destination (CLI-0112), so widening
 /// this would not rename those objects -- it would *duplicate* them.
 pub(crate) fn strict_stem(name: &str) -> String {
     let base = match Path::new(name).file_name().and_then(|f| f.to_str()) {
@@ -383,7 +383,7 @@ mod tests {
         assert!(!is_excel_lock_basename(""));
     }
 
-    /// ADR-0151: the stem half of a destination name needs the same
+    /// CLI-0151: the stem half of a destination name needs the same
     /// treatment the slug half got, at the larger `MAX_FILENAME_LENGTH`
     /// budget. The real run that prompted this produced
     /// `Budget (Normal, Reduced, Crisis)-ee7a9c8a4c2e5342.csv` -- one file
@@ -444,7 +444,7 @@ mod tests {
     }
 
     /// The reason this exists rather than reusing `sanitize_filename`
-    /// (ADR-0149): the slug is written into `transform-report.txt`, which is
+    /// (CLI-0149): the slug is written into `transform-report.txt`, which is
     /// tab-separated and one-line-per-row, and into that report's
     /// comma-joined filename column. A sheet name is author-controlled, so
     /// a tab, newline, or comma reaching the slug would corrupt the report.
@@ -469,7 +469,7 @@ mod tests {
     }
 
     /// A path separator must never survive, or `Path::join` would create an
-    /// implicit subdirectory -- ADR-0013's original concern, which this
+    /// implicit subdirectory -- CLI-0013's original concern, which this
     /// slug inherits by restricting the character set rather than by
     /// taking the final component.
     #[test]

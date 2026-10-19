@@ -1,5 +1,5 @@
 //! Serialised recovery from an outage at either end of the pipeline
-//! (ADR-0146 §4) -- ADR-0144's `EndpointGate` lesson applied before a
+//! (CLI-0146 §4) -- CLI-0144's `EndpointGate` lesson applied before a
 //! failed run rather than after one.
 //!
 //! Whichever task first observes a classified failure wins an election and
@@ -8,7 +8,7 @@
 //! parks on the gate instead of issuing its own doomed request, so one
 //! outage costs the run one wait rather than one wait per in-flight item.
 //!
-//! Like ADR-0144's gate and unlike ADR-0121/0143's transcode circuit
+//! Like CLI-0144's gate and unlike CLI-0121/0143's transcode circuit
 //! breaker, this **pauses and resumes** rather than aborting: a transient
 //! server fault warrants patience, not abandonment. And as there, `rounds`
 //! is never reset -- once the budget is spent the gate latches
@@ -19,7 +19,7 @@
 //! Written generic over its classifier and budget because this job uses it
 //! twice (IMAP leg and push leg). A third consumer should hoist it into
 //! `core::rclone`, which already owns one of the two classifiers --
-//! deferred per ADR-0031 rather than hoisted on the second.
+//! deferred per CLI-0031 rather than hoisted on the second.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -33,10 +33,10 @@ use tokio::time::Instant;
 /// that, and the push leg reuses it directly).
 ///
 /// Matched case-insensitively against the error text, and promoted to a
-/// named const per ADR-0143. Unlike that ADR's guards these match *server*
+/// named const per CLI-0143. Unlike that ADR's guards these match *server*
 /// text rather than pigeon's own, so they are inherently
 /// provider-dependent: the list is a best-effort widening of the one real
-/// signature ADR-0071 observed ("Too many simultaneous connections"), and a
+/// signature CLI-0071 observed ("Too many simultaneous connections"), and a
 /// provider phrasing not listed here simply falls through to the ordinary
 /// batch retry rather than the gate.
 const SERVER_OVERLOADED_SIGNATURES: &[&str] = &[
@@ -115,7 +115,7 @@ impl RecoveryGate {
                 // sees an open gate and retries once against an endpoint
                 // that is still down -- harmless, since it just re-enters
                 // here and parks, but worth knowing it is possible
-                // (ADR-0144 recorded the same race).
+                // (CLI-0144 recorded the same race).
                 let _ = self.open.send(false);
 
                 let round = self.rounds.fetch_add(1, Ordering::SeqCst) + 1;
@@ -173,7 +173,7 @@ mod tests {
     const BACKOFF: Duration = Duration::from_secs(60);
 
     #[test]
-    fn is_server_overloaded_error_matches_the_signature_adr_0071_actually_observed() {
+    fn is_server_overloaded_error_matches_the_signature_cli_0071_actually_observed() {
         assert!(is_server_overloaded_error(
             "failed to connect: Too many simultaneous connections"
         ));
@@ -266,7 +266,7 @@ mod tests {
     }
 
     /// Past the budget the gate must latch, so remaining items fail fast
-    /// instead of each re-paying the full recovery cost (ADR-0144).
+    /// instead of each re-paying the full recovery cost (CLI-0144).
     #[tokio::test(start_paused = true)]
     async fn gives_up_past_the_budget_and_stays_latched() {
         let gate = RecoveryGate::new("imap", 2, BACKOFF);

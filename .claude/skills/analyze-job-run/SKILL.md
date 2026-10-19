@@ -1,21 +1,21 @@
 ---
 name: analyze-job-run
-description: Use this skill when diagnosing a `pigeon` job run from its logs -- reading the ADR-0073 JSONL observability log (`pigeon.jsonl`) to reconstruct a run's timeline, spot failure patterns, and produce a written takeaway (root cause, evidence, confidence, next action); cross-referencing the ADR-0092/0093 Prometheus metrics endpoint (or its Cockpit-forwarded history, if deployed) for resource/progress data, now that the log itself is diagnostics-only. Trigger on requests like "can you check the logs", "what happened in the last run", "read the log dump and tell me what went wrong", "why did this job crash", or a pasted terminal transcript showing a job failure/crash/unexpected exit code.
+description: Use this skill when diagnosing a `pigeon` job run from its logs -- reading the CLI-0073 JSONL observability log (`pigeon.jsonl`) to reconstruct a run's timeline, spot failure patterns, and produce a written takeaway (root cause, evidence, confidence, next action); cross-referencing the CLI-0092/0093 Prometheus metrics endpoint (or its Cockpit-forwarded history, if deployed) for resource/progress data, now that the log itself is diagnostics-only. Trigger on requests like "can you check the logs", "what happened in the last run", "read the log dump and tell me what went wrong", "why did this job crash", or a pasted terminal transcript showing a job failure/crash/unexpected exit code.
 ---
 
 # Analyzing a `pigeon` job run's logs
 
-The ADR-0073 JSONL log is the durable record of *what went wrong and why*
+The CLI-0073 JSONL log is the durable record of *what went wrong and why*
 during a run -- when a run is killed (SIGKILL, OOM) nothing else gets a
 chance to log gracefully on the way out, so for diagnostic (error/failure)
 events, the log is often the *only* evidence available. This skill
-formalizes the ad hoc diagnostic process that first found the ADR-0076
+formalizes the ad hoc diagnostic process that first found the CLI-0076
 SIGKILL root cause (a real crash against 50-100GB zip archives in the
 since-removed `pull-transform` job), so it's repeatable instead of
 re-derived from source every time.
 Follow it in full; don't skip straight to guessing a cause.
 
-**ADR-0093 changed what's *in* the log.** Resource telemetry
+**CLI-0093 changed what's *in* the log.** Resource telemetry
 (`resource_sample`: CPU/mem/disk-I/O) and the `"upload started"` event were
 both moved to Prometheus-only (`pigeon_resource_*`/`pigeon_upload_*`
 metrics on the local `:9091/metrics` endpoint) and are **no longer in
@@ -31,19 +31,19 @@ gap. See step 4 and the Known limitations section.
 
 ## Steps
 
-1. **Locate the log.** Default path, **rotated daily since ADR-0151**:
+1. **Locate the log.** Default path, **rotated daily since CLI-0151**:
    `~/Library/Application Support/pigeon/logs/pigeon.<YYYY-MM-DD>.jsonl`
    (macOS) or `~/.local/share/pigeon/logs/pigeon.<YYYY-MM-DD>.jsonl` (Linux -- `directories`'
    `data_local_dir()`, i.e. `$XDG_DATA_HOME` or `~/.local/share` by
    default; this is the path a headless Linux box running a long `job run
-   deduplicate`/`transform` will actually have, ADR-0089). Overridable two
+   deduplicate`/`transform` will actually have, CLI-0089). Overridable two
    ways -- check both before assuming the default: the `PIGEON_LOG_DIR`
    environment variable, or a `--log-file <path>` flag passed to the
    command itself. If the user pasted a terminal transcript, look for
    either of these before reading anything. 14 generations are kept; a run
    that straddled midnight has its lines split across two of them, so glob
    rather than naming one file. An **explicit `--log-file <path>` is not
-   rotated** -- that path is written literally. A pre-ADR-0151
+   rotated** -- that path is written literally. A pre-CLI-0151
    `pigeon.jsonl` with no date may also still be sitting there; it is not
    migrated or removed, and holds everything before the rotation cutover.
 
@@ -53,23 +53,23 @@ gap. See step 4 and the Known limitations section.
    line (timestamp + `anon-rss:<kB>`) is faster to get to than reconstructing
    the same conclusion from `pigeon_resource_mem_bytes` climbing (step 4),
    and dates/correlates directly against the JSONL timeline from step 3 once
-   you have it (ADR-0089 -- this is exactly how a real `deduplicate` OOM mid-upload
+   you have it (CLI-0089 -- this is exactly how a real `deduplicate` OOM mid-upload
    was first confirmed, back when this signal still lived in the log itself).
 
 2. **Isolate the run.** Each generation still accumulates lines from every
    run of every command, interleaved in chronological order.
 
-   **Since ADR-0151 there is a `run_id`** on the outer `command` span, so
+   **Since CLI-0151 there is a `run_id`** on the outer `command` span, so
    isolating one invocation is a direct filter rather than a timestamp
    guess:
    ```
    jq 'select(.spans[]?.run_id == "18de49d4e714ce98-pigeon-5ece")' pigeon.*.jsonl
    ```
-   It is the same id as that run's ADR-0100 artifact prefix
+   It is the same id as that run's CLI-0100 artifact prefix
    (`{date}-{job}-{run_id}/`), so a report-bucket object name hands you the
    filter directly. Caveat: lines emitted *before* the job's wizard
    generates the id -- notably `"command started"` -- carry no `run_id`, so
-   bound those by timestamp as below. A pre-ADR-0151 log has the field on no
+   bound those by timestamp as below. A pre-CLI-0151 log has the field on no
    line at all.
 
    The two older signals still apply, and are what you need on such a log:
@@ -83,7 +83,7 @@ gap. See step 4 and the Known limitations section.
      these are the exact `command_name()` strings, see the cheat sheet
      below.)
 
-     Before ADR-0098, `deduplicate`'s archive/download/hash
+     Before CLI-0098, `deduplicate`'s archive/download/hash
      warnings -- logged from inside `tokio::spawn`ed worker tasks and
      `tokio::task::spawn_blocking` closures -- were missing this `command`
      span entirely (neither primitive propagates the caller's ambient span
@@ -110,7 +110,7 @@ gap. See step 4 and the Known limitations section.
    `"command finished"` event is present, its `fields.exit_code` and
    `fields.elapsed_ms` tell you the outcome and duration directly.
 
-4. **Pull resource/progress data from Prometheus, not the log** (ADR-0093 --
+4. **Pull resource/progress data from Prometheus, not the log** (CLI-0093 --
    `resource_sample` and `"upload started"` no longer exist in
    `pigeon.jsonl`; this is now `pigeon_resource_*`/`pigeon_upload_*`/
    `pigeon_job_phase_total`/`pigeon_job_macro_phase` on the process's local
@@ -124,7 +124,7 @@ gap. See step 4 and the Known limitations section.
    - **`pigeon_resource_disk_read_bytes_total` far exceeding any known
      input size** for the run (e.g. gigabytes of "read" against a bucket
      whose objects are only megabytes) -> the OS-level swap-thrashing
-     signature that confirmed ADR-0076's root cause -- the process wasn't
+     signature that confirmed CLI-0076's root cause -- the process wasn't
      really reading that much real data, it was being paged in and out
      under memory pressure.
    - **The scrape target (`up{...}`) going down, or `pigeon_job_phase_total`/
@@ -171,13 +171,13 @@ gap. See step 4 and the Known limitations section.
    - **Next action** -- concrete: fix a specific bug, write a follow-up
      ADR, rerun with different flags, or ask the user a specific question.
      If the takeaway reveals an actionable design gap, offer to write a
-     new ADR proposing a fix -- this is exactly how ADR-0076 (streaming
+     new ADR proposing a fix -- this is exactly how CLI-0076 (streaming
      downloads/zip expansion to fix a real memory-exhaustion SIGKILL)
      began: a log-reading session that surfaced a root cause worth fixing.
 
 ## Reference: field and vocabulary cheat sheet
 
-Reflects the schema as of ADR-0073/0074/0075/0076/0077/0089/0092/0093
+Reflects the schema as of CLI-0073/0074/0075/0076/0077/0089/0092/0093
 (2026-10-03). If a
 filter below unexpectedly returns nothing for a run that should have
 matching lines, the schema may have drifted -- fall back to
@@ -215,24 +215,24 @@ the user for the terminal output instead.
 **Per-job `step` vocabulary** (WARN/ERROR events' `fields.step`):
 - `email-import`: `connect`, `examine`, `fetch`, `extract`, `push`,
   `missing_file`, `gate`. No `upload` step -- delivery is its own per-object
-  `rclone copyto` (ADR-0146 §5), and there is no separate upload phase to
+  `rclone copyto` (CLI-0146 §5), and there is no separate upload phase to
   name. A `gate` event means an endpoint was refusing work and the run
-  paused rather than failed (ADR-0146 §4); `paused_ms` on the matching
+  paused rather than failed (CLI-0146 §4); `paused_ms` on the matching
   resume line is how long that cost.
 - `transform`: `pull`, `transcode`, `push` -- note this job does **not**
   share the generic `upload` step, since its push leg is its own per-file
-  `rclone copyto` (ADR-0116) rather than the shared upload phase ADR-0147
-  deleted. Before ADR-0130 this job
+  `rclone copyto` (CLI-0116) rather than the shared upload phase CLI-0147
+  deleted. Before CLI-0130 this job
   emitted no `tracing::info!` at all, so a run from an older build has no
   phase-boundary or totals lines in the JSONL whatsoever -- only WARN/ERROR.
-  From ADR-0130 on, look for `"transform: pull phase starting"`,
+  From CLI-0130 on, look for `"transform: pull phase starting"`,
   `"transform: pull phase complete"`, and `"transform: run complete"`
   (which carries the full per-stage breakdown: `failed_pull`,
   `failed_transcode`, `failed_place`, `failed_push`, plus
-  `skipped_already_done`, `skipped_apple_double`, and -- since ADR-0151 --
-  `skipped_lock_file` for Excel `~$` stubs, which ADR-0149 had folded into
+  `skipped_already_done`, `skipped_apple_double`, and -- since CLI-0151 --
+  `skipped_lock_file` for Excel `~$` stubs, which CLI-0149 had folded into
   the AppleDouble count on one path and dropped entirely on the other,
-  and -- since ADR-0157 -- `skipped_email_shaped` for `md` files recognized
+  and -- since CLI-0157 -- `skipped_email_shaped` for `md` files recognized
   as rendered `.eml` messages, which were pulled but deliberately not
   converted; it is also on the 60 s `"transform: progress"` line, and each
   such file is a `skipped_email_shaped` row in `transform-report.txt`
@@ -240,25 +240,25 @@ the user for the terminal output instead.
   A `"rclone's pull error count disagrees with the number of undelivered
   files"` WARN means rclone's own aggregate error tally and the job's
   per-file reconciliation diverged -- worth reporting, not necessarily a
-  fault in either. Since ADR-0151 it says **"fully accounted for by
+  fault in either. Since CLI-0151 it says **"fully accounted for by
   case-colliding source keys"** when that is the whole explanation, and
   carries `case_colliding_keys` and `rclone_duplicate_notices` either way;
   the latter counts rclone's own `notice`-level `Duplicate object found in
-  source` lines -- the signal ADR-0144 traced but nothing read.
+  source` lines -- the signal CLI-0144 traced but nothing read.
 
-  **Since ADR-0152 expect both to be quiet.** Case-colliding keys are now
+  **Since CLI-0152 expect both to be quiet.** Case-colliding keys are now
   pulled individually, so the bulk pull sees no duplicate
   (`rclone_duplicate_notices` should be `0`) and a collision no longer
   produces an undelivered file. Look instead for
   `"transform: case-variant pull complete"` with `pulled`/`failed` counts,
   and for the `"source keys differ only by letter case or Unicode
-  normalization…"` line (the normalization half since ADR-0158; before it
+  normalization…"` line (the normalization half since CLI-0158; before it
   read `"…only by letter case…"`), which is now
   **INFO** rather than WARN -- it describes what was done, not data about to
   be lost. A non-zero `failed` there, or a `Pull`-stage failure whose detail
   names a failed individual pull, is the real signal.
 
-  **`soffice` failures since ADR-0158.** A transcode error saying
+  **`soffice` failures since CLI-0158.** A transcode error saying
   `soffice crashed (signal N) … -- converter crashed` is the converter
   dying, not the file being unreadable: the local copy is kept, and macOS
   writes a matching `~/Library/Logs/DiagnosticReports/soffice-*.ips` with
@@ -266,9 +266,9 @@ the user for the terminal output instead.
   crash reads `soffice produced no usable .pdf … (exit None) -- is not a
   readable document` -- `exit None` is the tell. A run where every failure
   shares one character class in its filename (a space, `#`, `%`) is
-  ADR-0158's URL-encoding bug, not bad files.
+  CLI-0158's URL-encoding bug, not bad files.
 
-  **Since ADR-0156** the variants are pulled by one bulk `copy` per
+  **Since CLI-0156** the variants are pulled by one bulk `copy` per
   collision-free *slot* (`case-variant pull complete` gains `slots`/`keys`;
   expect it seconds after `pull phase starting`, not minutes), and the
   collision notice is **one** line with `groups`/`keys`/`largest_group` and
@@ -282,22 +282,22 @@ the user for the terminal output instead.
   `pull_is_paused` -- identical consecutive lines mean a stall), and, for
   every job's streamed rclone leg, `"rclone: copy progress"` (INFO, at most
   every 60 s and only when cumulative `transferred`/`errors`/`bytes` moved --
-  a gap is expected while ADR-0129 has the pull paused). Before ADR-0156 a
+  a gap is expected while CLI-0129 has the pull paused). Before CLI-0156 a
   non-`ffmpeg` kind's failures appeared **only** in the report.
 - `deduplicate`: `download`, `archive` (zip expansion), `hash` (SHA-256
   content hashing), `place` (also `upload`). The fetch+hash phase is
-  CPU-bound (ADR-0088) -- a slow `deduplicate` run with normal-looking
+  CPU-bound (CLI-0088) -- a slow `deduplicate` run with normal-looking
   `pigeon_resource_cpu_percent` (Prometheus, step 4) and a thin WARN/ERROR
   tail is more likely genuinely waiting on a slow source bucket than
   failing; a `deduplicate` run OOM-killed specifically partway through the
   upload phase (`pigeon_job_macro_phase` last reading `1` before samples
-  stop, step 4) matches the known ADR-0089 failure mode -- check whether
+  stop, step 4) matches the known CLI-0089 failure mode -- check whether
   `--upload-only` (resumes uploading an already-completed local run
   without repeating download/hash/placement) is available on the
   installed version before suggesting a full rerun.
 
 **`pigeon_upload_attempts_total` and `pigeon_upload_duration_seconds` no
-longer exist** (ADR-0147). Both were emitted only from `upload.rs`, which
+longer exist** (CLI-0147). Both were emitted only from `upload.rs`, which
 was deleted with the last two jobs that used it, so a run from a current
 build has neither series -- don't read their absence as a fault.
 `pigeon_upload_bytes_total` and `pigeon_upload_outcomes_total` **do** still
@@ -306,7 +306,7 @@ was in flight at crash time is not directly nameable from metrics (they
 carry a `pigeon_job` label, not a per-file path); for the jobs that push
 per-object, the last `phase="push"` increment is the closest signal.
 
-**`pigeon_job_macro_phase` has no `pigeon_job="transform"` series** (ADR-0130).
+**`pigeon_job_macro_phase` has no `pigeon_job="transform"` series** (CLI-0130).
 `transform`'s pipeline pushes each file as soon as it is ready, so it has no
 one-way local-work-then-upload transition for the gauge to describe, and it
 deliberately stopped emitting it rather than report a transition that never
@@ -325,13 +325,13 @@ hasn't already pasted it):
   endpoint stayed unreachable past the recovery budget.
 - `transform`: `"Pulled {pulled} file(s); {transcoded} transcoded,
   {copied_through} copied through, {failed} failed; pushed {pushed}
-  file(s)."` -- followed, from ADR-0130 on, by an optional
+  file(s)."` -- followed, from CLI-0130 on, by an optional
   `"Skipped {n} already done, {m} AppleDouble sidecar(s)."` (plus an Excel
-  lock-stub count since ADR-0151) and, when the
+  lock-stub count since CLI-0151) and, when the
   run failed, `"Failures by stage: {p} pull, {t} transcode, {pl} place,
   {pu} push."`. A non-zero `pull` stage count means files this run intended
-  to download never arrived -- before ADR-0130 those were silently dropped
-  and the run could report success, so a pre-ADR-0130 `transform` run's
+  to download never arrived -- before CLI-0130 those were silently dropped
+  and the run could report success, so a pre-CLI-0130 `transform` run's
   "success" does not rule out missing files.
 - `deduplicate`: `"Processed {processed} file(s), {failed} failed ({download}
   download, {archive} archive, {hash} hash), {duplicates_skipped}
@@ -340,7 +340,7 @@ hasn't already pasted it):
   failed."` -- a `--upload-only` resumed run instead prints `"Uploaded
   {uploaded} file(s), {unchanged} unchanged, {upload_failed} upload
   failed."` (no `processed`/`failed`/dedup counts -- it never re-touches
-  download/hash/placement, ADR-0089). `dropped_members` (ADR-0098) is
+  download/hash/placement, CLI-0089). `dropped_members` (CLI-0098) is
   already folded into the `archive` breakdown and `failed` -- it means real
   data was discarded by the per-archive extraction-ratio cap, not just
   noise; the affected root zip is excluded from `.processed`, so a plain
@@ -352,8 +352,8 @@ exited with `FAILURE_EXIT_CODE`, not `0`.
 ## Known limitations
 
 - **Two concurrent runs of the same command** are separable by `run_id`
-  since ADR-0151 (step 2), **except** for each run's pre-wizard lines,
-  which carry no id. On a pre-ADR-0151 log nothing in the schema separates
+  since CLI-0151 (step 2), **except** for each run's pre-wizard lines,
+  which carry no id. On a pre-CLI-0151 log nothing in the schema separates
   them at all; narrow by timestamp as tightly as possible and say so
   explicitly in the takeaway rather than presenting a guess as certain.
 - **A very fast crash may have 0-1 resource/progress metric samples** (the
@@ -362,11 +362,11 @@ exited with `FAILURE_EXIT_CODE`, not `0`.
   trend on a run that failed in under a few seconds; lean on the WARN/ERROR
   events and any panic entry instead.
 - **Resource/progress data (step 4) only exists if Cockpit/Alloy was
-  actually deployed and running on that machine** (ADR-0093) -- unlike
+  actually deployed and running on that machine** (CLI-0093) -- unlike
   before, the JSONL log is no longer self-sufficient for this. On a machine
   without it, a crash has zero resource telemetry anywhere, and the
   takeaway should say so plainly rather than reasoning from absence.
 - This is a documented procedure, not a tool -- there is no `pigeon logs`
   subcommand. Everything here is plain `jq` against the raw file (plus,
-  since ADR-0093, a Prometheus/Cockpit query for step 4's data when it's
+  since CLI-0093, a Prometheus/Cockpit query for step 4's data when it's
   available).

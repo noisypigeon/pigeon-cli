@@ -1,12 +1,12 @@
 //! Generates the rclone config file pigeon passes via `--config` to every
-//! invocation (ADR-0136) -- the *only* config file `rclone` is ever given.
+//! invocation (CLI-0136) -- the *only* config file `rclone` is ever given.
 //! Never reads an existing file, never consults `RCLONE_CONFIG` or rclone's
 //! own default config-file path: every rclone-backed job is sandboxed to
 //! exactly the buckets configured in pigeon's own keyring, nothing else --
 //! not a separately-provisioned deployment `rclone.conf`, not the user's own
 //! general-purpose one.
 //!
-//! Each configured bucket becomes *two* sections (ADR-0140): an `s3` backend
+//! Each configured bucket becomes *two* sections (CLI-0140): an `s3` backend
 //! plus an `alias` section pointing into it at the configured bucket. That
 //! indirection is the only place `BucketConfig::bucket` can live -- an `s3`
 //! section has no bucket field of its own.
@@ -19,13 +19,13 @@ use crate::core::keyring::credentials;
 const RCLONE_CONFIG_FILE_NAME: &str = "rclone.conf";
 
 /// Suffix appended to a bucket-config's alias to name its `s3` backend
-/// section, the inner half of ADR-0140's two-section shape. Only the outer
+/// section, the inner half of CLI-0140's two-section shape. Only the outer
 /// `alias` section is ever addressed by a job; this name exists purely to be
 /// pointed at.
 const BACKEND_SECTION_SUFFIX: &str = ".s3";
 
 /// The `s3` backend section name for `alias`. Not public: a caller addresses
-/// a bucket by its alias alone, exactly as before ADR-0140 -- that the
+/// a bucket by its alias alone, exactly as before CLI-0140 -- that the
 /// address now resolves through one more hop is entirely internal to the
 /// generated file.
 fn backend_section_name(alias: &str) -> String {
@@ -42,13 +42,13 @@ pub(crate) fn rclone_config_path() -> Result<PathBuf, String> {
 /// `rclone_config_path`'s derivation, as a pure function of the keyring's
 /// location. Split out so the sibling relationship stays testable now that
 /// `Store::resolve_path` can be redirected by `--keyring-path`, which lives
-/// in a `OnceLock` a test cannot set per-case (ADR-0145 §3).
+/// in a `OnceLock` a test cannot set per-case (CLI-0145 §3).
 ///
 /// The generated config deliberately follows the keyring rather than
 /// staying at the OS config directory: both files carry the same plaintext
 /// credentials, and keeping them together means two runs against different
 /// keyrings no longer race on one shared generated file -- narrowing the
-/// edge case ADR-0136's Consequences named.
+/// edge case CLI-0136's Consequences named.
 fn rclone_config_path_beside(keyring_path: &Path) -> Result<PathBuf, String> {
     let dir = keyring_path.parent().ok_or_else(|| {
         format!(
@@ -65,10 +65,10 @@ fn rclone_config_path_beside(keyring_path: &Path) -> Result<PathBuf, String> {
 /// configured bucket (`<alias>.s3:<bucket>`).
 ///
 /// The indirection is what carries `BucketConfig::bucket` into the config at
-/// all (ADR-0140). ADR-0136 wrote one `s3` section keyed directly by alias,
+/// all (CLI-0140). CLI-0136 wrote one `s3` section keyed directly by alias,
 /// rejecting the two-section `alias -> bucket-name` shape the deployment's
 /// own terraform-managed `rclone.conf` uses on the grounds that globally
-/// unique aliases (`Store::contains_alias`, ADR-0022) need no collision
+/// unique aliases (`Store::contains_alias`, CLI-0022) need no collision
 /// handling -- which answered a different question than where the bucket
 /// name lives. An `s3` section has none, so the bucket was simply dropped:
 /// `alias:` addressed the *account* root (a bucket listing) and
@@ -103,9 +103,9 @@ pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), S
                 bucket_config.alias,
             ));
         }
-        // ADR-0148 §1: resolved through `credentials::resolve_secret`, not
+        // CLI-0148 §1: resolved through `credentials::resolve_secret`, not
         // read off the field. Until then this took `secret_key` directly,
-        // so ADR-0087's `PIGEON_SECRET_<ALIAS>` override never reached a
+        // so CLI-0087's `PIGEON_SECRET_<ALIAS>` override never reached a
         // single rclone-addressed operation -- which is every job's data
         // path. It appeared to work only because the two `minio` call
         // sites resolved it themselves before calling.
@@ -124,7 +124,7 @@ pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), S
         .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
 
     // This file carries every configured bucket's secret access key in
-    // plaintext, same trust model as `keyring.toml` itself (ADR-0135).
+    // plaintext, same trust model as `keyring.toml` itself (CLI-0135).
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -137,7 +137,7 @@ pub(crate) fn write_sandboxed_config(store: &Store, path: &Path) -> Result<(), S
 
 /// A configured bucket alias plus an optional prefix (sub-directory)
 /// within it -- `source` is the whole bucket root, `source:mp4/` is the
-/// `mp4/` directory inside it (ADR-0138, restoring the addressing ADR-0136
+/// `mp4/` directory inside it (CLI-0138, restoring the addressing CLI-0136
 /// removed). The spelling is deliberately rclone's own `remote:path`, since
 /// `write_sandboxed_config` keys each config section by alias: the composed
 /// address resolves natively with no further translation.
@@ -153,10 +153,10 @@ pub(crate) struct RemoteTarget {
 impl RemoteTarget {
     /// Parses `alias` or `alias:prefix/`, splitting on the **first** colon
     /// and validating the alias half against the keyring exactly as
-    /// ADR-0136/ADR-0137 did. A bare alias (or a trailing-colon-only
+    /// CLI-0136/CLI-0137 did. A bare alias (or a trailing-colon-only
     /// `alias:`) is the whole bucket root. Because the split takes the
     /// first colon, an alias containing `:` is unaddressable in this form
-    /// -- a stated ADR-0138 consequence, not a guarded case.
+    /// -- a stated CLI-0138 consequence, not a guarded case.
     pub(crate) fn parse(value: &str, store: &Store) -> Result<RemoteTarget, String> {
         let (alias, raw_prefix) = match value.split_once(':') {
             Some((alias, prefix)) => (alias, prefix),
@@ -173,7 +173,7 @@ impl RemoteTarget {
 
     /// The whole bucket root for an alias that is already known-valid --
     /// `deduplicate`, which holds a resolved `BucketConfig` rather than a
-    /// raw flag string and keeps whole-bucket addressing (ADR-0138 §2, its
+    /// raw flag string and keeps whole-bucket addressing (CLI-0138 §2, its
     /// alias-keyed checkpoint identity would need rework to carry a
     /// prefix). No `Store` needed, since there is nothing left to validate.
     pub(crate) fn bucket_root(alias: &str) -> RemoteTarget {
@@ -185,7 +185,7 @@ impl RemoteTarget {
 
     /// Builds a target from an already-validated alias plus a prefix to use
     /// when the caller's own value carried none -- `transform`'s
-    /// `--input-file-type`-derived default (ADR-0138 §3). A prefix already
+    /// `--input-file-type`-derived default (CLI-0138 §3). A prefix already
     /// present is kept verbatim; the default never overrides it.
     pub(crate) fn with_default_prefix(mut self, default_prefix: &str) -> Result<Self, String> {
         if self.prefix.is_none() {
@@ -368,7 +368,7 @@ mod tests {
         assert!(contents.is_empty());
     }
 
-    /// ADR-0140: the alias section must resolve *into* the configured
+    /// CLI-0140: the alias section must resolve *into* the configured
     /// bucket. Without the indirection, `backup:` was the account root and
     /// `backup:jpg/` a bucket literally named `jpg`.
     #[test]
@@ -426,8 +426,8 @@ mod tests {
     /// Aliases are unbounded strings, so a configured alias can collide
     /// with another's derived backend name. Rejected outright rather than
     /// silently misrouting one alias into the other's bucket.
-    /// ADR-0148 §1. Until this ADR, `write_sandboxed_config` read
-    /// `BucketConfig::secret_key` directly, so ADR-0087's
+    /// CLI-0148 §1. Until this ADR, `write_sandboxed_config` read
+    /// `BucketConfig::secret_key` directly, so CLI-0087's
     /// `PIGEON_SECRET_<ALIAS>` override never reached any rclone-addressed
     /// operation -- i.e. every job's data path. The env var is set and
     /// removed inside the test, and the alias is unique to it, so it cannot
@@ -436,16 +436,16 @@ mod tests {
     fn write_sandboxed_config_prefers_the_pigeon_secret_override_over_the_stored_key() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("rclone.conf");
-        let alias = "adr-0148-override-test";
+        let alias = "cli-0148-override-test";
 
         let mut store = Store::default();
         store.push(Entry::Bucket(sample_bucket(alias)));
 
         // SAFETY: single-threaded test, and the var is removed before it
         // returns. The alias is unique so no other test reads this name.
-        unsafe { std::env::set_var("PIGEON_SECRET_ADR_0148_OVERRIDE_TEST", "from-the-env") };
+        unsafe { std::env::set_var("PIGEON_SECRET_CLI_0148_OVERRIDE_TEST", "from-the-env") };
         let result = write_sandboxed_config(&store, &path);
-        unsafe { std::env::remove_var("PIGEON_SECRET_ADR_0148_OVERRIDE_TEST") };
+        unsafe { std::env::remove_var("PIGEON_SECRET_CLI_0148_OVERRIDE_TEST") };
         result.unwrap();
 
         let contents = std::fs::read_to_string(&path).unwrap();
@@ -466,7 +466,7 @@ mod tests {
         let path = dir.path().join("rclone.conf");
 
         let mut store = Store::default();
-        store.push(Entry::Bucket(sample_bucket("adr-0148-no-override-test")));
+        store.push(Entry::Bucket(sample_bucket("cli-0148-no-override-test")));
         write_sandboxed_config(&store, &path).unwrap();
 
         assert!(

@@ -13,7 +13,7 @@ use tracing_subscriber::{EnvFilter, fmt};
 /// Overrides the default `<data-dir>/logs` location for the durable JSONL log
 /// file this module writes -- mirrors `commands::keyring::store::Store`'s
 /// `PIGEON_CONFIG_DIR` precedent, for the same reason: isolating tests (and
-/// manual use) from the real per-OS data directory (ADR-0073).
+/// manual use) from the real per-OS data directory (CLI-0073).
 pub const LOG_DIR_ENV_VAR: &str = "PIGEON_LOG_DIR";
 
 const LOG_FILE_NAME: &str = "pigeon.jsonl";
@@ -54,10 +54,10 @@ fn resolve_log_path(log_file: Option<&Path>) -> Result<(PathBuf, String), String
 }
 
 /// Initializes the global tracing subscriber: a JSON-formatted, non-blocking
-/// file layer (the durable "review this run later" artifact, ADR-0073) plus
+/// file layer (the durable "review this run later" artifact, CLI-0073) plus
 /// an `ErrorLayer` (so `tracing_error::SpanTrace::capture()` works from
 /// anywhere spans are active). Deliberately registers no console layer --
-/// ADR-0013/0014/0015's `indicatif`/`MultiProgress` progress bars must never
+/// CLI-0013/0014/0015's `indicatif`/`MultiProgress` progress bars must never
 /// share stdout/stderr with a second, independent writer. Returns a
 /// `WorkerGuard` that must be kept alive for the whole process; dropping it
 /// early silently truncates buffered log lines.
@@ -72,14 +72,14 @@ pub fn init(
     let _ = LOG_FILE_STEM.set(log_file_stem(&file_name));
 
     // `--log-file` names a file, and is honoured literally: rotating a path
-    // the operator chose would silently write somewhere else (ADR-0151).
+    // the operator chose would silently write somewhere else (CLI-0151).
     // Only the default location rotates.
     let rotate = log_file.is_none();
 
-    // ADR-0151: rotate daily and keep a bounded number of generations.
+    // CLI-0151: rotate daily and keep a bounded number of generations.
     // Before this the log was a single file with no rotation at all
-    // (ADR-0073), which on the real deployment reached **326 MB / 696k
-    // lines** spanning three weeks -- and since ADR-0100 uploads it as every
+    // (CLI-0073), which on the real deployment reached **326 MB / 696k
+    // lines** spanning three weeks -- and since CLI-0100 uploads it as every
     // run's artifact, a real run's upload was interrupted mid-flight and
     // that run lost its log artifact entirely. Rotation bounds the file; the
     // per-run extract in `report_upload` bounds the upload.
@@ -124,7 +124,7 @@ pub fn init(
 
 /// Runs `f` (one full command dispatch) inside a `command`-named tracing
 /// span carrying `command_name`, logging its elapsed time and exit code on
-/// completion (ADR-0073). Sound with a plain `span.enter()` guard here
+/// completion (CLI-0073). Sound with a plain `span.enter()` guard here
 /// specifically because every command dispatch in this crate is fully
 /// synchronous end to end -- each async job builds and `block_on`s its own
 /// tokio runtime internally, so from this function's frame the whole call is
@@ -139,7 +139,7 @@ pub fn install_panic_hook() {
 }
 
 /// This process's hostname, resolved once and cached for the rest of the
-/// process's life (ADR-0097) -- reused for both the `command` span's
+/// process's life (CLI-0097) -- reused for both the `command` span's
 /// `instance` field and every custom metric's `instance` label, so a run
 /// touching tens of thousands of items never re-queries `sysinfo` per item.
 pub(crate) fn instance() -> &'static str {
@@ -147,10 +147,10 @@ pub(crate) fn instance() -> &'static str {
     INSTANCE.get_or_init(|| sysinfo::System::host_name().unwrap_or_else(|| "unknown".to_string()))
 }
 
-/// The durable JSONL log file's resolved path, cached by `init()` (ADR-0100)
+/// The durable JSONL log file's resolved path, cached by `init()` (CLI-0100)
 /// -- lets a job upload the shared `pigeon.jsonl` to a report bucket without
 /// recomputing `resolve_log_path`'s `--log-file`-vs-default logic itself.
-/// How many daily log generations to keep (ADR-0151).
+/// How many daily log generations to keep (CLI-0151).
 const LOG_GENERATIONS: usize = 14;
 
 static LOG_DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
@@ -166,7 +166,7 @@ fn log_file_stem(file_name: &str) -> String {
 }
 
 /// Every rotated log file this process could have written to, newest last
-/// (ADR-0151).
+/// (CLI-0151).
 ///
 /// A run that straddles midnight has its lines split across two
 /// generations, so the per-run extract reads all of them rather than
@@ -196,7 +196,7 @@ pub(crate) fn log_extract_sources() -> Result<Vec<PathBuf>, String> {
     paths.sort();
     Ok(paths)
 }
-/// Records this run's id onto the ambient `command` span (ADR-0151), so
+/// Records this run's id onto the ambient `command` span (CLI-0151), so
 /// every subsequent line carries it.
 ///
 /// Called from `report_upload::generate_run_id` -- the one chokepoint every
@@ -208,13 +208,13 @@ pub(crate) fn record_run_id(run_id: &str) {
 }
 
 pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i32) -> i32 {
-    // Every event in this run inherits both fields via `spans[]` (ADR-0093)
+    // Every event in this run inherits both fields via `spans[]` (CLI-0093)
     // -- "what job" (`command`) and "what instance" (`instance`), closing
     // the gap a shared, multi-instance Cockpit store otherwise has no way
     // to disambiguate on the logs side (Prometheus's scrape-level `job`/
     // `instance` labels have no log-side equivalent).
     // `run_id` starts `Empty` and is filled in by `record_run_id` once a
-    // job's wizard generates one (ADR-0151) -- it cannot be known here,
+    // job's wizard generates one (CLI-0151) -- it cannot be known here,
     // because it is generated inside `f`. Declaring it up front is what
     // makes `Span::record` legal later.
     let span = tracing::info_span!(
@@ -224,7 +224,7 @@ pub(crate) fn run_instrumented(command_name: &'static str, f: impl FnOnce() -> i
         run_id = tracing::field::Empty
     );
     let _guard = span.enter();
-    // Brackets "command finished" below (ADR-0097) -- previously a job that
+    // Brackets "command finished" below (CLI-0097) -- previously a job that
     // crashed or hung left no trace that it had even started.
     tracing::info!("command started");
     let start = std::time::Instant::now();

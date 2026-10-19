@@ -1,14 +1,14 @@
-//! Recognizes Markdown renderings of `.eml` messages (ADR-0157).
+//! Recognizes Markdown renderings of `.eml` messages (CLI-0157).
 //!
 //! `source:md/` holds a large share of these alongside real notes. The mail
 //! is being redone from the source of truth by `job run email import`
-//! (ADR-0146), so an `md` run skips them instead of converting them to
+//! (CLI-0146), so an `md` run skips them instead of converting them to
 //! `.txt`. Their keys carry no signal, so this reads content.
 //!
 //! Four independent signal families; a file is email-shaped iff **at least
 //! two** match. One family alone is too weak: a meeting note can carry
 //! `from:`/`to:` frontmatter, and a blog draft can quote a header block.
-//! Line-based throughout, with no YAML crate (ADR-0012's precedent).
+//! Line-based throughout, with no YAML crate (CLI-0012's precedent).
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -35,7 +35,7 @@ const RAW_HEADER_NAMES: &[&str] = &[
 ];
 
 /// Which families matched. Recorded rather than collapsed to a `bool` so
-/// the report can say *why* a file was skipped (ADR-0157 §4).
+/// the report can say *why* a file was skipped (CLI-0157 §4).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EmailSignals {
     pub frontmatter_headers: bool,
@@ -194,7 +194,7 @@ fn unquote(value: &str) -> &str {
     value.trim_matches(|c| c == '"' || c == '\'')
 }
 
-/// pigeon's own ADR-0006 taxonomy tags, in either list or inline form.
+/// pigeon's own CLI-0006 taxonomy tags, in either list or inline form.
 fn has_taxonomy_tag(line: &str) -> bool {
     line.split(|c: char| c.is_whitespace() || matches!(c, ',' | '[' | ']' | '"' | '\''))
         .any(|token| token.starts_with("mailbox/") || token.starts_with("identity/"))

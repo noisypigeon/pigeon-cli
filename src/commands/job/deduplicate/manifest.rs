@@ -1,4 +1,4 @@
-//! Recursive bucket listing + extension-based type summary (ADR-0082 §3) --
+//! Recursive bucket listing + extension-based type summary (CLI-0082 §3) --
 //! no downloads happen here, only `list_objects`. Originally its own copy
 //! of the since-removed `pull_transform::manifest`'s pattern (that module
 //! was private, unreachable from this sibling job), with one deliberate
@@ -22,7 +22,7 @@ use crate::core::rclone::config::RemoteTarget;
 /// onto the member's in-archive path with `!` (e.g.
 /// `"outer.zip!photos/img.jpg"`). `extension_of` and any filename-deriving
 /// `Path` split must look at this, not the raw key, or a zip member's
-/// synthetic prefix leaks into the derived extension/name (ADR-0099) --
+/// synthetic prefix leaks into the derived extension/name (CLI-0099) --
 /// e.g. an extensionless member `outer.zip!README` would otherwise be seen
 /// as having extension `"zip!README"`, the only dot in the whole key.
 /// Returns `key` unchanged when there's no `!`.
@@ -32,10 +32,10 @@ pub(crate) fn after_zip_separator(key: &str) -> &str {
 
 /// The lowercased extension of `key`'s final path segment, or `"(none)"`
 /// when there isn't one. Lived in `core::data` while `pull_transform`,
-/// `deduplicate`, and `reduce` all needed it (hoisted by ADR-0096 §0);
-/// returned here by ADR-0131 once the other two were removed and
+/// `deduplicate`, and `reduce` all needed it (hoisted by CLI-0096 §0);
+/// returned here by CLI-0131 once the other two were removed and
 /// `deduplicate` was its only remaining consumer -- the same un-hoisting
-/// ADR-0094 did to `ConcurrencyInput`.
+/// CLI-0094 did to `ConcurrencyInput`.
 pub(crate) fn extension_of(key: &str) -> String {
     Path::new(after_zip_separator(key))
         .extension()
@@ -47,7 +47,7 @@ pub(crate) fn extension_of(key: &str) -> String {
 /// One source object pending processing -- `Job::gather`'s result. Only
 /// top-level bucket objects; zip members discovered during `run()` are
 /// queued dynamically there, never appear in this list. `bucket_alias`
-/// (ADR-0109) names which of this run's (possibly several) source buckets
+/// (CLI-0109) names which of this run's (possibly several) source buckets
 /// `key` was listed from.
 pub(crate) struct DeduplicateTask {
     pub bucket_alias: String,
@@ -74,10 +74,10 @@ pub(crate) struct DeduplicatePlan {
 /// lands in the uploaded `result/` tree.
 pub(crate) const PROCESSED_FILE_NAME: &str = ".processed";
 
-/// One checkpoint entry: `(bucket_alias, key)`, compound-keyed (ADR-0109) so
+/// One checkpoint entry: `(bucket_alias, key)`, compound-keyed (CLI-0109) so
 /// two different source buckets that happen to share an identical key don't
 /// shadow each other. `bucket_alias == ""` is a legacy sentinel for a line
-/// written before ADR-0109 (no tab at all, just the bare key) -- see
+/// written before CLI-0109 (no tab at all, just the bare key) -- see
 /// `is_checkpointed` for how that's treated on lookup.
 pub(crate) fn load_checkpoint(staging_dir: &Path) -> Result<HashSet<(String, String)>, String> {
     let path = staging_dir.join(PROCESSED_FILE_NAME);
@@ -96,7 +96,7 @@ pub(crate) fn load_checkpoint(staging_dir: &Path) -> Result<HashSet<(String, Str
 }
 
 /// Whether `(bucket_alias, key)` is already checkpointed -- also matches a
-/// pre-ADR-0109 legacy entry (`("", key)`, written back when every run had
+/// pre-CLI-0109 legacy entry (`("", key)`, written back when every run had
 /// exactly one source bucket) against *any* bucket_alias for that key, so a
 /// single-bucket run's checkpoint stays resumable without needing to know
 /// which single bucket it originally used.
@@ -129,9 +129,9 @@ pub(crate) fn append_checkpoint(
 
 /// Lists every object across every bucket-config in `source_buckets`
 /// (recursive, metadata-only `rclone lsjson` against the sandboxed config,
-/// ADR-0136), classifies each by its key's extension for the summary table
+/// CLI-0136), classifies each by its key's extension for the summary table
 /// (one combined, cross-bucket table -- not broken out per bucket, matching
-/// this job's "treat as one set" design, ADR-0109), and excludes anything
+/// this job's "treat as one set" design, CLI-0109), and excludes anything
 /// the `staging_dir` checkpoint already marks done for that specific bucket
 /// -- both the returned task list and the summary table reflect only
 /// *pending* work. The second tuple element (the resolved secret) is
@@ -151,7 +151,7 @@ pub(crate) async fn gather_pending(
         let entries = (Lsjson {
             path: RemoteTarget::bucket_root(&bucket_config.alias).address(),
             recursive: true,
-            // `missing_ok` stays `false` (ADR-0140): a source bucket rclone
+            // `missing_ok` stays `false` (CLI-0140): a source bucket rclone
             // cannot resolve must fail the run, not silently contribute
             // zero files to the manifest.
             job: "deduplicate",
@@ -254,7 +254,7 @@ mod tests {
         let done = load_checkpoint(&staging_dir).unwrap();
         assert!(is_checkpointed(&done, "bucket-a", "shared.jpg"));
         // Same key, different bucket -- must NOT be treated as done; this is
-        // exactly the collision ADR-0109 fixes.
+        // exactly the collision CLI-0109 fixes.
         assert!(!is_checkpointed(&done, "bucket-b", "shared.jpg"));
     }
 
@@ -263,7 +263,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let staging_dir = dir.path().join(".staging");
         fs::create_dir_all(&staging_dir).unwrap();
-        // A pre-ADR-0109 checkpoint line: bare key, no tab.
+        // A pre-CLI-0109 checkpoint line: bare key, no tab.
         fs::write(staging_dir.join(PROCESSED_FILE_NAME), "legacy.jpg\n").unwrap();
 
         let done = load_checkpoint(&staging_dir).unwrap();

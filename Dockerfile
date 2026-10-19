@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# ADR-0087: Dockerizes pigeon-cli. linux/arm64 only -- see the ADR for why.
+# CLI-0087: Dockerizes pigeon-cli. linux/arm64 only -- see the ADR for why.
 # Build/run with `docker build/run --platform linux/arm64` (see the `mise
 # run docker-build`/`docker-run` tasks); platform is intentionally not
 # pinned per-stage here so it's set once, from the command line.
@@ -9,7 +9,7 @@ FROM rust:1.92-slim-bookworm AS builder
 WORKDIR /build
 # async-native-tls (IMAP) pulls in native-tls -> openssl-sys on Linux,
 # which needs pkg-config + OpenSSL dev headers to build -- neither is in
-# the base rust image. ADR-0148 removed `minio`, which used to be named
+# the base rust image. CLI-0148 removed `minio`, which used to be named
 # here too; this is still required for the IMAP half alone, so neither the
 # apt-get below nor the runtime libssl3 may be dropped with it.
 RUN apt-get update \
@@ -20,16 +20,16 @@ COPY src ./src
 COPY tests ./tests
 RUN cargo build --release
 
-# ADR-0155: `rclone` is the one dependency *every* job needs -- transform
+# CLI-0155: `rclone` is the one dependency *every* job needs -- transform
 # pulls and pushes with it, deduplicate lists and copies with it, email
-# import delivers with it, `rclone copy`/`delete` are it, and ADR-0100's
+# import delivers with it, `rclone copy`/`delete` are it, and CLI-0100's
 # report upload uses CopyTo. The image shipped without it until now (#96).
 #
 # A pinned upstream binary rather than Debian's: bookworm has 1.60.1 (2022)
 # and this project is developed against 1.72+. Every flag the code passes
 # predates 1.60, so apt would *work* -- but a 15-version skew between where
 # behaviour is verified and where it runs is the exact shape of defect this
-# project is worst at seeing (ADR-0139, ADR-0140: something resolved to
+# project is worst at seeing (CLI-0139, CLI-0140: something resolved to
 # nothing and exited 0).
 #
 # Fetched in a builder stage so curl/unzip never reach the runtime image,
@@ -61,8 +61,8 @@ RUN set -eux; \
 FROM debian:bookworm-slim
 
 # The three LibreOffice packages back `job run transform`'s `soffice`
-# kinds: `-calc` reads `.numbers` (ADR-0149), and `-writer`/`-impress` read
-# the document kinds ADR-0154 added. The split matters -- `-calc` alone does
+# kinds: `-calc` reads `.numbers` (CLI-0149), and `-writer`/`-impress` read
+# the document kinds CLI-0154 added. The split matters -- `-calc` alone does
 # **not** open Writer or Impress formats, so without the other two, six
 # document kinds would fail on this image.
 #
@@ -72,7 +72,7 @@ FROM debian:bookworm-slim
 # `pandoc` renders `md`/`rst` to prose.
 #
 # `ghostscript` interprets `--input-file-type eps` to PDF ahead of `soffice`
-# (ADR-0160): LibreOffice alone turns a real Illustrator EPS into an empty
+# (CLI-0160): LibreOffice alone turns a real Illustrator EPS into an empty
 # page and exits 0.
 #
 # Together these are by far the heaviest thing in this image. Accepted
@@ -80,7 +80,7 @@ FROM debian:bookworm-slim
 # it is deployed. The in-process kinds -- `xlsx`/`xls`/`csv`/`tsv`/`pdf`/
 # `txt`/`textclipping`/`ics`/`vcf` -- need none of them.
 #
-# `rclone` itself comes from the pinned builder stage above (ADR-0155), not
+# `rclone` itself comes from the pinned builder stage above (CLI-0155), not
 # from apt.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \

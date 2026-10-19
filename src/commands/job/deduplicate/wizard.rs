@@ -20,12 +20,12 @@ use super::manifest::{self, TypeSummary};
 use super::worker;
 
 /// Resolves which bucket-config(s) to pull from and combine into one
-/// shared staging tree -- mandatory, at least one required (ADR-0109).
+/// shared staging tree -- mandatory, at least one required (CLI-0109).
 /// Deliberately a `deduplicate`-local type rather than a generalization of
 /// the former `shared_wizard::SourceBucketInput`, which stayed single-alias
 /// for its only other consumer and was deleted outright with that consumer
-/// (ADR-0131) -- per this codebase's "duplicate until the third consumer"
-/// precedent (ADR-0082's own Out-of-scope section), one consumer never
+/// (CLI-0131) -- per this codebase's "duplicate until the third consumer"
+/// precedent (CLI-0082's own Out-of-scope section), one consumer never
 /// justified generalizing a shared type. Shaped after
 /// the since-removed `email_sync::wizard::IdentitiesInput`, at the time
 /// the closest existing "mandatory, no-safe-default, multi-value, alias-
@@ -136,11 +136,11 @@ impl WizardInput for LocalOutputInput {
     }
 }
 
-/// Creates `--local-output` if it doesn't exist yet (ADR-0111) -- without
+/// Creates `--local-output` if it doesn't exist yet (CLI-0111) -- without
 /// this, a fresh path fails later with a raw OS error from
 /// `report_upload::new_transcript`, the first step that actually requires
 /// the directory to exist. Matches the pattern `rclone copy`/`rclone
-/// delete` already use (ADR-0110). Deliberately not called from
+/// delete` already use (CLI-0110). Deliberately not called from
 /// `dispatch_upload_only`: that path requires `--local-output` to already
 /// hold a completed prior run, so auto-creating a missing directory there
 /// would mask "nothing to resume" with a different, equally wrong, empty
@@ -181,7 +181,7 @@ fn print_type_summary(summaries: &[TypeSummary]) {
     crate::commands::print_table(&["EXTENSION", "PENDING", "SIZE"], &rows);
 }
 
-/// Entry point for `pigeon job run deduplicate` (ADR-0082).
+/// Entry point for `pigeon job run deduplicate` (CLI-0082).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch(
     source_bucket: Vec<String>,
@@ -233,7 +233,7 @@ async fn dispatch_async(
     non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, same discipline as every
-    // other job's dispatch_async (ADR-0073).
+    // other job's dispatch_async (CLI-0073).
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
@@ -243,7 +243,7 @@ async fn dispatch_async(
     };
     // Ahead of the `--upload-only` branch: that path's bulk `Copy` is an
     // alias-addressed rclone call too, so it needs the generated config
-    // just as much as a full run does (ADR-0145 §5).
+    // just as much as a full run does (CLI-0145 §5).
     if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
@@ -424,7 +424,7 @@ async fn dispatch_async(
 /// Whether `local_output` holds a completed prior deduplicate run that
 /// `--upload-only` can resume uploading from: its `.staging/.processed`
 /// checkpoint must exist (there was a run at all) and its `result/` must be
-/// non-empty (there's something to upload) (ADR-0089).
+/// non-empty (there's something to upload) (CLI-0089).
 fn upload_only_preflight_ok(local_output: &Path) -> bool {
     let processed_marker = local_output
         .join(".staging")
@@ -437,7 +437,7 @@ fn upload_only_preflight_ok(local_output: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// `--upload-only` branch of `dispatch_async` (ADR-0089): resumes uploading
+/// `--upload-only` branch of `dispatch_async` (CLI-0089): resumes uploading
 /// an already-completed local deduplicate run, skipping the bucket listing/
 /// download/hash/placement phases -- and the source bucket credentials
 /// they'd otherwise need -- entirely.

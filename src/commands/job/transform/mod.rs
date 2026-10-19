@@ -1,6 +1,6 @@
-//! `pigeon job run transform` (ADR-0112, pipeline reworked by ADR-0116, video
-//! input kinds added by ADR-0122, `mp4-audio` by ADR-0142, spreadsheets by
-//! ADR-0149, the audio family by ADR-0153, documents by ADR-0154): shells out
+//! `pigeon job run transform` (CLI-0112, pipeline reworked by CLI-0116, video
+//! input kinds added by CLI-0122, `mp4-audio` by CLI-0142, spreadsheets by
+//! CLI-0149, the audio family by CLI-0153, documents by CLI-0154): shells out
 //! to `rclone` to pull source files matching `--input-file-type` into a local
 //! staging tree, transcodes or copies them locally into a destination filename
 //! unique by construction (never collision-detected-and-fixed, and never
@@ -9,7 +9,7 @@
 //! `rclone copyto` the moment it's ready rather than waiting for the whole
 //! batch.
 //!
-//! Five input families, and since ADR-0154 they no longer share one output
+//! Five input families, and since CLI-0154 they no longer share one output
 //! extension apiece -- documents fan out to three, which is why
 //! `format::InputFileType::output_extension` rather than any `is_*()`
 //! predicate is the authority on where a kind's output lands:
@@ -27,12 +27,12 @@
 //!
 //! `jpeg`, `csv`, `pdf`, `txt` and `svg` arrive already in their target format and are
 //! copied through byte-for-byte; `opus` is the one kind that is deliberately
-//! re-encoded anyway (ADR-0153 §6).
+//! re-encoded anyway (CLI-0153 §6).
 //!
 //! Converters: `ffmpeg`/`ffprobe` for image/video/audio, `soffice` for
 //! `numbers` and the six LibreOffice-readable document kinds, `ebook-convert`
 //! for `epub` alone (LibreOffice's EPUB filter is export-only), `pandoc`
-//! for `md`/`rst`, and Ghostscript ahead of `soffice` for `eps` (ADR-0160). The spreadsheet, text and tabular kinds that need none of
+//! for `md`/`rst`, and Ghostscript ahead of `soffice` for `eps` (CLI-0160). The spreadsheet, text and tabular kinds that need none of
 //! them are read in-process.
 //!
 //! See `worker`'s module doc for the per-file pipeline's full shape, `push`'s
@@ -102,9 +102,9 @@ impl Job for TransformJob {
         })
     }
 
-    /// Honors `upload_concurrency` (ADR-0091 §3) to size the push phase's
+    /// Honors `upload_concurrency` (CLI-0091 §3) to size the push phase's
     /// semaphore, bringing `transform` in line with every other
-    /// upload-capable job (ADR-0129). Previously this parameter was
+    /// upload-capable job (CLI-0129). Previously this parameter was
     /// ignored with a hardcoded value of 1; now it's the resolved
     /// `--upload-transfers` value from the wizard.
     async fn run(

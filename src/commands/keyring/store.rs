@@ -10,12 +10,12 @@ use crate::core::keyring::KeyringEntry as _;
 /// Both `email::identity`'s and `dataops::store`'s former stores read this
 /// same env var name for the same reason: an override for isolating tests
 /// (and manual use) from the real per-OS config directory. Unified here
-/// now that there's one store consuming it (ADR-0022).
+/// now that there's one store consuming it (CLI-0022).
 pub const CONFIG_DIR_ENV_VAR: &str = "PIGEON_CONFIG_DIR";
 
 const KEYRING_FILE_NAME: &str = "keyring.toml";
 
-/// An explicit `--keyring-path` (ADR-0145), recorded once from `main` before
+/// An explicit `--keyring-path` (CLI-0145), recorded once from `main` before
 /// any command dispatch and taking precedence over `CONFIG_DIR_ENV_VAR`.
 ///
 /// A process-global rather than a parameter threaded down from the CLI
@@ -24,7 +24,7 @@ const KEYRING_FILE_NAME: &str = "keyring.toml";
 /// `core::rclone::execute`, which has no access to any wizard's arguments --
 /// threading it there would mean changing `RcloneCommand::run`'s signature
 /// and every `Copy`/`CopyTo`/`Lsjson`/`Purge` call site. Same reason
-/// `observability`'s `LOG_FILE_PATH` is a `OnceLock` (ADR-0073).
+/// `observability`'s `LOG_FILE_PATH` is a `OnceLock` (CLI-0073).
 static KEYRING_PATH_OVERRIDE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
 
 /// Records `--keyring-path`. Called once from `main`, before `dispatch`.
@@ -35,13 +35,13 @@ pub fn set_keyring_path_override(path: PathBuf) {
 /// The explicitly-passed `--keyring-path`, if there was one. Distinguishes
 /// "the operator named this file" from "pigeon derived it", which is what
 /// lets a job refuse a named file that doesn't exist rather than silently
-/// loading an empty store (ADR-0145 §4).
+/// loading an empty store (CLI-0145 §4).
 pub fn keyring_path_override() -> Option<&'static Path> {
     KEYRING_PATH_OVERRIDE.get().map(PathBuf::as_path)
 }
 
 /// One configured secret: either an authenticated email identity or a
-/// bucket-config, tagged so both can live in one `keyring.toml` (ADR-0022).
+/// bucket-config, tagged so both can live in one `keyring.toml` (CLI-0022).
 /// Wraps the existing `Identity`/`BucketConfig` structs unchanged rather
 /// than flattening their fields, so every consumer that already takes
 /// `&Identity`/`&BucketConfig` (`imap_client::verify_login`,
@@ -49,7 +49,7 @@ pub fn keyring_path_override() -> Option<&'static Path> {
 /// representation flattens the wrapped struct's own fields alongside the
 /// `kind` discriminant, so `keyring.toml` still reads as a flat table per
 /// entry. Named `Entry` (not `KeyringEntry`) to avoid colliding with the
-/// `core::keyring::KeyringEntry` trait it implements (ADR-0023).
+/// `core::keyring::KeyringEntry` trait it implements (CLI-0023).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Entry {
@@ -90,13 +90,13 @@ impl Entry {
     }
 }
 
-/// The entry kind ADR-0147 removed along with client-side encryption.
+/// The entry kind CLI-0147 removed along with client-side encryption.
 /// Matched against a parse failure's text purely to add remediation, never
 /// to change what is accepted.
 const REMOVED_ENCRYPTION_KEY_KIND: &str = "encryption-key";
 
 /// Formats a `keyring.toml` parse failure, appending remediation when the
-/// cause is a leftover `kind = "encryption-key"` entry (ADR-0147 §2).
+/// cause is a leftover `kind = "encryption-key"` entry (CLI-0147 §2).
 ///
 /// `Entry` is internally tagged, and serde rejects an *unknown variant tag*
 /// regardless of `deny_unknown_fields` -- so one stale entry fails
@@ -108,14 +108,14 @@ const REMOVED_ENCRYPTION_KEY_KIND: &str = "encryption-key";
 /// Deliberately a better *message* rather than a `#[serde(other)]`
 /// catch-all variant: tolerating unknown kinds would self-heal here but
 /// would also silently swallow a genuinely malformed `kind`, reversing the
-/// fail-loudly posture ADR-0135 chose for the file that now holds every
-/// secret in plaintext. Same reasoning as ADR-0145's `load_keyring` guard,
+/// fail-loudly posture CLI-0135 chose for the file that now holds every
+/// secret in plaintext. Same reasoning as CLI-0145's `load_keyring` guard,
 /// which answered a confusing failure with a clearer error, not tolerance.
 fn parse_error(path: &Path, error: &str) -> String {
     let base = format!("failed to parse {}: {error}", path.display());
     if error.contains(REMOVED_ENCRYPTION_KEY_KIND) {
         return format!(
-            "{base}\n\nADR-0147 removed the '{REMOVED_ENCRYPTION_KEY_KIND}' entry kind along with \
+            "{base}\n\nCLI-0147 removed the '{REMOVED_ENCRYPTION_KEY_KIND}' entry kind along with \
              client-side encryption. Delete the [[entries]] block with \
              kind = \"{REMOVED_ENCRYPTION_KEY_KIND}\" from {} to continue.",
             path.display()
@@ -131,7 +131,7 @@ struct StoreFile {
 }
 
 /// The on-disk collection of every configured secret's metadata -- email
-/// identities and bucket-configs together (ADR-0022). Replaces
+/// identities and bucket-configs together (CLI-0022). Replaces
 /// `email::identity::Store` and `dataops::store::Store`.
 #[derive(Debug, Default)]
 pub struct Store {
@@ -142,7 +142,7 @@ pub struct Store {
 /// overrides. Extracted so the ordering is unit-testable: the real
 /// `--keyring-path` lives in a `OnceLock` that can only be set once per
 /// process, so an in-process test could otherwise only ever exercise one
-/// branch (ADR-0143's `circuit_breaker_should_trip` precedent).
+/// branch (CLI-0143's `circuit_breaker_should_trip` precedent).
 fn resolve_path_from(
     override_path: Option<&Path>,
     config_dir: Option<String>,
@@ -161,9 +161,9 @@ fn resolve_path_from(
 impl Store {
     /// The keyring file's path: `--keyring-path` if it was passed, otherwise
     /// `$PIGEON_CONFIG_DIR/keyring.toml` if that's set, otherwise the
-    /// OS-conventional config directory for `pigeon` (ADR-0145).
+    /// OS-conventional config directory for `pigeon` (CLI-0145).
     ///
-    /// Named `resolve_path` rather than ADR-0022's `default_path`: with two
+    /// Named `resolve_path` rather than CLI-0022's `default_path`: with two
     /// overrides ahead of the default, the old name named only the last
     /// branch.
     pub fn resolve_path() -> Result<PathBuf, String> {
@@ -190,7 +190,7 @@ impl Store {
     }
 
     /// Writes the store to `path`, creating its parent directory if needed.
-    /// Every entry's secret lives in this file as plaintext (ADR-0135), so
+    /// Every entry's secret lives in this file as plaintext (CLI-0135), so
     /// on Unix this also sets `0600` permissions -- the file's only
     /// protection now that there's no OS keychain backing it.
     pub fn save(&self, path: &Path) -> Result<(), String> {
@@ -218,7 +218,7 @@ impl Store {
 
     /// True if `alias` is already used by *either* kind of entry -- this is
     /// what makes aliases globally unique across email identities and
-    /// bucket-configs (ADR-0022).
+    /// bucket-configs (CLI-0022).
     pub fn contains_alias(&self, alias: &str) -> bool {
         self.entries.iter().any(|entry| entry.alias() == alias)
     }
@@ -290,8 +290,8 @@ impl Store {
     /// `job::wizard::resolve_remote_output` for its upload-target picker,
     /// which should never offer an email identity as a choice.
     ///
-    /// Takes no default-row hint: ADR-0137's `default_alias` parameter was
-    /// removed by ADR-0138, which moved `transform`'s `--input-file-type`
+    /// Takes no default-row hint: CLI-0137's `default_alias` parameter was
+    /// removed by CLI-0138, which moved `transform`'s `--input-file-type`
     /// inference off the bucket alias and onto the address prefix, leaving
     /// nothing anywhere in the crate with an alias to pre-select.
     pub fn prompt_select_bucket(&self) -> Result<&BucketConfig, String> {
@@ -356,7 +356,7 @@ mod tests {
     #[test]
     fn resolve_path_from_uses_an_explicit_path_verbatim_without_appending_a_file_name() {
         // `--keyring-path` names a *file*; `PIGEON_CONFIG_DIR` names a
-        // *directory*. Confirms the two are not conflated (ADR-0145 §1).
+        // *directory*. Confirms the two are not conflated (CLI-0145 §1).
         let path = resolve_path_from(Some(Path::new("/tmp/alt.toml")), None).unwrap();
         assert_eq!(path, PathBuf::from("/tmp/alt.toml"));
     }
@@ -409,7 +409,7 @@ mod tests {
         );
     }
 
-    /// ADR-0147 §2: `Entry` is internally tagged, so serde rejects an
+    /// CLI-0147 §2: `Entry` is internally tagged, so serde rejects an
     /// unknown variant tag outright -- and `Store::load` runs for every
     /// command, including the `keyring list`/`delete` an operator would
     /// reach for to remove the offending entry. The error therefore has to
@@ -428,7 +428,7 @@ mod tests {
         let err = Store::load(&path).unwrap_err();
 
         assert!(err.contains("encryption-key"), "unexpected error: {err}");
-        assert!(err.contains("ADR-0147"), "unexpected error: {err}");
+        assert!(err.contains("CLI-0147"), "unexpected error: {err}");
         assert!(
             err.contains(&path.display().to_string()),
             "the error must name the file to edit: {err}"
@@ -464,8 +464,8 @@ mod tests {
 
     #[test]
     fn load_rejects_a_pre_migration_file_missing_the_secret_field() {
-        // Simulates a `keyring.toml` written before ADR-0135 added secret
-        // fields -- unlike `max_imap_connections` (ADR-0080), these fields
+        // Simulates a `keyring.toml` written before CLI-0135 added secret
+        // fields -- unlike `max_imap_connections` (CLI-0080), these fields
         // deliberately have no `#[serde(default)]`: a missing secret must
         // fail loudly, not silently load as an empty string.
         let dir = tempfile::tempdir().unwrap();
@@ -525,7 +525,7 @@ port = 993
 
     #[test]
     fn email_identity_without_max_imap_connections_field_defaults_to_none() {
-        // Simulates a `keyring.toml` written before ADR-0080 added this
+        // Simulates a `keyring.toml` written before CLI-0080 added this
         // field -- `#[serde(default)]` must let it parse rather than fail.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keyring.toml");
@@ -564,7 +564,7 @@ secret = "app-password"
 
         // An email identity trying to reuse a bucket-config's alias is
         // caught by the same check -- this is what makes aliases globally
-        // unique (ADR-0022).
+        // unique (CLI-0022).
         assert!(store.contains_alias("shared-alias"));
     }
 
@@ -666,7 +666,7 @@ secret = "app-password"
         store.push(Entry::Bucket(sample_bucket_config("jpg")));
         // No TTY under `cargo test`'s captured stdin -- this asserts a
         // clean error from `Select::interact()`, not a panic. Kept from
-        // ADR-0137 (which added it alongside a default-row hint ADR-0138
+        // CLI-0137 (which added it alongside a default-row hint CLI-0138
         // then removed): it remains the only coverage this branch has.
         assert!(store.prompt_select_bucket().is_err());
     }

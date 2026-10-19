@@ -1,4 +1,4 @@
-//! The run's throughput governor (ADR-0146 §4). `--messages-per-minute`
+//! The run's throughput governor (CLI-0146 §4). `--messages-per-minute`
 //! turns into a fixed inter-message interval, and every fetch reserves its
 //! slots up front, so the rate a run actually hits is a declared property
 //! of the run rather than an emergent side effect of worker count -- which
@@ -13,7 +13,7 @@ use tokio::time::Instant;
 /// earlier than `next_allowed`. Returns `(sleep until, new next_allowed)`.
 ///
 /// Pure, so the whole schedule is unit-testable without a clock, a lock, or
-/// any I/O -- ADR-0143's `circuit_breaker_should_trip` precedent. Two
+/// any I/O -- CLI-0143's `circuit_breaker_should_trip` precedent. Two
 /// properties matter and both are deliberate:
 ///
 /// - Concurrent callers *stagger* rather than burst, because each one
@@ -39,7 +39,7 @@ pub(crate) fn reserve(
 /// Converts `--messages-per-minute` into the per-message interval. Clamped
 /// to at least 1/min so a `0` can never produce a division by zero or an
 /// unbounded rate -- the flag has no "unlimited" spelling by design
-/// (ADR-0146 Consequences).
+/// (CLI-0146 Consequences).
 pub(crate) fn interval_for(messages_per_minute: usize) -> Duration {
     Duration::from_secs(60) / messages_per_minute.max(1) as u32
 }
@@ -151,7 +151,7 @@ mod tests {
     }
 
     /// End-to-end on a virtual clock (the `test-util` dev-dependency
-    /// ADR-0144 added), so the real backoff is asserted without sleeping it.
+    /// CLI-0144 added), so the real backoff is asserted without sleeping it.
     #[tokio::test(start_paused = true)]
     async fn pacer_acquire_advances_the_clock_by_the_reserved_time() {
         let pacer = Pacer::new(120);

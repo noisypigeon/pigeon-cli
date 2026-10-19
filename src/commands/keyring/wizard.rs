@@ -36,19 +36,19 @@ fn resolve_host_port(
 }
 
 /// Verifies a candidate bucket-config is reachable before it is saved
-/// (ADR-0010), via `rclone lsjson` against a throwaway config holding only
-/// that candidate (ADR-0148 §3).
+/// (CLI-0010), via `rclone lsjson` against a throwaway config holding only
+/// that candidate (CLI-0148 §3).
 ///
 /// The ordering problem this solves: the generated `rclone.conf` is a pure
-/// function of the *saved* keyring (ADR-0136), but this runs before the
+/// function of the *saved* keyring (CLI-0136), but this runs before the
 /// candidate is saved. So an ephemeral one-entry `Store` is handed to the
 /// real `write_sandboxed_config` -- not a hand-rolled emitter -- so
-/// ADR-0140's two-section `alias` -> bucket shape cannot drift out of sync
+/// CLI-0140's two-section `alias` -> bucket shape cannot drift out of sync
 /// with the one jobs actually use.
 ///
 /// The probe file lives beside `keyring.toml` rather than in the OS temp
 /// directory: it carries a secret access key, and that directory is the one
-/// location already trusted with those at `0600` (ADR-0135). It is named
+/// location already trusted with those at `0600` (CLI-0135). It is named
 /// per-pid so two concurrent `keyring add`s cannot clobber each other, and
 /// removed on every path.
 ///
@@ -77,7 +77,7 @@ fn check_bucket_reachable(bucket_config: &BucketConfig) -> Result<(), String> {
 
         let result = (Lsjson {
             path: RemoteTarget::bucket_root(&bucket_config.alias).address(),
-            // Deliberately not `missing_ok` (ADR-0140): a bucket rclone
+            // Deliberately not `missing_ok` (CLI-0140): a bucket rclone
             // cannot resolve is the whole thing being checked for.
             missing_ok: false,
             config_path: Some(config_path.clone()),
@@ -99,7 +99,7 @@ fn check_bucket_reachable(bucket_config: &BucketConfig) -> Result<(), String> {
 /// invoking `rclone` -- which, with its `--retries 5
 /// --low-level-retries 20` plus `Lsjson`'s own `(3, 2s)`, would turn one
 /// refused connection into minutes of backoff (the test-cost constraint
-/// ADR-0145 recorded).
+/// CLI-0145 recorded).
 fn write_probe_config(bucket_config: &BucketConfig) -> Result<std::path::PathBuf, String> {
     let config_path = probe_config_path()?;
     write_probe_config_at(bucket_config, &config_path)?;
@@ -108,7 +108,7 @@ fn write_probe_config(bucket_config: &BucketConfig) -> Result<std::path::PathBuf
 
 /// `write_probe_config`'s body with the destination passed in, so a test
 /// can exercise it against a tempdir without touching the process-global
-/// state `rclone_config_path` reads -- ADR-0145's `*_from`/`*_beside`
+/// state `rclone_config_path` reads -- CLI-0145's `*_from`/`*_beside`
 /// precedent, and necessary rather than stylistic: `cargo test` runs these
 /// in parallel threads of one process, so two tests mutating
 /// `PIGEON_CONFIG_DIR` race each other.
@@ -608,7 +608,7 @@ mod tests {
         }
     }
 
-    /// ADR-0148 §3: the probe config must carry the candidate's own two
+    /// CLI-0148 §3: the probe config must carry the candidate's own two
     /// sections and nothing else, so a bucket that is not in the keyring
     /// yet is still addressable as `alias:`.
     #[test]
@@ -620,7 +620,7 @@ mod tests {
 
         let contents = std::fs::read_to_string(&path).unwrap();
         assert!(contents.contains("[probe-only.s3]"), "{contents}");
-        // ADR-0140's alias -> bucket indirection, inherited from the real
+        // CLI-0140's alias -> bucket indirection, inherited from the real
         // generator rather than re-emitted here -- which is the whole
         // reason this reuses `write_sandboxed_config`.
         assert!(
@@ -637,7 +637,7 @@ mod tests {
         {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600, "carries a secret key (ADR-0135)");
+            assert_eq!(mode & 0o777, 0o600, "carries a secret key (CLI-0135)");
         }
     }
 

@@ -1,4 +1,4 @@
-/// Env var name checked ahead of a stored secret (ADR-0087) -- `PIGEON_SECRET_`
+/// Env var name checked ahead of a stored secret (CLI-0087) -- `PIGEON_SECRET_`
 /// plus `alias` uppercased, with every character outside `[A-Z0-9_]` replaced
 /// by `_`. Lets a secret be injected directly, independent of wherever
 /// `keyring.toml` itself stores its secret fields -- which is what makes a
@@ -17,9 +17,9 @@ fn env_var_name(alias: &str) -> String {
     name
 }
 
-/// Resolves the secret to use for `alias`: `PIGEON_SECRET_<ALIAS>` (ADR-0087)
+/// Resolves the secret to use for `alias`: `PIGEON_SECRET_<ALIAS>` (CLI-0087)
 /// wins outright if set, otherwise `stored` -- the plain secret field already
-/// loaded from `keyring.toml` (ADR-0135) -- is returned as-is. Storage-backend
+/// loaded from `keyring.toml` (CLI-0135) -- is returned as-is. Storage-backend
 /// independent and infallible: there is no OS keychain left to fail to open.
 pub(crate) fn resolve_secret(alias: &str, stored: &str) -> String {
     std::env::var(env_var_name(alias)).unwrap_or_else(|_| stored.to_string())
@@ -37,7 +37,7 @@ mod tests {
 
     #[test]
     fn resolve_secret_prefers_the_env_var_over_the_stored_value() {
-        let alias = "adr-0135-test-alias";
+        let alias = "cli-0135-test-alias";
         let var = env_var_name(alias);
         // SAFETY: tests run single-threaded within this process for this env var
         // (no other test reads/writes a PIGEON_SECRET_* var concurrently).
@@ -53,7 +53,7 @@ mod tests {
 
     #[test]
     fn resolve_secret_falls_back_to_the_stored_value_when_no_env_var_is_set() {
-        let alias = "adr-0135-test-alias-unset";
+        let alias = "cli-0135-test-alias-unset";
         assert_eq!(resolve_secret(alias, "stored-secret"), "stored-secret");
     }
 }
