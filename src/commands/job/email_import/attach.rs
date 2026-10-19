@@ -1,12 +1,12 @@
-//! Unpacks each message's attachments next to its `.eml` (ADR-0146 §3).
+//! Unpacks each message's attachments next to its `.eml` (CLI-0146 §3).
 //!
 //! A near-sibling of `email_pull::worker::extract_attachments`, written
 //! separately rather than hoisted because the two differ in what they
 //! return: that one yields `(md5, relpath)` pairs to feed its dedup pass,
-//! which this job has none of (ADR-0146 Out of scope), so hashing every
+//! which this job has none of (CLI-0146 Out of scope), so hashing every
 //! attachment here would be pure cost. Two consumers is in any case below
 //! this codebase's duplicate-until-the-third-consumer threshold, and
-//! ADR-0147 deletes the other one.
+//! CLI-0147 deletes the other one.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ pub(crate) struct StagedAttachment {
 /// `Err(())` means the message could not be read or parsed at all. The
 /// caller treats that as a logged, non-fatal condition and still delivers
 /// the raw `.eml`, which is the faithful archival artifact and already
-/// contains every attachment inline -- the same leniency ADR-0081 chose,
+/// contains every attachment inline -- the same leniency CLI-0081 chose,
 /// for the same reason.
 ///
 /// An individual attachment that cannot be written is warned about and
@@ -66,7 +66,7 @@ pub(crate) fn extract_attachments(
         if contents.is_empty() && name.is_none() {
             // A truncated or malformed trailing MIME part with neither
             // headers nor content -- not a real attachment. Same guard
-            // `EmailTransform::transform` applies (ADR-0030 amendment).
+            // `EmailTransform::transform` applies (CLI-0030 amendment).
             continue;
         }
         if let Err(err) = fs::create_dir_all(attachments_dir) {
@@ -74,7 +74,7 @@ pub(crate) fn extract_attachments(
             continue;
         }
         // `sanitize_filename` is what keeps a sender-controlled MIME name
-        // from carrying a path separator out of this directory (ADR-0013),
+        // from carrying a path separator out of this directory (CLI-0013),
         // and `unique_path` disambiguates two attachments sharing a name
         // within one message.
         let sanitized_name = sanitize_filename(name.unwrap_or("attachment"));
@@ -184,7 +184,7 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// ADR-0013: a sender-controlled MIME filename carrying a path
+    /// CLI-0013: a sender-controlled MIME filename carrying a path
     /// separator must not escape the attachments directory.
     #[test]
     fn sanitizes_a_filename_containing_a_path_separator() {

@@ -26,13 +26,13 @@ path = "tests/cli.rs"
 [dependencies]
 async-imap = { version = "0.11.3", default-features = false, features = ["runtime-tokio"] }
 async-native-tls = { version = "0.6.0", default-features = false, features = ["runtime-tokio"] }
-# ADR-0149: reads .xlsx/.xls in-process. Deliberately NO `dates` feature:
+# CLI-0149: reads .xlsx/.xls in-process. Deliberately NO `dates` feature:
 # `Data::DateTime` and `ExcelDateTime::to_ymd_hms_milli` are both ungated and
 # the latter applies the 1904 date system itself, so ISO-8601 rendering needs
 # no `chrono` alongside this crate's existing `time`.
 calamine = { version = "0.36.1", default-features = false }
 clap = { version = "4", features = ["derive", "cargo"] }
-# ADR-0149: writes the per-sheet CSVs. Quoting/escaping untrusted cell text
+# CLI-0149: writes the per-sheet CSVs. Quoting/escaping untrusted cell text
 # is not worth hand-rolling.
 csv = "1.4"
 dialoguer = "0.12.0"
@@ -43,13 +43,13 @@ indicatif = "0.18.6"
 mail-parser = "0.11.9"
 metrics = "0.24.6"
 metrics-exporter-prometheus = "0.18.3"
-# ADR-0154: reads a macOS `.textclipping`, which is a binary property list
+# CLI-0154: reads a macOS `.textclipping`, which is a binary property list
 # in the data fork -- measured, not the resource fork the format's age
 # suggests. `default-features = false` drops the serde derive support this
 # only needs `Value` for; `quick-xml` comes along but was already in the
 # lockfile transitively via `calamine`.
 plist = { version = "1.7", default-features = false }
-# ADR-0159: decodes a Procreate document's QuickLook thumbnail (to verify the
+# CLI-0159: decodes a Procreate document's QuickLook thumbnail (to verify the
 # composite against it) and encodes the full-resolution composite as PNG.
 png = "0.18"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -63,10 +63,10 @@ tracing = "0.1.40"
 tracing-appender = "0.2.3"
 tracing-error = "0.2.0"
 tracing-subscriber = { version = "0.3.18", features = ["env-filter", "json"] }
-# ADR-0158: NFC-normalizes source keys before case-folding them, so keys that
+# CLI-0158: NFC-normalizes source keys before case-folding them, so keys that
 # differ only by Unicode normalization are detected as colliding on APFS.
 unicode-normalization = "0.1"
-# ADR-0158: percent-encodes the `file://` URLs `soffice` takes for its profile
+# CLI-0158: percent-encodes the `file://` URLs `soffice` takes for its profile
 # and output directories. Already in the lockfile via `async-native-tls`.
 url = "2.5"
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
@@ -79,7 +79,7 @@ assert_cmd = "2"
 predicates = "3"
 tempfile = "3.27.0"
 # `test-util` gives `#[tokio::test(start_paused = true)]` a virtual clock, so
-# ADR-0144's `EndpointGate` tests assert its election and round accounting
+# CLI-0144's `EndpointGate` tests assert its election and round accounting
 # without actually sleeping out the recovery backoff. Dev-only: nothing in the
 # shipped binary may depend on a pausable clock.
 tokio = { version = "1.53.1", features = ["test-util"] }

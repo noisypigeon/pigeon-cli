@@ -1,7 +1,7 @@
-//! One place to run `soffice` (LibreOffice) headlessly (ADR-0154 §6).
+//! One place to run `soffice` (LibreOffice) headlessly (CLI-0154 §6).
 //!
-//! ADR-0149 introduced this machinery inside `sheets.rs` to convert
-//! `.numbers` to `.xlsx`. ADR-0154 added six document kinds that convert to
+//! CLI-0149 introduced this machinery inside `sheets.rs` to convert
+//! `.numbers` to `.xlsx`. CLI-0154 added six document kinds that convert to
 //! `.pdf` the same way, so it is parameterized by target extension and
 //! lives here. Two consumers rather than the three this repo's hoisting
 //! precedent asks for, deliberately: this is a parameterization of one
@@ -12,7 +12,7 @@
 //! per-invocation profile directory, the timeout, and treating the exit
 //! code as *not* authoritative.
 //!
-//! ADR-0158 adds two more. soffice reads both its profile and its
+//! CLI-0158 adds two more. soffice reads both its profile and its
 //! `--outdir` as URLs, and the work directory is named after the source
 //! file, so both are percent-encoded: an unencoded space crashed it, a `#`
 //! hung it, and a `%41` silently became `A`. And a timed-out soffice is
@@ -72,7 +72,7 @@ pub(crate) async fn check_available() -> Result<(), String> {
 ///
 /// The output keeps a real extension, which matters twice over:
 /// `calamine::open_workbook_auto` dispatches on it for the `.xlsx` route,
-/// and it is why the ADR-0115 scratch-suffix trap that forces every
+/// and it is why the CLI-0115 scratch-suffix trap that forces every
 /// `ffmpeg` call to pass an explicit `-f` muxer does not apply here --
 /// `soffice` derives the output name itself from the input stem.
 pub(crate) async fn convert(
@@ -92,7 +92,7 @@ pub(crate) async fn convert(
     // its lock or fail outright -- and this job runs `--concurrency` files
     // at once.
     //
-    // Both directories go in as encoded URLs (ADR-0158). The input file
+    // Both directories go in as encoded URLs (CLI-0158). The input file
     // does not need it: soffice treats a plain path argument as a path,
     // measured with a space, `#`, `%` and `:` in the name.
     let mut command = tokio::process::Command::new("soffice");
@@ -102,7 +102,7 @@ pub(crate) async fn convert(
         .args(["--convert-to", target_ext, "--outdir"])
         .arg(&outdir_url)
         .arg(input)
-        // ADR-0158: without this, the timeout below drops the future and
+        // CLI-0158: without this, the timeout below drops the future and
         // leaves soffice running. Two runs' hung processes were still alive
         // half an hour later.
         .kill_on_drop(true);
@@ -129,7 +129,7 @@ pub(crate) async fn convert(
     // some conversion failures, printing its complaint to stdout. What the
     // next stage actually needs is a non-empty file where it expects one.
     //
-    // ADR-0154 found how far that cuts: given a PEM private key named
+    // CLI-0154 found how far that cuts: given a PEM private key named
     // `.key`, soffice exits 0 *and* produces a large, well-formed PDF with
     // the key legible in it. No output check can catch that, which is why
     // `documents::ensure_keynote` guards the **input** instead.
@@ -140,9 +140,9 @@ pub(crate) async fn convert(
         return Ok(produced);
     }
 
-    // A signal death is the converter failing, not the file (ADR-0158), so
+    // A signal death is the converter failing, not the file (CLI-0158), so
     // it must not carry the caller's wrong-input signature: that would
-    // delete the local copy under ADR-0143 and send the reader looking at
+    // delete the local copy under CLI-0143 and send the reader looking at
     // the wrong cause. It stays non-retryable, so a systemic crash still
     // trips the circuit breaker.
     if output.status.code().is_none() {
@@ -164,7 +164,7 @@ pub(crate) async fn convert(
     ))
 }
 
-/// `path` as a percent-encoded `file://` directory URL (ADR-0158).
+/// `path` as a percent-encoded `file://` directory URL (CLI-0158).
 ///
 /// Made absolute first, since a URL cannot express a relative path.
 fn directory_url(path: &Path) -> Result<String, String> {
@@ -193,7 +193,7 @@ fn termination_signal(_status: &std::process::ExitStatus) -> String {
 mod tests {
     use super::*;
 
-    /// ADR-0158: each of these crashed, hung, or redirected soffice when
+    /// CLI-0158: each of these crashed, hung, or redirected soffice when
     /// passed unencoded.
     #[test]
     fn directory_url_percent_encodes_reserved_characters() {
@@ -209,7 +209,7 @@ mod tests {
         assert!(url.ends_with("/relative/dir/"), "{url}");
     }
 
-    /// ADR-0158 §4: a crash stops retries and counts toward the breaker,
+    /// CLI-0158 §4: a crash stops retries and counts toward the breaker,
     /// but is not the file's fault, so its local copy is kept.
     #[test]
     fn a_crash_is_non_retryable_but_not_wrong_input_kind() {
@@ -275,7 +275,7 @@ mod tests {
         assert!(err.contains("is not a readable document"), "{err}");
     }
 
-    /// The parameterization ADR-0154 §6 exists for: the same runner
+    /// The parameterization CLI-0154 §6 exists for: the same runner
     /// produces a different target format purely from its argument.
     #[tokio::test]
     async fn convert_produces_the_requested_target_extension() {

@@ -33,7 +33,7 @@ pub enum JobType {
     /// contents), content-hashes every file bucket-wide to keep one
     /// byte-identical copy of each, writes a human-readable merge report,
     /// and optionally uploads the result unencrypted to a (possibly
-    /// different) bucket-config (ADR-0082). Every file is always processed
+    /// different) bucket-config (CLI-0082). Every file is always processed
     /// and every zip is always expanded -- there is no file-type or
     /// zip-expansion selection, and this job never offers encryption.
     Deduplicate {
@@ -41,7 +41,7 @@ pub enum JobType {
         /// flag for more than one (`--source-bucket a --source-bucket b`)
         /// -- every listed bucket is downloaded into one shared local
         /// staging tree and deduplicated across the combined set, not
-        /// per-bucket (ADR-0109). Interactively multi-selected from the
+        /// per-bucket (CLI-0109). Interactively multi-selected from the
         /// configured bucket-configs when omitted and stdin is a terminal;
         /// at least one is required otherwise.
         #[arg(long)]
@@ -54,7 +54,7 @@ pub enum JobType {
 
         /// Alias of a configured bucket-config to upload the deduped
         /// result to, once local processing is complete. Always uploaded
-        /// unencrypted. Single bucket only (ADR-0109).
+        /// unencrypted. Single bucket only (CLI-0109).
         #[arg(long)]
         destination_bucket: Option<String>,
 
@@ -63,7 +63,7 @@ pub enum JobType {
         concurrency: Option<usize>,
 
         /// rclone --transfers for the upload phase, now one bulk `rclone
-        /// copy` rather than a per-file task queue (ADR-0136). Defaults to
+        /// copy` rather than a per-file task queue (CLI-0136). Defaults to
         /// 8 when omitted. With `--upload-only`, this is the only transfer
         /// concurrency flag that has any effect.
         #[arg(long)]
@@ -85,7 +85,7 @@ pub enum JobType {
         /// they'd otherwise need) and uploads straight from an existing
         /// `--local-output`'s `result/` tree, picking up where a prior
         /// run's upload phase left off via the same `.staging/.uploaded`
-        /// index (ADR-0089). Requires a `--local-output` from a completed
+        /// index (CLI-0089). Requires a `--local-output` from a completed
         /// prior run (its `.staging/.processed` checkpoint must exist and
         /// its `result/` must be non-empty) and a mandatory
         /// `--remote-output`.
@@ -95,13 +95,13 @@ pub enum JobType {
         /// Alias of a configured bucket-config this run's report, the
         /// shared observability log, and a transcript of its printed
         /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (CLI-0100). Mandatory --
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
         /// exists) instead of asking, and the final "proceed?"
         /// confirmation is auto-answered yes.
@@ -112,39 +112,39 @@ pub enum JobType {
     /// Shells out to the external `rclone` binary for copy/delete
     /// operations against pigeon keyring `BucketConfig` aliases. `rclone`
     /// is always invoked against a config file pigeon itself generates
-    /// from the keyring (ADR-0136, reversing ADR-0101/ADR-0110's original
+    /// from the keyring (CLI-0136, reversing CLI-0101/CLI-0110's original
     /// raw-passthrough design) -- never an externally-provisioned or
     /// user-general-purpose `rclone.conf`. See subcommands for the
     /// available actions. Requires `rclone` on `PATH`.
     Rclone(RcloneArgs),
 
     /// Transcodes image files (`png`/`jpeg`/`heic`) into full-size,
-    /// maximum-quality `.jpg`, video files (`mov`/`m4v`/`mp4`, ADR-0122)
+    /// maximum-quality `.jpg`, video files (`mov`/`m4v`/`mp4`, CLI-0122)
     /// into space-optimized H.265/HEVC `.mp4` at a chosen `--video-quality`,
     /// audio files -- an audio-only recording carrying an `.mp4` extension
-    /// (`mp4-audio`, ADR-0142) or `m4a`/`mp3`/`aac`/`wav`/`opus`
-    /// (ADR-0153) -- into Opus `.opus` at a chosen `--audio-quality`, or
+    /// (`mp4-audio`, CLI-0142) or `m4a`/`mp3`/`aac`/`wav`/`opus`
+    /// (CLI-0153) -- into Opus `.opus` at a chosen `--audio-quality`, or
     /// spreadsheets
-    /// (`numbers`/`xlsx`/`xls`/`csv`, ADR-0149) into one `.csv` per sheet,
-    /// or documents (ADR-0154) -- `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`/
+    /// (`numbers`/`xlsx`/`xls`/`csv`, CLI-0149) into one `.csv` per sheet,
+    /// or documents (CLI-0154) -- `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`/
     /// `epub` into `.pdf` with `pdf` copied through,
     /// `txt`/`md`/`markdown`/`mkd`/`rst`/`textclipping` into `.txt`, and
-    /// `tsv` into `.csv`; calendars and contacts (`ics`/`vcf`, ADR-0160)
+    /// `tsv` into `.csv`; calendars and contacts (`ics`/`vcf`, CLI-0160)
     /// into readable `.txt`; more raster images (`avif`/`tif`/`tiff`/
     /// `webp`/`bmp`) into `.jpg`, icons and artwork (`ico`/`icns`/
     /// `procreate`/`procreate-2`) into `.png`, and vector drawings
-    /// (`ai`/`emz`/`eps`/`svg`) into `.svg` (ADR-0159, ADR-0160)
-    /// (ADR-0112, pipeline reworked by ADR-0116): shells out to `rclone` to
+    /// (`ai`/`emz`/`eps`/`svg`) into `.svg` (CLI-0159, CLI-0160)
+    /// (CLI-0112, pipeline reworked by CLI-0116): shells out to `rclone` to
     /// pull `--source` into a local staging tree, transcoding/copying each
     /// file locally and pushing it individually via `rclone copyto` the
     /// moment it's ready, rather than waiting for the whole batch. A
     /// multi-sheet workbook is the one input kind that yields several
     /// outputs, each named `{stem}-{hash}-{nn}of{tt}-{sheet}.csv` so they
     /// stay recognizably related and a half-pushed workbook is detectable
-    /// on a rerun (ADR-0149).
+    /// on a rerun (CLI-0149).
     /// `--source`/`--destination` are pigeon keyring `BucketConfig`
     /// aliases, optionally composed with a prefix within that bucket
-    /// (`alias:prefix/`, ADR-0138); an omitted prefix defaults to
+    /// (`alias:prefix/`, CLI-0138); an omitted prefix defaults to
     /// `--input-file-type`'s own extension (source) or output extension
     /// (destination). Deduplication is never involved -- every output file's
     /// name is derived deterministically and is unique by construction;
@@ -154,14 +154,14 @@ pub enum JobType {
     /// giving up) is recorded and reported but never stops any other file
     /// from being processed and pushed. A rerun is resumable without any
     /// local state: "already done" is answered by listing the destination
-    /// (ADR-0120 removed the local checkpoint). Requires `rclone` on
+    /// (CLI-0120 removed the local checkpoint). Requires `rclone` on
     /// `PATH`, plus `ffmpeg`/`ffprobe` for an image, video, or audio input
     /// kind, `soffice` (LibreOffice) for `numbers` and for
     /// `doc`/`docx`/`pages`/`rtf`/`pptx`/`key`, `ebook-convert` (Calibre)
     /// for `epub`, `pandoc` for `md`/`rst`, and Ghostscript (`gs`) plus
     /// `soffice` for `eps`;
     /// `xlsx`/`xls`/`csv`/`tsv`/`pdf`/`txt`/`textclipping`/`ics`/`vcf`
-    /// need none of them (ADR-0149, ADR-0154, ADR-0160).
+    /// need none of them (CLI-0149, CLI-0154, CLI-0160).
     Transform {
         /// Which input format this run transcodes: `png`, `jpeg`, `heic`,
         /// `mov`, `m4v`, `mp4`, `mp4-audio`, `m4a`, `mp3`, `aac`, `wav`,
@@ -176,10 +176,10 @@ pub enum JobType {
         /// extension (voice notes), transcoded to `.opus`; a file that
         /// actually has a video stream is refused rather than silently
         /// losing its video -- embedded cover art does not count as video
-        /// (ADR-0153). `opus` input is re-encoded rather than copied
+        /// (CLI-0153). `opus` input is re-encoded rather than copied
         /// through, so a mixed library normalizes to one bitrate. The four spreadsheet kinds all output `.csv`,
-        /// one file per non-empty sheet (ADR-0149); `csv` input is copied
-        /// through byte-for-byte, as are `pdf` and `txt` (ADR-0154).
+        /// one file per non-empty sheet (CLI-0149); `csv` input is copied
+        /// through byte-for-byte, as are `pdf` and `txt` (CLI-0154).
         /// `key` is sniffed before conversion and a file that is not an
         /// iWork container is refused -- that extension is also
         /// conventional for a private key, and LibreOffice would otherwise
@@ -191,7 +191,7 @@ pub enum JobType {
         /// Compression level for a true video input kind (`mov`/`m4v`/`mp4`
         /// -- not `mp4-audio`, which has no video stream):
         /// `low`, `medium` (default), `high`, or `lossless` -- a small
-        /// vetted `libx265` CRF menu (ADR-0122). Ignored for every other
+        /// vetted `libx265` CRF menu (CLI-0122). Ignored for every other
         /// input kind. Interactively selected when omitted, stdin is a
         /// terminal, and the input kind is video; defaults to `medium`
         /// otherwise.
@@ -201,10 +201,10 @@ pub enum JobType {
         /// Opus bitrate for an audio input kind (`mp4-audio`, `m4a`,
         /// `mp3`, `aac`, `wav`, `opus`): `low` (32k, speech), `medium`
         /// (48k), `high` (96k), or `transparent` (128k) -- a small vetted
-        /// menu (ADR-0153), never a raw bitrate. Ignored for every other
+        /// menu (CLI-0153), never a raw bitrate. Ignored for every other
         /// input kind. Interactively selected when omitted, stdin is a
         /// terminal, and the input kind is audio; otherwise it defaults
-        /// **per kind**: `medium` for `mp4-audio`, preserving ADR-0142's
+        /// **per kind**: `medium` for `mp4-audio`, preserving CLI-0142's
         /// choice for voice notes, and `transparent` for the rest, which
         /// are music or (for `wav`) lossless and would be badly served by
         /// a speech bitrate.
@@ -213,7 +213,7 @@ pub enum JobType {
 
         /// Where to pull from: a configured bucket-config alias, optionally
         /// composed with a prefix inside it -- `media` is the whole bucket,
-        /// `media:mp4/` its `mp4/` directory (ADR-0138). An omitted prefix
+        /// `media:mp4/` its `mp4/` directory (CLI-0138). An omitted prefix
         /// defaults to `--input-file-type`'s own extension, so
         /// `--source media --input-file-type mp4` means `media:mp4/`; an
         /// explicit prefix is always used verbatim. Interactively selected
@@ -223,7 +223,7 @@ pub enum JobType {
         source: Option<String>,
 
         /// Where to push to, same `alias[:prefix/]` form as `--source`
-        /// (ADR-0138). An omitted prefix defaults to `--input-file-type`'s
+        /// (CLI-0138). An omitted prefix defaults to `--input-file-type`'s
         /// *output* extension (`jpg` for an image kind, `mp4` for a video
         /// one, `opus` for every audio kind, `csv` for every spreadsheet
         /// kind),
@@ -259,7 +259,7 @@ pub enum JobType {
         /// Maximum number of concurrent per-file push (`rclone copyto`)
         /// operations. Defaults to 8 when omitted. Separate from
         /// `--download-transfers` to allow independent tuning of pull vs.
-        /// push phases (ADR-0129).
+        /// push phases (CLI-0129).
         #[arg(long)]
         upload_transfers: Option<usize>,
 
@@ -267,7 +267,7 @@ pub enum JobType {
         /// (pending transcode/push) before the pull phase is paused to allow
         /// the pipeline to catch up. Defaults to `concurrency * 4` when
         /// omitted. Enables automatic disk-pressure backpressure without
-        /// requiring manual tuning (ADR-0129).
+        /// requiring manual tuning (CLI-0129).
         #[arg(long)]
         max_pending_downloads: Option<usize>,
 
@@ -279,13 +279,13 @@ pub enum JobType {
         /// Alias of a configured bucket-config this run's report, the
         /// shared observability log, and a transcript of its printed
         /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (CLI-0100). Mandatory --
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
         /// exists) instead of asking, and the final "proceed?"
         /// confirmation is auto-answered yes.
@@ -305,7 +305,7 @@ pub enum EmailAction {
     /// Reads one or more authenticated IMAP identities and delivers each
     /// message's raw `.eml` plus its unpacked attachments to
     /// `--destination`, at a declared, rate-limit-respecting pace
-    /// (ADR-0146). Deliberately minimal: no deduplication, no indexing, no
+    /// (CLI-0146). Deliberately minimal: no deduplication, no indexing, no
     /// renaming, no content transform, and no encryption -- it moves bytes
     /// and nothing else. Each message is pushed individually via `rclone
     /// copyto` the moment it is fetched and its local copy deleted
@@ -324,7 +324,7 @@ pub enum EmailAction {
 
         /// Where to deliver to: a configured bucket-config alias,
         /// optionally composed with a prefix inside it -- `archive` is the
-        /// whole bucket, `archive:eml/` its `eml/` directory (ADR-0138).
+        /// whole bucket, `archive:eml/` its `eml/` directory (CLI-0138).
         /// Unlike `transform`, an omitted prefix stays the bucket root
         /// (this job has no file-type concept to derive one from).
         /// Mandatory -- interactively selected when omitted and stdin is a
@@ -336,13 +336,13 @@ pub enum EmailAction {
         /// are staged under. Defaults to a directory under the OS temp
         /// directory when omitted. Unlike the other email jobs this is not
         /// an output tree: each message's local copy is deleted as soon as
-        /// its push resolves (ADR-0146 §5), so it stays near-empty.
+        /// its push resolves (CLI-0146 §5), so it stays near-empty.
         #[arg(long)]
         local_output: Option<PathBuf>,
 
         /// Ceiling on how many messages per minute are fetched, across
         /// every selected identity -- the run's throughput governor
-        /// (ADR-0146 §4). Deliberately has no "unlimited" value: the
+        /// (CLI-0146 §4). Deliberately has no "unlimited" value: the
         /// absence of a cap is what this job exists to fix. Interactively
         /// prompted when omitted and stdin is a terminal; defaults to 120
         /// otherwise, which puts a 200,000-message account at roughly 28
@@ -360,7 +360,7 @@ pub enum EmailAction {
         /// Maximum simultaneous IMAP connections opened to any one
         /// identity. A per-identity cap set via `pigeon keyring
         /// add/modify email` still overrides this for that identity only
-        /// (ADR-0080). Interactively prompted when omitted and stdin is a
+        /// (CLI-0080). Interactively prompted when omitted and stdin is a
         /// terminal; defaults to 2 otherwise -- well below the other email
         /// jobs' 6, since throughput here comes from
         /// `--messages-per-minute` rather than from parallelism.
@@ -378,13 +378,13 @@ pub enum EmailAction {
         /// Alias of a configured bucket-config this run's report, the
         /// shared observability log, and a transcript of its printed
         /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (CLI-0100). Mandatory --
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
         report_bucket: Option<String>,
 
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
         /// exists) instead of asking, and the final "proceed?"
         /// confirmation is auto-answered yes.
@@ -403,14 +403,14 @@ pub struct RcloneArgs {
 pub enum RcloneAction {
     /// Copies data from one configured bucket-config to another by
     /// shelling out to `rclone copy`, against a config file pigeon itself
-    /// generates from the keyring (ADR-0136, reversing ADR-0101's original
+    /// generates from the keyring (CLI-0136, reversing CLI-0101's original
     /// raw-passthrough design). `--transfers`/`--checkers`/`--tpslimit` are
-    /// overridable per-destination (ADR-0108); every other rclone
+    /// overridable per-destination (CLI-0108); every other rclone
     /// performance/retry flag stays fixed.
     Copy {
         /// Where to pull from: a configured bucket-config alias, optionally
         /// composed with a prefix inside it -- `media` is the whole bucket,
-        /// `media:mp4/` its `mp4/` directory (ADR-0138). Unlike
+        /// `media:mp4/` its `mp4/` directory (CLI-0138). Unlike
         /// `transform`, an omitted prefix stays the bucket root (this job
         /// has no file-type concept to derive one from). Interactively
         /// selected when omitted and stdin is a terminal; required
@@ -419,7 +419,7 @@ pub enum RcloneAction {
         source_bucket: Option<String>,
 
         /// Where to push to, same `alias[:prefix/]` form as
-        /// `--source-bucket` (ADR-0138). Interactively selected when
+        /// `--source-bucket` (CLI-0138). Interactively selected when
         /// omitted and stdin is a terminal; required otherwise.
         #[arg(long)]
         destination_bucket: Option<String>,
@@ -437,28 +437,28 @@ pub enum RcloneAction {
         /// rclone log itself, for this job), the shared observability log,
         /// and a transcript of its printed output are uploaded to, always
         /// unencrypted, under a `YYYY-MM-DD-job-name-{run-id}/` prefix
-        /// (ADR-0100). Mandatory -- interactively selected when omitted
+        /// (CLI-0100). Mandatory -- interactively selected when omitted
         /// and stdin is a terminal; required otherwise.
         #[arg(long)]
         report_bucket: Option<String>,
 
         /// rclone --transfers (concurrent file transfers). Defaults to 8
-        /// (ADR-0106) when omitted.
+        /// (CLI-0106) when omitted.
         #[arg(long)]
         transfers: Option<usize>,
 
         /// rclone --checkers (concurrent list/compare operations).
-        /// Defaults to 16 (ADR-0106) when omitted.
+        /// Defaults to 16 (CLI-0106) when omitted.
         #[arg(long)]
         checkers: Option<usize>,
 
         /// rclone --tpslimit (transactions/sec ceiling across transfers
         /// and checkers combined). Unset by default -- no rate cap --
-        /// unless a specific destination needs one (ADR-0108).
+        /// unless a specific destination needs one (CLI-0108).
         #[arg(long)]
         tpslimit: Option<usize>,
 
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
         /// exists) instead of asking, and the final "proceed?"
         /// confirmation is auto-answered yes.
@@ -467,7 +467,7 @@ pub enum RcloneAction {
     },
 
     /// Recursively and permanently deletes everything in a configured
-    /// bucket-config by shelling out to `rclone purge` (ADR-0110).
+    /// bucket-config by shelling out to `rclone purge` (CLI-0110).
     /// Irreversible -- there is no `--dry-run` and no undo beyond the
     /// existing `--non-interactive`/interactive confirmation. Unlike
     /// `copy`, there is no destination and no per-file transfer-rate
@@ -476,7 +476,7 @@ pub enum RcloneAction {
         /// What to recursively and permanently delete the contents of: a
         /// configured bucket-config alias, optionally composed with a
         /// prefix to scope the purge to one directory inside it
-        /// (`media:mp4/`, ADR-0138). An omitted prefix purges the **whole
+        /// (`media:mp4/`, CLI-0138). An omitted prefix purges the **whole
         /// bucket**. Interactively selected when omitted and stdin is a
         /// terminal; required otherwise.
         #[arg(long)]
@@ -491,7 +491,7 @@ pub enum RcloneAction {
         /// Alias of a configured bucket-config this run's report, the
         /// shared observability log, and a transcript of its printed
         /// output are uploaded to, always unencrypted, under a
-        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (ADR-0100). Mandatory --
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (CLI-0100). Mandatory --
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
@@ -502,7 +502,7 @@ pub enum RcloneAction {
         #[arg(long)]
         checkers: Option<usize>,
 
-        /// Suppress every wizard prompt (ADR-0114): each omitted input
+        /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
         /// exists) instead of asking, and the final "proceed?"
         /// confirmation is auto-answered yes.
@@ -529,7 +529,7 @@ impl Observable for JobType {
 
 impl JobType {
     /// The bare dash-form job name (e.g. `"deduplicate"`) used in the
-    /// report-bucket upload prefix (ADR-0100) -- `command_name()`'s value
+    /// report-bucket upload prefix (CLI-0100) -- `command_name()`'s value
     /// with its `"job."` prefix stripped, rather than a 6th place in this
     /// codebase repeating the same job-name literals already duplicated
     /// across every job's `worker.rs` metrics call sites.

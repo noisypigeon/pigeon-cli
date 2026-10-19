@@ -1,5 +1,5 @@
 //! Destination filenames unique by construction, not collision-detected-
-//! and-fixed (ADR-0112 Decision §5). `core::data::unique_path` (the
+//! and-fixed (CLI-0112 Decision §5). `core::data::unique_path` (the
 //! `-2`/`-3` suffix-on-existing-name scheme `deduplicate` uses) only
 //! checks what's already present in the *local* `result/`
 //! directory -- it has no visibility into whatever the remote
@@ -8,9 +8,9 @@
 //! module never calls it.
 //!
 //! `compute_destination_name`'s output extension was hardcoded to `.jpg`
-//! until ADR-0122 added video input kinds, which output `.mp4` instead --
+//! until CLI-0122 added video input kinds, which output `.mp4` instead --
 //! it now takes that extension as an explicit parameter
-//! (`InputFileType::output_extension`), which since ADR-0154 spans six
+//! (`InputFileType::output_extension`), which since CLI-0154 spans six
 //! extensions across five input families.
 
 use std::collections::{HashMap, HashSet};
@@ -37,7 +37,7 @@ const NAME_HASH_HEX_LEN: usize = 16;
 /// either. The same source file always maps to the exact same destination
 /// name on every run, which is also what makes a `transform` rerun line up
 /// cleanly with each per-file `rclone copyto` push's own incremental
-/// skip-if-unchanged behavior (ADR-0116).
+/// skip-if-unchanged behavior (CLI-0116).
 pub(crate) fn compute_destination_name(
     source_path: &str,
     original_relative_path: &str,
@@ -51,14 +51,14 @@ pub(crate) fn compute_destination_name(
 }
 
 /// The part every output of one input file shares: `{stem}-{digest16}`
-/// (ADR-0149).
+/// (CLI-0149).
 ///
 /// Extracted from `compute_destination_name`, whose output is unchanged --
 /// it is now this plus `.{extension}`. Two properties make it the right
-/// axis for ADR-0149's one-input-many-outputs naming:
+/// axis for CLI-0149's one-input-many-outputs naming:
 ///
 /// - It is a pure *forward* function of `(source_path, relative_path)`
-///   alone, needing no file content, which is what lets ADR-0124's
+///   alone, needing no file content, which is what lets CLI-0124's
 ///   skip-already-done filter keep running *before* the pull. A workbook's
 ///   sheet count is not knowable without opening it, but its group key is.
 /// - Every sheet of one workbook shares it, which is what makes the outputs
@@ -72,7 +72,7 @@ pub(crate) fn group_key(
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("file");
-    // ADR-0151: a spreadsheet kind gets the strict character set, because
+    // CLI-0151: a spreadsheet kind gets the strict character set, because
     // only those kinds produce several outputs per input and so only their
     // report column is a multi-value list a stray comma can misread. Every
     // other kind keeps `sanitize_filename` and therefore keeps its existing
@@ -89,7 +89,7 @@ pub(crate) fn group_key(
 }
 
 /// One sheet's destination filename: `{group}-{nn}of{tt}-{slug}.{ext}`
-/// (ADR-0149).
+/// (CLI-0149).
 ///
 /// `index` is 1-based and is the workbook's own sheet order -- the only
 /// place that ordering survives into the output. `total` is embedded in
@@ -155,7 +155,7 @@ pub(crate) fn place_one(
 }
 
 /// Moves an already-converted sheet CSV into `result_dir` under
-/// `destination_name` (ADR-0149).
+/// `destination_name` (CLI-0149).
 ///
 /// Differs from `place_one` in exactly one way, and deliberately: a target
 /// that already exists is a **legitimate resume**, not a collision, so the
@@ -190,13 +190,13 @@ pub(crate) fn place_sheet(
 }
 
 /// What a listing of already-present output filenames says about each
-/// group (ADR-0149 §3) -- the replacement for the single-name `HashSet`
-/// membership test ADR-0120/0124 used.
+/// group (CLI-0149 §3) -- the replacement for the single-name `HashSet`
+/// membership test CLI-0120/0124 used.
 ///
 /// Built **once** from a listing, so the per-source-path cost stays O(1)
 /// exactly as the `HashSet` it replaces. Used against two different
 /// listings: the remote destination (the pull filter and the dispatch
-/// backstop) and the local `result/` tree (ADR-0127's crash resume).
+/// backstop) and the local `result/` tree (CLI-0127's crash resume).
 #[derive(Debug, Default)]
 pub(crate) struct DestinationGroups {
     groups: HashMap<String, GroupState>,
@@ -301,9 +301,9 @@ fn candidate_groups(stem: &str) -> Vec<(&str, &str)> {
     found
 }
 
-/// Parses a `-{nn}of{tt}-{slug}` tail into `(index, total)` (ADR-0149).
+/// Parses a `-{nn}of{tt}-{slug}` tail into `(index, total)` (CLI-0149).
 ///
-/// Pure and unit-tested independently of any listing, per ADR-0143's
+/// Pure and unit-tested independently of any listing, per CLI-0143's
 /// `circuit_breaker_should_trip` precedent: the parsing is the interesting
 /// part and is untestable buried inside an indexing loop.
 fn parse_sheet_marker(remainder: &str) -> Option<(usize, usize)> {
@@ -329,7 +329,7 @@ fn parse_sheet_marker(remainder: &str) -> Option<(usize, usize)> {
 mod tests {
     use super::*;
 
-    // --- ADR-0151 -------------------------------------------------------
+    // --- CLI-0151 -------------------------------------------------------
 
     /// The reported bug: one filename reading as three comma-separated
     /// ones, in a comma-joined report column.
@@ -346,12 +346,12 @@ mod tests {
         }
     }
 
-    /// **The property that scopes ADR-0151 §1.** `group_key` feeds every
+    /// **The property that scopes CLI-0151 §1.** `group_key` feeds every
     /// destination name this job has ever written, and `transform` never
     /// deletes at the destination -- so applying the strict stem to the
     /// media kinds would not rename those objects, it would *duplicate*
     /// them. Measured on the run that prompted this: 67% of inputs would
-    /// rename, which at ADR-0144's 37,955-object jpg bucket is ~25,000
+    /// rename, which at CLI-0144's 37,955-object jpg bucket is ~25,000
     /// duplicates.
     #[test]
     fn a_media_destination_name_is_unaffected_by_the_strict_stem() {
@@ -383,7 +383,7 @@ mod tests {
     /// The digest is unchanged by the stem treatment -- it hashes the raw
     /// relative path, so two kinds over the same path share a digest even
     /// when their stems render differently. That is what keeps the hash
-    /// input "byte-for-byte unchanged" as ADR-0149 promised.
+    /// input "byte-for-byte unchanged" as CLI-0149 promised.
     #[test]
     fn the_digest_does_not_depend_on_how_the_stem_is_rendered() {
         let strict = group_key("source:x/", "A B,C.xlsx", InputFileType::Xlsx);
@@ -416,7 +416,7 @@ mod tests {
         assert!(DestinationGroups::index(&names).is_complete(&group));
     }
 
-    // --- ADR-0149 -------------------------------------------------------
+    // --- CLI-0149 -------------------------------------------------------
 
     /// The regression check that matters most: splitting
     /// `compute_destination_name` into `group_key` + extension must not have
@@ -494,7 +494,7 @@ mod tests {
     }
 
     /// A single-output name makes its group complete on its own -- this is
-    /// the pre-ADR-0149 behaviour, preserved exactly for every input kind
+    /// the pre-CLI-0149 behaviour, preserved exactly for every input kind
     /// that yields one output.
     #[test]
     fn a_plain_name_completes_its_group() {
@@ -741,9 +741,9 @@ mod tests {
         );
     }
 
-    // --- ADR-0154: documents ---
+    // --- CLI-0154: documents ---
 
-    /// **The property that scopes ADR-0154 §3.** Every document kind is
+    /// **The property that scopes CLI-0154 §3.** Every document kind is
     /// single-output, so `strict_stem` stays spreadsheet-only and a
     /// document name is built exactly like a media one. Widening it would
     /// not rename already-written objects -- this job never deletes -- it
@@ -766,7 +766,7 @@ mod tests {
             InputFileType::Rst,
             InputFileType::Textclipping,
             InputFileType::Tsv,
-            // ADR-0160: single-output, so `strict_stem` is not applied.
+            // CLI-0160: single-output, so `strict_stem` is not applied.
             InputFileType::Bmp,
             InputFileType::Eps,
             InputFileType::Ics,
@@ -790,7 +790,7 @@ mod tests {
 
     /// Seven document kinds now share one `destination:pdf/` prefix. They
     /// do not collide because the digest covers the source key, which is
-    /// ADR-0112 §5's unique-by-construction property doing the work ADR-0154
+    /// CLI-0112 §5's unique-by-construction property doing the work CLI-0154
     /// §3 relies on instead of adding collision handling.
     #[test]
     fn document_kinds_sharing_one_destination_prefix_do_not_collide() {

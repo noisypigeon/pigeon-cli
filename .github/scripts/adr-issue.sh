@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # File (or reuse) a GitHub issue for an ADR's "Out of scope" bullet, and link
-# the issue back into the bullet's line(s) in-place. See docs/adr/0031.
+# the issue back into the bullet's line(s) in-place. See adr/CLI-0031.
 set -euo pipefail
 
 usage() {
@@ -13,7 +13,7 @@ Usage: adr-issue.sh --title "..." --body "..." --label NAME [--label NAME ...]
   --body       Issue body (required unless --issue is given).
   --label      Label to ensure exists and attach; repeatable.
   --adr-line   ADR file and 1-based line number to annotate with the issue
-               link, e.g. docs/adr/0009-remote-storage.md:76; repeatable.
+               link, e.g. adr/CLI-0009-remote-storage.md:76; repeatable.
   --issue      Reuse an existing issue number instead of creating a new one.
 EOF
 }
@@ -52,12 +52,12 @@ label_meta() {
   case "$1" in
     out-of-scope) echo "5319e7|Deferred item raised in an ADR's Out of scope section" ;;
     # Name kept rather than renamed to area:email: existing issues carry
-    # it, so a rename is a GitHub-side migration, not a file edit (ADR-0147).
+    # it, so a rename is a GitHub-side migration, not a file edit (CLI-0147).
     area:email-sync) echo "1d76db|IMAP import pipeline (job run email import)" ;;
     area:dataops) echo "0e8a16|S3-compatible remote storage (bucket configs, upload)" ;;
     area:keyring) echo "fbca04|Identities and bucket configs in keyring.toml" ;;
     area:job-orchestration) echo "d93f0b|pigeon job wizard, concurrency, and phase orchestration" ;;
-    # ADR-0147 removed client-side encryption and ADR-0148 the last S3
+    # CLI-0147 removed client-side encryption and CLI-0148 the last S3
     # client, so this is now about secret handling rather than crypto.
     area:security) echo "b60205|Secret handling, credential scope, and access control" ;;
     area:tooling) echo "c5def5|Dev-cycle, CI, release, and publishing tooling" ;;

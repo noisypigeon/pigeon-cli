@@ -1,10 +1,10 @@
-//! `pigeon job run email import`'s wizard (ADR-0146 §9).
+//! `pigeon job run email import`'s wizard (CLI-0146 §9).
 //!
 //! `IdentitiesInput` and `LocalOutputInput` are deliberate duplicates of
-//! the sibling email jobs' (ADR-0146 §2): a third consumer is normally this
-//! codebase's hoist trigger, but ADR-0147 returns both to a single consumer,
-//! so hoisting now would mean un-hoisting next -- the churn ADR-0094 and
-//! ADR-0131 each paid once already.
+//! the sibling email jobs' (CLI-0146 §2): a third consumer is normally this
+//! codebase's hoist trigger, but CLI-0147 returns both to a single consumer,
+//! so hoisting now would mean un-hoisting next -- the churn CLI-0094 and
+//! CLI-0131 each paid once already.
 
 use std::path::PathBuf;
 
@@ -27,7 +27,7 @@ use super::{DEFAULT_MAX_CONNECTIONS, ImportContext, ImportJob};
 /// 120/min puts a 200,000-message account at roughly 28 hours.
 ///
 /// There is no "unlimited" spelling, which is the whole point -- the
-/// absence of a cap is what this job exists to fix (ADR-0146 Consequences).
+/// absence of a cap is what this job exists to fix (CLI-0146 Consequences).
 const DEFAULT_MESSAGES_PER_MINUTE: usize = 120;
 
 /// How many UIDs one `UID FETCH` asks for at a time. Small enough that a
@@ -37,7 +37,7 @@ const DEFAULT_BATCH_SIZE: usize = 20;
 
 /// Concurrent `rclone copyto` pushes. Deliberately not
 /// `shared_wizard::UploadConcurrencyInput`'s 16: that value was tuned
-/// (ADR-0091 §3) for a dedicated upload phase racing to finish, whereas
+/// (CLI-0091 §3) for a dedicated upload phase racing to finish, whereas
 /// this job's pushes interleave with a deliberately throttled fetch, so the
 /// push leg never needs to outpace it.
 const DEFAULT_PUSH_CONCURRENCY: usize = 4;
@@ -101,7 +101,7 @@ impl WizardInput for IdentitiesInput<'_> {
 }
 
 /// Where to deliver to: a configured bucket-config alias, optionally
-/// composed with a prefix inside it (ADR-0138). An omitted prefix is the
+/// composed with a prefix inside it (CLI-0138). An omitted prefix is the
 /// bucket root -- unlike `transform`, this job has no `--input-file-type`
 /// to derive a default from.
 pub(crate) struct DestinationInput<'a> {
@@ -161,7 +161,7 @@ impl WizardInput for LocalOutputInput {
 }
 
 /// Every numeric input below falls back to its default rather than erroring
-/// non-interactively, per `UploadConcurrencyInput`'s ADR-0091 §3 reasoning:
+/// non-interactively, per `UploadConcurrencyInput`'s CLI-0091 §3 reasoning:
 /// unattended operation is this job's primary mode, not an afterthought.
 macro_rules! numeric_input {
     ($name:ident, $default:expr, $prompt:literal, $flag:literal) => {
@@ -219,7 +219,7 @@ numeric_input!(
 
 /// The pre-run table. Counts only -- no `BYTES` or `ATTACHMENTS` columns,
 /// since producing either costs a second full-corpus IMAP traversal
-/// (ADR-0146 §7).
+/// (CLI-0146 §7).
 fn print_summary(summaries: &[super::IdentitySummary]) {
     let rows: Vec<Vec<String>> = summaries
         .iter()
@@ -296,7 +296,7 @@ async fn dispatch_async(
     non_interactive: bool,
 ) -> i32 {
     // Held for this whole async fn's lifetime, so every early return drops
-    // and aborts it (ADR-0073).
+    // and aborts it (CLI-0073).
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
@@ -307,7 +307,7 @@ async fn dispatch_async(
 
     // The first email job to need either half of this: both siblings are
     // `minio`-only and need neither the binary nor the generated config
-    // (ADR-0146 §9).
+    // (CLI-0146 §9).
     if let Err(err) = prepare_rclone(&keyring_store).await {
         return fail(err);
     }
@@ -439,7 +439,7 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     };
 
-    // `concurrency` is unused by this job (ADR-0146 §1); `push_concurrency`
+    // `concurrency` is unused by this job (CLI-0146 §1); `push_concurrency`
     // travels in the `Job` trait's `upload_concurrency` slot.
     let (exit_code, report_path) = match job.run(plan, 0, push_concurrency).await {
         Ok(summary) => {

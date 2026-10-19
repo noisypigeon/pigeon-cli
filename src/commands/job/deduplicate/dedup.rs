@@ -1,4 +1,4 @@
-//! Content-hash dedup, placement, and merge-report generation (ADR-0082
+//! Content-hash dedup, placement, and merge-report generation (CLI-0082
 //! §5/§6). Built directly on `core::data`'s primitives: the closest
 //! existing placement pass (the since-removed `pull_transform::dedup`)
 //! didn't expose per-duplicate merge records, which this job's report
@@ -20,7 +20,7 @@ pub(crate) struct DeduplicateDedup(pub(crate) ContentIndex);
 
 /// One file finished the concurrent download/expand/hash pipeline,
 /// awaiting placement -- `scratch_path` points at its bytes sitting outside
-/// the final `result/<extension>/` tree. `bucket_alias` (ADR-0109) names
+/// the final `result/<extension>/` tree. `bucket_alias` (CLI-0109) names
 /// which of this run's (possibly several) source buckets `original_key` was
 /// downloaded from.
 #[derive(Debug)]
@@ -33,13 +33,13 @@ pub(crate) struct HashedFile {
 }
 
 /// One duplicate discovered during placement, for the human-readable report
-/// (`write_report`). `kept_original_key` (ADR-0099) is the source key of
+/// (`write_report`). `kept_original_key` (CLI-0099) is the source key of
 /// whichever file was kept under `kept_path` -- blank when that hash was
-/// committed before ADR-0099 (never retroactively backfilled, since a hash
+/// committed before CLI-0099 (never retroactively backfilled, since a hash
 /// is only ever committed once). `duplicate_bucket_alias`/
-/// `kept_bucket_alias` (ADR-0109) name which source bucket the duplicate
+/// `kept_bucket_alias` (CLI-0109) name which source bucket the duplicate
 /// and the kept copy respectively came from -- both blank under the same
-/// pre-ADR-0109 circumstances as `kept_original_key`.
+/// pre-CLI-0109 circumstances as `kept_original_key`.
 pub(crate) struct MergeRecord {
     pub duplicate_key: String,
     pub duplicate_bucket_alias: String,
@@ -58,7 +58,7 @@ pub(crate) struct PlacementSummary {
 
 /// Whether `key`'s file name carries the source data's "no known date"
 /// sentinel (`0000-00-00-...`) rather than a real date prefix. Deduplicate's
-/// keep-selection (ADR-0095) uses this to avoid preferring an undated copy
+/// keep-selection (CLI-0095) uses this to avoid preferring an undated copy
 /// over a dated one just because "0000" sorts before a real year.
 fn is_undated_key(key: &str) -> bool {
     let key = after_zip_separator(key);
@@ -71,7 +71,7 @@ fn is_undated_key(key: &str) -> bool {
 
 /// Places every entry in `files` under `result_dir/<extension>/`,
 /// deduplicating by content hash and recording a `MergeRecord` for every
-/// duplicate found. Sorted with dated keys ahead of undated ones (ADR-0095),
+/// duplicate found. Sorted with dated keys ahead of undated ones (CLI-0095),
 /// then by `original_key` within each group for reproducible placement
 /// order across re-runs, same discipline as every other single-threaded
 /// placement pass in this codebase (concurrent `unique_path` calls against
@@ -80,7 +80,7 @@ fn is_undated_key(key: &str) -> bool {
 /// A single file's placement failure is logged and simply omitted from the
 /// returned `finished_keys` list (retried next run), rather than aborting
 /// the whole pass. Each `finished_keys` entry is `(bucket_alias, key)`
-/// (ADR-0109), compound-keyed for the same collision reason as every other
+/// (CLI-0109), compound-keyed for the same collision reason as every other
 /// cross-bucket tracking structure in this job (two source buckets can
 /// share an identical key string).
 pub(crate) fn place_and_report(
@@ -187,10 +187,10 @@ fn place_one(
 /// Writes a plain-text, tab-separated merge report to
 /// `local_output/deduplicate-report.txt` -- one line per `MergeRecord` plus a
 /// trailing summary line. Written even when `records` is empty, so the
-/// report lives at a predictable, scriptable path every run (ADR-0082 §5).
-/// `kept_original_key` (ADR-0099) is blank whenever the kept copy's hash
+/// report lives at a predictable, scriptable path every run (CLI-0082 §5).
+/// `kept_original_key` (CLI-0099) is blank whenever the kept copy's hash
 /// predates that change -- see `MergeRecord`'s doc comment.
-/// `duplicate_bucket_alias`/`kept_bucket_alias` (ADR-0109) are appended as
+/// `duplicate_bucket_alias`/`kept_bucket_alias` (CLI-0109) are appended as
 /// trailing columns rather than interspersed, so anything already parsing
 /// this file's first four columns positionally keeps working.
 pub(crate) fn write_report(
@@ -315,7 +315,7 @@ mod tests {
         let mut dedup = dedup_at(staging.path());
 
         // Two different source buckets sharing the same duplicate content --
-        // exactly the cross-bucket scenario ADR-0109 adds support for.
+        // exactly the cross-bucket scenario CLI-0109 adds support for.
         let files = vec![
             HashedFile {
                 original_key: "a/report.pdf".to_string(),

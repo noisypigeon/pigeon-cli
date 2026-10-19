@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 /// A known email provider, or a manually configured IMAP server.
 ///
-/// Per ADR-0003, authentication is always via an app-specific (or, for
+/// Per CLI-0003, authentication is always via an app-specific (or, for
 /// Proton, Bridge-issued) password over plain IMAP `LOGIN` -- never OAuth2.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]

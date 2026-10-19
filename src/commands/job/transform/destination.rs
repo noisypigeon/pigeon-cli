@@ -1,5 +1,5 @@
 //! Lists what already exists at `--destination-bucket` via `rclone lsjson`
-//! (ADR-0120) -- the authoritative, persistent source of "is this file
+//! (CLI-0120) -- the authoritative, persistent source of "is this file
 //! already done" for `transform`, replacing the old local `.staging/
 //! .processed` checkpoint. `transform` runs on a freshly-provisioned,
 //! ephemeral VM per invocation: local disk never survives a VM replacement,
@@ -8,7 +8,7 @@
 //! it -- the same source file always maps to the same destination filename
 //! on every run.
 //!
-//! Also lists the *source* tree the same way (ADR-0124) -- a metadata-only
+//! Also lists the *source* tree the same way (CLI-0124) -- a metadata-only
 //! `rclone lsjson`, no bytes transferred -- so `worker::run_transform_job`
 //! can compute which source files are already done (via
 //! `placement::compute_destination_name`, a pure function of a relative
@@ -29,7 +29,7 @@ pub(crate) async fn list_existing_filenames(destination: &str) -> Result<HashSet
     let entries = (Lsjson {
         path: destination.to_string(),
         // The one listing in this crate that may legitimately find nothing
-        // at a path rclone cannot resolve (ADR-0140).
+        // at a path rclone cannot resolve (CLI-0140).
         missing_ok: true,
         job: "transform",
         ..Default::default()
@@ -41,16 +41,16 @@ pub(crate) async fn list_existing_filenames(destination: &str) -> Result<HashSet
 
 /// Lists every relative path under `source` matching any of `extensions`
 /// (one input kind's full set of on-disk spellings -- `.jpg` *and* `.jpeg`
-/// for `Jpeg`, per ADR-0139), via a recursive, metadata-only `rclone
+/// for `Jpeg`, per CLI-0139), via a recursive, metadata-only `rclone
 /// lsjson` -- no file content is read or transferred. A source rclone
-/// cannot resolve at all is an `Err` here (ADR-0140), unlike
+/// cannot resolve at all is an `Err` here (CLI-0140), unlike
 /// `list_existing_filenames`; a source that resolves but holds nothing
 /// matching is an empty list.
 ///
 /// This listing is the **sole** input to the pull set: an empty result
 /// means `worker::run_transform_job` skips spawning `rclone` entirely, so a
 /// filter that matches nothing is indistinguishable from an empty source.
-/// That is precisely how ADR-0139's bug stayed invisible, and why the
+/// That is precisely how CLI-0139's bug stayed invisible, and why the
 /// caller warns on an empty result.
 ///
 /// Relative paths use `/`-separated components, matching
@@ -65,7 +65,7 @@ pub(crate) async fn list_source_relative_paths(
         path: source.to_string(),
         recursive: true,
         include_extensions: extensions.iter().map(|ext| ext.to_string()).collect(),
-        // Deliberately *not* `missing_ok` (ADR-0140): a source rclone cannot
+        // Deliberately *not* `missing_ok` (CLI-0140): a source rclone cannot
         // resolve is a misconfigured address, not an empty source.
         missing_ok: false,
         job: "transform",
@@ -145,7 +145,7 @@ mod tests {
         assert_eq!(paths, vec!["screenshots/img.png".to_string()]);
     }
 
-    /// The ADR-0139 regression, against a real `rclone`: one input kind
+    /// The CLI-0139 regression, against a real `rclone`: one input kind
     /// with two spellings must match both. `--ignore-case` alone never
     /// could -- it folds `.JPG` to `.jpg`, but cannot fold `jpg` to `jpeg`.
     #[tokio::test]
@@ -177,7 +177,7 @@ mod tests {
         );
     }
 
-    /// ADR-0140: the inverse of `list_existing_filenames`' tolerance. A
+    /// CLI-0140: the inverse of `list_existing_filenames`' tolerance. A
     /// source rclone cannot resolve used to come back as an empty listing,
     /// which `run_transform_job` turns into a run that pulls nothing and
     /// exits 0 -- indistinguishable from success.

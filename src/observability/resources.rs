@@ -4,7 +4,7 @@ use std::time::Duration;
 use sysinfo::{Pid, Process, ProcessesToUpdate, System};
 
 /// Periodically samples this process's CPU/memory/disk-I/O usage into the
-/// tracing sink while a job runs (ADR-0073) -- spawned only inside a job's
+/// tracing sink while a job runs (CLI-0073) -- spawned only inside a job's
 /// own tokio runtime (each job wizard's `dispatch_async`), never
 /// for keyring commands, which finish too fast for periodic sampling to
 /// observe anything. Dropping it aborts the sampling task, so every one of a
@@ -16,7 +16,7 @@ pub(crate) struct ResourceSampler {
 
 /// Every live descendant of `root` (including `root` itself), found by
 /// walking `Process::parent()` to a fixed point over the whole process table
-/// (ADR-0120) -- a job's actual CPU/memory/disk load mostly lives in the
+/// (CLI-0120) -- a job's actual CPU/memory/disk load mostly lives in the
 /// `ffmpeg`/`rclone` child processes it spawns via `tokio::process::Command`
 /// (`transform/media.rs`, `core::rclone`, ...),
 /// invisible to a query scoped to the `pigeon` PID alone. No child-PID
@@ -53,7 +53,7 @@ impl ResourceSampler {
                 // A full refresh (every live PID, not just `pigeon`'s own)
                 // is required to see `ffmpeg`/`rclone` children at all --
                 // accepted as a conscious tradeoff at this 5s-or-slower
-                // cadence (ADR-0120).
+                // cadence (CLI-0120).
                 system.refresh_processes(ProcessesToUpdate::All, true);
                 let processes = pigeon_process_tree(&system, pid);
                 if processes.is_empty() {
@@ -68,7 +68,7 @@ impl ResourceSampler {
                             let disk = process.disk_usage();
                             (read + disk.read_bytes, written + disk.written_bytes)
                         });
-                // Metrics only, no log line (ADR-0093) -- a periodic
+                // Metrics only, no log line (CLI-0093) -- a periodic
                 // measurement isn't a diagnosis, and this fired every 5s for
                 // a run's whole lifetime, drowning out genuine error/failure
                 // logs for no benefit once a real Prometheus scrape exists.
@@ -77,7 +77,7 @@ impl ResourceSampler {
                 // `read_bytes`/`written_bytes` -- `sysinfo`'s own
                 // since-last-refresh per-process deltas, not the cumulative
                 // `total_*_bytes` fields -- applied via `.increment()`
-                // (ADR-0120): summing *cumulative* counters with `.absolute()`
+                // (CLI-0120): summing *cumulative* counters with `.absolute()`
                 // across a tree whose membership changes every tick (a
                 // short-lived `ffmpeg` process exits, another starts) would
                 // let the counter plateau or double-count; incrementing each

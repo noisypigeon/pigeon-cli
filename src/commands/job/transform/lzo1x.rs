@@ -1,4 +1,4 @@
-//! An LZO1X decompressor, for Procreate's tile chunks (ADR-0159).
+//! An LZO1X decompressor, for Procreate's tile chunks (CLI-0159).
 //!
 //! A port of the Linux kernel's `lzo1x_decompress_safe` (without its
 //! bitstream-v1 RLE extension, which Procreate does not emit), checked

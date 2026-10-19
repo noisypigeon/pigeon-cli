@@ -1,13 +1,13 @@
 //! The IMAP fetch loop and the per-mailbox bookkeeping around it
-//! (ADR-0147 §0).
+//! (CLI-0147 §0).
 //!
-//! Relocated from `email_sync/sink.rs` when ADR-0147 deleted that job. Six
+//! Relocated from `email_sync/sink.rs` when CLI-0147 deleted that job. Six
 //! functions moved; `new_progress_bar` went to `commands::job::progress`
 //! instead, having two consumers rather than one, and `sink::run`,
 //! `SinkSummary`, `on_disk_uids`, and `clear_eml_files` were deleted
 //! outright -- the first two being the dead `pigeon email sync --debug
-//! sink` entry point from ADR-0007 §4, the latter two reasoning about a
-//! local `.eml` tree this job never keeps (ADR-0146 §5's GC deletes each
+//! sink` entry point from CLI-0007 §4, the latter two reasoning about a
+//! local `.eml` tree this job never keeps (CLI-0146 §5's GC deletes each
 //! message as soon as its push resolves).
 //!
 //! Everything here predates `email import`, so the ADR citations in each
@@ -31,7 +31,7 @@ const UIDVALIDITY_FILE_NAME: &str = ".uidvalidity";
 /// Returns the count written.
 ///
 /// `EXAMINE` plus `BODY.PEEK[]` is what makes the whole read path
-/// non-mutating server-side (ADR-0005): nothing is marked `\Seen` and no
+/// non-mutating server-side (CLI-0005): nothing is marked `\Seen` and no
 /// flag is touched.
 pub(crate) async fn fetch_uids(
     session: &mut ImapSession,
@@ -69,7 +69,7 @@ pub(crate) async fn fetch_uids(
     {
         let (Some(uid), Some(body)) = (fetch.uid, fetch.body()) else {
             // The caller turns a UID with no file on disk afterwards into a
-            // counted `missing_file` failure (ADR-0146 §8).
+            // counted `missing_file` failure (CLI-0146 §8).
             tracing::warn!(
                 mailbox = mailbox_name,
                 uid = fetch.uid,

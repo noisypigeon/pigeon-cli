@@ -1,5 +1,5 @@
-//! `--input-file-type` (ADR-0112, extended to video by ADR-0122, audio by
-//! ADR-0142/0153, spreadsheets by ADR-0149 and documents by ADR-0154): a
+//! `--input-file-type` (CLI-0112, extended to video by CLI-0122, audio by
+//! CLI-0142/0153, spreadsheets by CLI-0149 and documents by CLI-0154): a
 //! small, vetted menu, not an arbitrary string -- mirrors
 //! `rclone::cli::RcloneAction`'s precedent. Named `InputFileType`, not
 //! `ImageInputType`, and the job itself named `transform`, not
@@ -10,17 +10,17 @@
 /// Which input format this run transcodes.
 ///
 /// The output extension is **not** derivable from any one predicate: image
-/// kinds output `.jpg` (ADR-0112), video kinds `.mp4` at the chosen
-/// `VideoQuality` (ADR-0122), audio kinds `.opus` at the chosen
-/// `AudioQuality` (ADR-0142, ADR-0153), spreadsheet kinds one `.csv` per
-/// non-empty sheet (ADR-0149), and document kinds -- the first family whose
-/// members disagree -- `.pdf`, `.txt` or `.csv` (ADR-0154). See
+/// kinds output `.jpg` (CLI-0112), video kinds `.mp4` at the chosen
+/// `VideoQuality` (CLI-0122), audio kinds `.opus` at the chosen
+/// `AudioQuality` (CLI-0142, CLI-0153), spreadsheet kinds one `.csv` per
+/// non-empty sheet (CLI-0149), and document kinds -- the first family whose
+/// members disagree -- `.pdf`, `.txt` or `.csv` (CLI-0154). See
 /// `output_extension`, which is the single authority on this and is
 /// deliberately an exhaustive `match`.
 ///
 /// `Jpeg`, `Csv`, `Pdf` and `Txt` are copy-through: already in the target
 /// format, so the bytes are preserved untouched. `Opus` is the one kind that
-/// arrives in its target format and is re-encoded anyway (ADR-0153 §6).
+/// arrives in its target format and is re-encoded anyway (CLI-0153 §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InputFileType {
     Png,
@@ -29,64 +29,64 @@ pub(crate) enum InputFileType {
     Mov,
     M4v,
     Mp4,
-    /// An audio-only recording carrying an `.mp4` extension (ADR-0142) --
+    /// An audio-only recording carrying an `.mp4` extension (CLI-0142) --
     /// a voice note, typically. Shares `Mp4`'s on-disk spelling because no
     /// extension distinguishes the two; `media::transcode_audio`'s
     /// has-a-video-stream guard is what makes selecting this kind safe.
     Mp4Audio,
     /// Apple Numbers. The only kind needing an external converter other
-    /// than `ffmpeg` (ADR-0149): no Rust crate reads Apple's IWA format, so
+    /// than `ffmpeg` (CLI-0149): no Rust crate reads Apple's IWA format, so
     /// `sheets::convert_numbers_to_xlsx` shells out to `soffice` and the
     /// result rejoins the shared `calamine` path.
     Numbers,
     Xlsx,
     Xls,
     /// Already CSV: copied through byte-for-byte, the same reasoning
-    /// ADR-0112 applies to a `jpeg` input already in the target format.
+    /// CLI-0112 applies to a `jpeg` input already in the target format.
     Csv,
     /// AAC in an MP4 container -- the ordinary iTunes-era music file
-    /// (ADR-0153).
+    /// (CLI-0153).
     M4a,
     Mp3,
     /// Raw AAC in an ADTS stream, with no container. Worth distinguishing
     /// from `M4a` in one's head because ADTS carries no duration, which is
-    /// why ADR-0153 had to make the truncated-encode guard one-sided.
+    /// why CLI-0153 had to make the truncated-encode guard one-sided.
     Aac,
     /// Uncompressed PCM. The only **lossless** input this job takes, which
     /// is why it defaults to the top quality tier: the encode is the first
     /// lossy generation the file has ever had.
     Wav,
     /// Already Opus. Deliberately **re-encoded** rather than copied
-    /// through (ADR-0153), so a mixed library normalizes to one bitrate --
-    /// a departure from ADR-0112's jpeg and ADR-0149's csv copy-through,
+    /// through (CLI-0153), so a mixed library normalizes to one bitrate --
+    /// a departure from CLI-0112's jpeg and CLI-0149's csv copy-through,
     /// at the cost of a second lossy generation.
     Opus,
     /// Microsoft Word's old binary format (CFBF). A genuinely different
     /// format from `Docx`, reached by a different LibreOffice filter, so
     /// they are disjoint kinds rather than two spellings of one --
-    /// following `Xls`/`Xlsx` (ADR-0154).
+    /// following `Xls`/`Xlsx` (CLI-0154).
     Doc,
     /// Microsoft Word's modern OOXML format.
     Docx,
     /// Apple Pages. Imported by the same `libetonyek` that reads
-    /// `Numbers`, so it needs `soffice` for the same reason (ADR-0154).
+    /// `Numbers`, so it needs `soffice` for the same reason (CLI-0154).
     Pages,
     /// Rich Text Format.
     Rtf,
     /// Already PDF: copied through byte-for-byte, the same reasoning
-    /// ADR-0112 applies to a `jpeg` and ADR-0149 to a `csv` input already
+    /// CLI-0112 applies to a `jpeg` and CLI-0149 to a `csv` input already
     /// in the target format.
     Pdf,
     /// An e-book. The **only** document kind LibreOffice cannot read:
     /// its EPUB filter is export-only (`flags=EXPORT ALIEN 3RDPARTYFILTER`
     /// with no IMPORT counterpart anywhere in its registry), which is why
-    /// this kind alone shells out to Calibre's `ebook-convert` (ADR-0154).
+    /// this kind alone shells out to Calibre's `ebook-convert` (CLI-0154).
     Epub,
     /// A PowerPoint presentation.
     Pptx,
     /// Apple Keynote -- and also the conventional extension for a PEM
     /// private key, which is why this is the one kind whose input is
-    /// sniffed before conversion (ADR-0154 §2).
+    /// sniffed before conversion (CLI-0154 §2).
     ///
     /// LibreOffice does **not** refuse a private key named `.key`: it
     /// imports it as a plain-text Writer document, exits 0, and writes a
@@ -98,11 +98,11 @@ pub(crate) enum InputFileType {
     Txt,
     /// Markdown. The first kind with **three** spellings -- `md`,
     /// `markdown` and `mkd` are one format under different extensions,
-    /// generalizing `Jpeg`'s two (ADR-0154 §1).
+    /// generalizing `Jpeg`'s two (CLI-0154 §1).
     ///
     /// Rendered to prose by `pandoc -t plain`, which **discards link URLs
     /// and all inline markup**. Lossy and deliberate: this family is
-    /// defined by its output being readable prose (ADR-0154 §8).
+    /// defined by its output being readable prose (CLI-0154 §8).
     Md,
     /// reStructuredText. Shares `Md`'s converter and its markup loss; a
     /// separate kind because `pandoc` needs to be told which reader to
@@ -111,67 +111,67 @@ pub(crate) enum InputFileType {
     /// The macOS snippet created by dragging selected text to the Finder.
     ///
     /// A modern one is a **data-fork binary property list**, not the
-    /// resource fork the name suggests (measured, ADR-0154): one
+    /// resource fork the name suggests (measured, CLI-0154): one
     /// `UTI-Data` key holding three encodings of the same text, one of
     /// them already UTF-8. So it is read in-process with no external
     /// binary and no platform dependency.
     Textclipping,
     /// A tab-separated table, converted to CSV. Deliberately **not** a
-    /// member of `is_spreadsheet()` (ADR-0154 §4): that predicate is
+    /// member of `is_spreadsheet()` (CLI-0154 §4): that predicate is
     /// consulted by three unrelated concerns and this kind is
     /// single-output, so it would be right for only one of them.
     Tsv,
-    /// AV1 Image File Format, decoded by ffmpeg's `libdav1d` (ADR-0159).
+    /// AV1 Image File Format, decoded by ffmpeg's `libdav1d` (CLI-0159).
     /// Tile-grid AVIFs (stored as a stream group) are reassembled by
     /// ffmpeg at full size, which the pixel-area guard checks.
     Avif,
     /// TIFF under its three-letter spelling. A separate kind from `Tiff`
     /// only because the bucket keeps the two spellings under two prefixes,
-    /// and ADR-0138 infers the prefix from `canonical_extension()`
-    /// (ADR-0159). Only the first page of a multi-page TIFF is kept.
+    /// and CLI-0138 infers the prefix from `canonical_extension()`
+    /// (CLI-0159). Only the first page of a multi-page TIFF is kept.
     Tif,
-    /// TIFF under its four-letter spelling (ADR-0159).
+    /// TIFF under its four-letter spelling (CLI-0159).
     Tiff,
     /// WebP. An animated one keeps only its first frame, and a `.webp`
     /// whose content is really JPEG is re-encoded rather than copied
-    /// through (ADR-0159).
+    /// through (CLI-0159).
     Webp,
     /// A Windows icon, output as **PNG** so its transparency survives
-    /// (ADR-0159). ffmpeg's default stream selection takes the largest of
+    /// (CLI-0159). ffmpeg's default stream selection takes the largest of
     /// the images it holds.
     Ico,
     /// A macOS icon, output as PNG. ffmpeg cannot open the container, so
     /// `icns::largest_entry` extracts the biggest embedded PNG or JPEG 2000
-    /// image first (ADR-0159).
+    /// image first (CLI-0159).
     Icns,
     /// A Procreate document, output as a **full-resolution** PNG of the
-    /// composite Procreate maintains itself (ADR-0159, `procreate.rs`).
+    /// composite Procreate maintains itself (CLI-0159, `procreate.rs`).
     Procreate,
     /// The same format as `Procreate`, under the extension macOS's
     /// " 2" duplicate naming gave some copies: `name.procreate 2`. A kind
     /// of its own, like `Mp4Audio`, because its files live under their own
-    /// `procreate 2/` prefix (ADR-0159).
+    /// `procreate 2/` prefix (CLI-0159).
     Procreate2,
     /// An Adobe Illustrator file. PDF-compatible ones (every modern one)
-    /// are read by `soffice`'s PDF import and exported as SVG (ADR-0159).
+    /// are read by `soffice`'s PDF import and exported as SVG (CLI-0159).
     Ai,
     /// A gzip-compressed Windows Enhanced Metafile, exported as SVG by
     /// `soffice`. The drawing keeps soffice's page around it rather than
-    /// being cropped to its own bounds (ADR-0159).
+    /// being cropped to its own bounds (CLI-0159).
     Emz,
-    /// Already SVG: copied through byte-for-byte (ADR-0159).
+    /// Already SVG: copied through byte-for-byte (CLI-0159).
     Svg,
     /// A Windows bitmap, to JPEG flattened onto white like `Avif`/`Tif`/
-    /// `Webp` (ADR-0160 §2). A 32-bit bitmap can carry alpha.
+    /// `Webp` (CLI-0160 §2). A 32-bit bitmap can carry alpha.
     Bmp,
-    /// Encapsulated PostScript, to SVG (ADR-0160 §3). LibreOffice alone
+    /// Encapsulated PostScript, to SVG (CLI-0160 §3). LibreOffice alone
     /// turns a real Illustrator EPS into an **empty** page and exits 0, so
     /// Ghostscript converts it to PDF first and `soffice` exports that.
     Eps,
-    /// iCalendar, rendered in-process to readable text (ADR-0160 §4).
+    /// iCalendar, rendered in-process to readable text (CLI-0160 §4).
     Ics,
     /// vCard, rendered in-process to readable text, every card of a
-    /// multi-contact export in one file (ADR-0160 §4).
+    /// multi-contact export in one file (CLI-0160 §4).
     Vcf,
 }
 
@@ -180,14 +180,14 @@ impl InputFileType {
     /// listing's `rclone --include` filters and the per-file pipeline's
     /// local validation both check against. Lowercase, no leading dot.
     ///
-    /// A kind may have more than one spelling (ADR-0139): `.jpg` and
+    /// A kind may have more than one spelling (CLI-0139): `.jpg` and
     /// `.jpeg` are the same format, and `parse` has accepted both as
-    /// *input* since ADR-0112 -- this is that same leniency finally applied
+    /// *input* since CLI-0112 -- this is that same leniency finally applied
     /// to file *matching*, which it never reached. A run against a
     /// directory of `.jpg` files with `--input-file-type=jpeg` silently
     /// matched nothing until this returned a set rather than one string.
     ///
-    /// `Jpeg` has two spellings and `Md` (ADR-0154) three; every other
+    /// `Jpeg` has two spellings and `Md` (CLI-0154) three; every other
     /// kind keeps exactly one, deliberately unspeculative -- a new alias
     /// gets added when a real run is observed to miss files, not in
     /// anticipation.
@@ -217,7 +217,7 @@ impl InputFileType {
             InputFileType::Pptx => &["pptx"],
             InputFileType::Key => &["key"],
             InputFileType::Txt => &["txt"],
-            // One format, three extensions in the wild (ADR-0154 §1).
+            // One format, three extensions in the wild (CLI-0154 §1).
             InputFileType::Md => &["md", "markdown", "mkd"],
             InputFileType::Rst => &["rst"],
             InputFileType::Textclipping => &["textclipping"],
@@ -242,14 +242,14 @@ impl InputFileType {
         }
     }
 
-    /// The one spelling used for a default bucket prefix (ADR-0138's
+    /// The one spelling used for a default bucket prefix (CLI-0138's
     /// `--source`/`--destination` inference) -- never for matching, which
     /// always considers every entry in `extensions()`, and (since
-    /// ADR-0142) never for display either, which uses `name()`.
+    /// CLI-0142) never for display either, which uses `name()`.
     ///
-    /// For `Jpeg` this is `jpg`, not `jpeg` (ADR-0139): it agrees with
+    /// For `Jpeg` this is `jpg`, not `jpeg` (CLI-0139): it agrees with
     /// `output_extension()`, which has always returned `jpg` for this
-    /// kind, and with ADR-0112's own documented `source:png/` ->
+    /// kind, and with CLI-0112's own documented `source:png/` ->
     /// `destination:jpg/` example.
     pub(crate) fn canonical_extension(self) -> &'static str {
         self.extensions()[0]
@@ -257,13 +257,13 @@ impl InputFileType {
 
     /// This kind's `--input-file-type` spelling, used for display.
     ///
-    /// Distinct from `canonical_extension()` since ADR-0142: the two
+    /// Distinct from `canonical_extension()` since CLI-0142: the two
     /// coincided for every kind until `Mp4Audio`, which is addressed by
     /// the `mp4` prefix its files actually live under but must *display*
     /// as `mp4-audio` -- otherwise the wizard's "Input file type" echo
     /// would read `mp4` and be indistinguishable from a video run. Every
     /// other kind's spelling here is its `canonical_extension()`,
-    /// preserving ADR-0139's decision that `Jpeg` displays as `jpg`.
+    /// preserving CLI-0139's decision that `Jpeg` displays as `jpg`.
     pub(crate) fn name(self) -> &'static str {
         match self {
             InputFileType::Mp4Audio => "mp4-audio",
@@ -374,7 +374,7 @@ impl InputFileType {
             // Grouped by output family rather than listed flat: at 29
             // spellings a single run-on list is unreadable, and the
             // grouping is the thing a reader actually needs -- which
-            // extension they will find their output under (ADR-0154).
+            // extension they will find their output under (CLI-0154).
             other => Err(format!(
                 "unknown --input-file-type '{other}' (expected an image kind png, jpeg, heic, \
                  avif, tif, tiff, webp or bmp; an icon or artwork kind ico, icns, procreate or \
@@ -387,12 +387,12 @@ impl InputFileType {
         }
     }
 
-    /// Video kinds are always recompressed (ADR-0122) -- never
+    /// Video kinds are always recompressed (CLI-0122) -- never
     /// copy-through, unlike `Jpeg` -- so this job's one justified departure
     /// from "preserve what's already in the target format" is explicit here
     /// rather than implied by a `match` elsewhere.
     ///
-    /// `Mp4Audio` is **not** a video kind (ADR-0142) despite its `.mp4`
+    /// `Mp4Audio` is **not** a video kind (CLI-0142) despite its `.mp4`
     /// input spelling: there is no video stream to recompress, and this
     /// returning `false` is also what correctly suppresses the
     /// `--video-quality` prompt for such a run.
@@ -404,19 +404,19 @@ impl InputFileType {
     }
 
     /// The fixed output extension for this input kind: `jpg` for every image
-    /// kind (ADR-0112), `mp4` for every video kind (ADR-0122) regardless of
+    /// kind (CLI-0112), `mp4` for every video kind (CLI-0122) regardless of
     /// which video extension was the input, `opus` for `Mp4Audio`
-    /// (ADR-0142), and -- since ADR-0154 -- `pdf`, `txt` or `csv` for a
+    /// (CLI-0142), and -- since CLI-0154 -- `pdf`, `txt` or `csv` for a
     /// document kind.
     ///
     /// Documents are the first input family whose members do **not** share
-    /// one output extension, which is why ADR-0154 §4 adds no
+    /// one output extension, which is why CLI-0154 §4 adds no
     /// `is_document()` to sit beside `is_video()`/`is_audio()`/
     /// `is_spreadsheet()`: those work because each of their families has a
     /// single output, so the predicate and the branch it selects coincide.
     /// Here this function carries the distinction instead.
     ///
-    /// An exhaustive `match` rather than ADR-0112's original
+    /// An exhaustive `match` rather than CLI-0112's original
     /// `if is_video() { "mp4" } else { "jpg" }`, so a kind added later
     /// cannot silently inherit `jpg` by falling through an `else`.
     pub(crate) fn output_extension(self) -> &'static str {
@@ -446,10 +446,10 @@ impl InputFileType {
             | InputFileType::Md
             | InputFileType::Rst
             | InputFileType::Textclipping
-            // ADR-0160: calendars and contacts, rendered as readable text.
+            // CLI-0160: calendars and contacts, rendered as readable text.
             | InputFileType::Ics
             | InputFileType::Vcf => "txt",
-            // ADR-0159: still raster images become JPEG, flattened onto
+            // CLI-0159: still raster images become JPEG, flattened onto
             // white where transparent.
             InputFileType::Avif
             | InputFileType::Tif
@@ -468,11 +468,11 @@ impl InputFileType {
     }
 
     /// Whether this kind is transcoded to Opus by `media::transcode_audio`
-    /// (ADR-0153).
+    /// (CLI-0153).
     ///
     /// Asks what a kind *is*, like `is_video`/`is_spreadsheet`, rather than
     /// making each call site widen a `match` arm list -- the shape that let
-    /// ADR-0141's audio-only dispatch bug hide in one. It gates the
+    /// CLI-0141's audio-only dispatch bug hide in one. It gates the
     /// `--audio-quality` prompt as well as the converter dispatch.
     pub(crate) fn is_audio(self) -> bool {
         matches!(
@@ -486,16 +486,16 @@ impl InputFileType {
         )
     }
 
-    /// This kind's `--audio-quality` default (ADR-0153). Only consulted
+    /// This kind's `--audio-quality` default (CLI-0153). Only consulted
     /// when `is_audio()`.
     ///
     /// The default matters more than the menu: one that defaulted to
     /// `Medium` everywhere would still quietly destroy a music library,
-    /// which is the whole reason ADR-0142's single fixed bitrate was not
+    /// which is the whole reason CLI-0142's single fixed bitrate was not
     /// simply extended to these kinds.
     pub(crate) fn default_audio_quality(self) -> AudioQuality {
         match self {
-            // ADR-0142's own choice, kept so its output is byte-identical
+            // CLI-0142's own choice, kept so its output is byte-identical
             // when the flag is omitted.
             InputFileType::Mp4Audio => AudioQuality::Medium,
             // Lossy sources: the encode is a *second* generation, so the
@@ -513,7 +513,7 @@ impl InputFileType {
     }
 
     /// Whether this kind is a spreadsheet, i.e. goes through
-    /// `super::sheets` rather than `super::media` (ADR-0149).
+    /// `super::sheets` rather than `super::media` (CLI-0149).
     ///
     /// Asks what a kind *is* rather than making each call site widen a
     /// `match` arm list. That matters here because a spreadsheet is this
@@ -523,7 +523,7 @@ impl InputFileType {
     /// silently take the single-output path.
     ///
     /// `Tsv` is deliberately **not** a member despite also producing a
-    /// `.csv` (ADR-0154 §4). This predicate is consulted by three
+    /// `.csv` (CLI-0154 §4). This predicate is consulted by three
     /// unrelated concerns -- `strict_stem` selection in
     /// `placement::group_key`, `place_sheet` versus `place_one`, and
     /// converter dispatch -- and a `tsv` is single-output, so joining it
@@ -542,12 +542,12 @@ impl std::fmt::Display for InputFileType {
     }
 }
 
-/// `--audio-quality` (ADR-0153): a small, vetted Opus bitrate menu,
+/// `--audio-quality` (CLI-0153): a small, vetted Opus bitrate menu,
 /// mirroring `VideoQuality`'s shape so there is one convention for a
 /// quality menu in this job rather than two. Only consulted when
 /// `InputFileType::is_audio()`.
 ///
-/// ADR-0142 deliberately shipped one fixed bitrate and deferred this
+/// CLI-0142 deliberately shipped one fixed bitrate and deferred this
 /// "if a real need surfaces". It surfaced: that bitrate was chosen for
 /// voice notes of unknown type, and applying it to a music library would
 /// be a severe, irreversible loss in a pipeline whose source may not
@@ -567,7 +567,7 @@ pub(crate) enum AudioQuality {
 impl AudioQuality {
     /// `libopus` target bitrate for this tier, as ffmpeg's `-b:a` takes it.
     ///
-    /// `Medium`'s `48k` carries ADR-0142's reasoning, which still applies
+    /// `Medium`'s `48k` carries CLI-0142's reasoning, which still applies
     /// to the kind it was chosen for: 32k is the speech-tuned figure, and
     /// 48k is the lowest rate that stays comfortably transparent for speech
     /// while remaining acceptable for general audio -- the right call for
@@ -613,8 +613,8 @@ impl std::fmt::Display for AudioQuality {
     }
 }
 
-/// `--video-quality` (ADR-0122): a small, vetted CRF menu for `libx265`,
-/// mirroring ADR-0077's per-category menu precedent -- never raw CRF/bitrate
+/// `--video-quality` (CLI-0122): a small, vetted CRF menu for `libx265`,
+/// mirroring CLI-0077's per-category menu precedent -- never raw CRF/bitrate
 /// exposed directly. Only consulted when `InputFileType::is_video()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VideoQuality {
@@ -707,18 +707,18 @@ mod tests {
     fn parse_rejects_anything_else() {
         assert!(InputFileType::parse("gif").is_err());
         assert!(InputFileType::parse("").is_err());
-        // Neighbouring spellings of the ADR-0142 kind are not aliases.
+        // Neighbouring spellings of the CLI-0142 kind are not aliases.
         assert!(InputFileType::parse("mp4audio").is_err());
         assert!(InputFileType::parse("mp4_audio").is_err());
         assert!(InputFileType::parse("audio").is_err());
-        // `opus` was rejected here until ADR-0153, which makes it a real
+        // `opus` was rejected here until CLI-0153, which makes it a real
         // input kind -- it was only ever an *output* extension before.
         assert_eq!(InputFileType::parse("opus").unwrap(), InputFileType::Opus);
     }
 
     #[test]
     fn canonical_extension_and_display_agree() {
-        // Every kind but `Mp4Audio` (ADR-0142), whose display name and
+        // Every kind but `Mp4Audio` (CLI-0142), whose display name and
         // addressing prefix deliberately differ -- see `name()`.
         for kind in [
             InputFileType::Png,
@@ -741,7 +741,7 @@ mod tests {
         }
     }
 
-    /// ADR-0142: `Mp4Audio` is addressed by the `mp4` prefix its files
+    /// CLI-0142: `Mp4Audio` is addressed by the `mp4` prefix its files
     /// actually live under, but must *display* as `mp4-audio` -- otherwise
     /// the wizard's "Input file type" echo would be indistinguishable from
     /// a video run's.
@@ -798,7 +798,7 @@ mod tests {
         }
     }
 
-    /// ADR-0149: the four spreadsheet kinds.
+    /// CLI-0149: the four spreadsheet kinds.
     #[test]
     fn parse_accepts_every_spreadsheet_kind_case_insensitively() {
         for (value, expected) in [
@@ -815,7 +815,7 @@ mod tests {
         }
     }
 
-    /// Neighbouring spellings are not aliases, per ADR-0139's rule that one
+    /// Neighbouring spellings are not aliases, per CLI-0139's rule that one
     /// is added on evidence of a real miss rather than in anticipation.
     /// `calamine` reads `xlsm`/`xlsb`/`ods` too; they are deliberately out.
     #[test]
@@ -830,8 +830,8 @@ mod tests {
             "xlsm",
             "xlsb",
             "ods",
-            // `tsv` was here until ADR-0154 made it a real kind -- the
-            // same reversal ADR-0153 made for `opus`.
+            // `tsv` was here until CLI-0154 made it a real kind -- the
+            // same reversal CLI-0153 made for `opus`.
         ] {
             assert!(InputFileType::parse(value).is_err(), "{value} parsed");
         }
@@ -882,7 +882,7 @@ mod tests {
         assert!(!InputFileType::Mp4Audio.is_video());
     }
 
-    /// The ADR-0139 regression: a `.jpg` file must be matched by a `jpeg`
+    /// The CLI-0139 regression: a `.jpg` file must be matched by a `jpeg`
     /// run. Before this, `extension()` returned only `"jpeg"`, so the
     /// source listing's `--include '*.jpeg'` silently matched nothing in a
     /// directory of `.jpg` files.
@@ -895,7 +895,7 @@ mod tests {
 
     #[test]
     fn jpeg_canonical_extension_is_jpg_agreeing_with_its_output_extension() {
-        // Both halves of ADR-0138's prefix inference now agree: a jpeg run
+        // Both halves of CLI-0138's prefix inference now agree: a jpeg run
         // defaults to `source:jpg/` -> `destination:jpg/`, where the source
         // half used to default to `jpeg/`.
         assert_eq!(InputFileType::Jpeg.canonical_extension(), "jpg");
@@ -964,7 +964,7 @@ mod tests {
         assert_eq!(InputFileType::Mp4Audio.output_extension(), "opus");
     }
 
-    // --- ADR-0153: audio kinds ------------------------------------------
+    // --- CLI-0153: audio kinds ------------------------------------------
 
     #[test]
     fn parse_accepts_every_audio_kind_case_insensitively() {
@@ -984,7 +984,7 @@ mod tests {
         }
     }
 
-    /// Per ADR-0139's rule, an alias is added on evidence of a real miss
+    /// Per CLI-0139's rule, an alias is added on evidence of a real miss
     /// rather than in anticipation -- so none of these is one.
     #[test]
     fn parse_rejects_neighbouring_audio_spellings() {
@@ -1027,7 +1027,7 @@ mod tests {
         }
     }
 
-    /// **The assertion that pins ADR-0142's behaviour as unchanged.** Its
+    /// **The assertion that pins CLI-0142's behaviour as unchanged.** Its
     /// 48k was chosen for voice notes of unknown type and is still right
     /// for them; the new kinds are music or lossless and would be badly
     /// served by it.
@@ -1036,7 +1036,7 @@ mod tests {
         assert_eq!(
             InputFileType::Mp4Audio.default_audio_quality(),
             AudioQuality::Medium,
-            "ADR-0142's output must be byte-identical when the flag is omitted"
+            "CLI-0142's output must be byte-identical when the flag is omitted"
         );
         for kind in [
             InputFileType::M4a,
@@ -1132,7 +1132,7 @@ mod tests {
         }
     }
 
-    // --- ADR-0154: documents ---
+    // --- CLI-0154: documents ---
 
     #[test]
     fn parse_accepts_every_document_kind_case_insensitively() {
@@ -1159,7 +1159,7 @@ mod tests {
         }
     }
 
-    /// **The first kind with three spellings** (ADR-0154 §1), generalizing
+    /// **The first kind with three spellings** (CLI-0154 §1), generalizing
     /// `Jpeg`'s two. They are one format, so one variant -- and the
     /// canonical one is `md`, which is the prefix a run addresses.
     #[test]
@@ -1180,7 +1180,7 @@ mod tests {
 
     /// `doc` and `docx` are genuinely different formats reached by
     /// different LibreOffice filters, so they are disjoint kinds -- the
-    /// `xls`/`xlsx` precedent (ADR-0154 §1). `*.doc` does not glob-match
+    /// `xls`/`xlsx` precedent (CLI-0154 §1). `*.doc` does not glob-match
     /// `foo.docx`, so they stay disjoint at the rclone filter too.
     #[test]
     fn doc_and_docx_are_disjoint_kinds() {
@@ -1217,7 +1217,7 @@ mod tests {
     }
 
     /// Documents are the first family whose members do **not** share one
-    /// output extension (ADR-0154), which is the whole reason §4 adds no
+    /// output extension (CLI-0154), which is the whole reason §4 adds no
     /// `is_document()` predicate.
     #[test]
     fn the_document_kinds_fan_out_to_three_output_extensions() {
@@ -1246,7 +1246,7 @@ mod tests {
 
     /// No document kind is video, audio, or -- crucially -- a spreadsheet.
     /// `Tsv` outputs `.csv` but is single-output, and `is_spreadsheet()`
-    /// selects three unrelated behaviours it must not take (ADR-0154 §4).
+    /// selects three unrelated behaviours it must not take (CLI-0154 §4).
     #[test]
     fn no_document_kind_is_video_audio_or_spreadsheet() {
         for kind in [
@@ -1303,7 +1303,7 @@ mod tests {
         }
     }
 
-    /// ADR-0159's eleven kinds: each spelling parses, round-trips through
+    /// CLI-0159's eleven kinds: each spelling parses, round-trips through
     /// its display name, and lands in the right output family.
     #[test]
     fn adr_0159_kinds_parse_and_map_to_their_outputs() {
@@ -1339,7 +1339,7 @@ mod tests {
         }
     }
 
-    /// ADR-0160's four kinds: each spelling parses, round-trips through its
+    /// CLI-0160's four kinds: each spelling parses, round-trips through its
     /// display name, and lands in the right output family.
     #[test]
     fn adr_0160_kinds_parse_and_map_to_their_outputs() {
@@ -1379,7 +1379,7 @@ mod tests {
     }
 
     /// The error text is grouped by output family rather than listed flat
-    /// (ADR-0154): at 29 spellings a run-on list is unreadable, and the
+    /// (CLI-0154): at 29 spellings a run-on list is unreadable, and the
     /// grouping is what a reader actually needs.
     #[test]
     fn the_parse_error_names_every_family() {

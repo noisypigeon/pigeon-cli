@@ -1,10 +1,10 @@
-//! The `.pushed` delivery checkpoint and this job's batching (ADR-0146 §6).
+//! The `.pushed` delivery checkpoint and this job's batching (CLI-0146 §6).
 //!
 //! Two tab-separated fields, against `email-pull`'s three and
 //! `email-sync`'s seven: there are no content hashes to record, because
 //! there is no dedup, and no staged-path bookkeeping, because there is no
 //! placement step. A row means *delivered*, not *fetched* -- which is what
-//! makes `--upload-only` meaningless for this job (ADR-0146 §1, §5).
+//! makes `--upload-only` meaningless for this job (CLI-0146 §1, §5).
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -34,7 +34,7 @@ pub(crate) struct CheckpointEntry {
 /// Deliberately *not* `email_sync::manifest::split_into_batches`, which
 /// derives its chunk size from `--concurrency` so that at least
 /// `MIN_BATCHES_PER_WORKER` batches exist per worker. This job has no
-/// `--concurrency` (ADR-0146 §1) and does have a `--batch-size`, because
+/// `--concurrency` (CLI-0146 §1) and does have a `--batch-size`, because
 /// here the chunk size governs how many messages one `UID FETCH` asks a
 /// rate-limited server for at once -- a property of politeness toward the
 /// server, not of keeping workers busy.
@@ -52,7 +52,7 @@ fn checkpoint_path(staging_dir: &Path) -> PathBuf {
 }
 
 /// Appends one delivered UID. Called only once every object belonging to
-/// that UID is confirmed pushed (ADR-0146 §5 step 6).
+/// that UID is confirmed pushed (CLI-0146 §5 step 6).
 pub(crate) fn append_checkpoint(staging_dir: &Path, entry: &CheckpointEntry) -> Result<(), String> {
     fs::create_dir_all(staging_dir)
         .map_err(|err| format!("failed to create {}: {err}", staging_dir.display()))?;

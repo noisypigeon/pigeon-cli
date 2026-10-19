@@ -19,7 +19,7 @@ fn pigeon_in(config_dir: &TempDir) -> Command {
 /// Writes a fake `keyring.toml` entry directly (no `keyring add` needed for
 /// the error paths these tests exercise, which fail before ever reaching a
 /// secret lookup or a real IMAP/S3 connection). Appends, so multiple calls
-/// build up a mixed store. Includes a dummy secret field (ADR-0135: `secret`/
+/// build up a mixed store. Includes a dummy secret field (CLI-0135: `secret`/
 /// `secret_key` have no `#[serde(default)]`, so a real `keyring.toml` entry
 /// always carries one).
 fn write_identity(config_dir: &TempDir, alias: &str, email: &str) {
@@ -47,7 +47,7 @@ fn append_keyring_entry(config_dir: &TempDir, toml_block: &str) {
 }
 
 /// Writes a bucket-config to an arbitrary `keyring.toml` outside any
-/// `PIGEON_CONFIG_DIR`, for the `--keyring-path` tests (ADR-0145). Mirrors
+/// `PIGEON_CONFIG_DIR`, for the `--keyring-path` tests (CLI-0145). Mirrors
 /// `write_bucket_config`'s entry shape; takes a file path rather than a
 /// config directory, which is exactly the distinction the flag draws.
 ///
@@ -237,7 +237,7 @@ fn keyring_add_email_with_alias_already_used_by_a_bucket_config_is_rejected() {
     write_bucket_config(&config_dir, "shared-alias");
 
     // Proves alias uniqueness is enforced globally, across kinds, per
-    // ADR-0022 -- not just within email identities the way it worked before.
+    // CLI-0022 -- not just within email identities the way it worked before.
     pigeon_in(&config_dir)
         .args([
             "keyring",
@@ -295,7 +295,7 @@ fn keyring_delete_declined_keeps_it() {
     assert!(contents.contains("backup"));
 }
 
-/// Confirming removes the entry from `keyring.toml` directly (ADR-0135: the
+/// Confirming removes the entry from `keyring.toml` directly (CLI-0135: the
 /// secret lives in the same file, so removing the entry removes the secret
 /// too -- no separate keychain delete step).
 #[test]
@@ -348,10 +348,10 @@ fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--upload-only"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0136: upload is now one bulk `rclone copy`, tuned by
+        // CLI-0136: upload is now one bulk `rclone copy`, tuned by
         // --transfers/--checkers/--tpslimit, not --upload-concurrency.
         .stdout(predicate::str::contains("--upload-concurrency").not())
-        // ADR-0082 §0/§1: deduplicate never offers encryption or file-type/
+        // CLI-0082 §0/§1: deduplicate never offers encryption or file-type/
         // zip-expansion selection -- every file is always processed and
         // every zip is always expanded.
         .stdout(predicate::str::contains("--encryption-key").not())
@@ -389,7 +389,7 @@ fn job_run_deduplicate_upload_only_without_a_completed_run_fails_fast() {
     let local_output = TempDir::new().unwrap();
 
     // No --source-bucket, no --destination-bucket: the preflight check
-    // (ADR-0089) must fail before either would ever be resolved, since this
+    // (CLI-0089) must fail before either would ever be resolved, since this
     // empty --local-output never ran a deduplicate pass at all.
     pigeon_in(&config_dir)
         .args([
@@ -411,7 +411,7 @@ fn job_run_deduplicate_upload_only_without_a_completed_run_fails_fast() {
 
 #[test]
 fn job_run_deduplicate_accepts_a_repeated_source_bucket_flag() {
-    // Two --source-bucket occurrences (ADR-0109) -- neither bucket exists,
+    // Two --source-bucket occurrences (CLI-0109) -- neither bucket exists,
     // so this just exercises that the repeated flag parses into a Vec and
     // every alias gets validated (the second, unknown one is what trips the
     // failure), not that a real multi-bucket run succeeds end-to-end.
@@ -533,7 +533,7 @@ fn job_run_rclone_copy_help_shows_source_bucket_destination_bucket_and_report_bu
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0136: this job's rclone performance/retry flags beyond
+        // CLI-0136: this job's rclone performance/retry flags beyond
         // transfers/checkers/tpslimit are fixed, not CLI flags.
         .stdout(predicate::str::contains("--source-path").not())
         .stdout(predicate::str::contains("--concurrency").not())
@@ -552,7 +552,7 @@ fn job_run_rclone_delete_help_shows_source_bucket_and_report_bucket_flags_but_no
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0110: delete has no destination and no file-transfer tuning
+        // CLI-0110: delete has no destination and no file-transfer tuning
         // -- `rclone purge` moves no file content.
         .stdout(predicate::str::contains("--destination-bucket").not())
         .stdout(predicate::str::contains("--transfers").not())
@@ -711,21 +711,21 @@ fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_fl
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--report-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
-        // ADR-0137: renamed from --source-bucket/--destination-bucket.
+        // CLI-0137: renamed from --source-bucket/--destination-bucket.
         .stdout(predicate::str::contains("--source-bucket").not())
         .stdout(predicate::str::contains("--destination-bucket").not())
-        // ADR-0138: the composed form is documented on both flags.
+        // CLI-0138: the composed form is documented on both flags.
         .stdout(predicate::str::contains("media:mp4/"))
-        // ADR-0142: the audio-only input kind is listed.
+        // CLI-0142: the audio-only input kind is listed.
         .stdout(predicate::str::contains("mp4-audio"))
-        // ADR-0149: the four spreadsheet input kinds are listed. Matched
+        // CLI-0149: the four spreadsheet input kinds are listed. Matched
         // with their backticks so a bare `csv`/`xls` substring appearing
         // incidentally in future help text cannot satisfy this.
         .stdout(predicate::str::contains("`numbers`"))
         .stdout(predicate::str::contains("`xlsx`"))
         .stdout(predicate::str::contains("`xls`"))
         .stdout(predicate::str::contains("`csv`"))
-        // ADR-0153: the five audio input kinds and their quality menu.
+        // CLI-0153: the five audio input kinds and their quality menu.
         .stdout(predicate::str::contains("`m4a`"))
         .stdout(predicate::str::contains("`mp3`"))
         .stdout(predicate::str::contains("`aac`"))
@@ -733,7 +733,7 @@ fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_fl
         .stdout(predicate::str::contains("`opus`"))
         .stdout(predicate::str::contains("--audio-quality"))
         .stdout(predicate::str::contains("`transparent`"))
-        // ADR-0136: bucket-config aliases, not raw rclone path strings, and
+        // CLI-0136: bucket-config aliases, not raw rclone path strings, and
         // no separate upload phase of the shape --upload-concurrency sizes.
         .stdout(predicate::str::contains("--source-path").not())
         .stdout(predicate::str::contains("--encryption-key").not())
@@ -802,7 +802,7 @@ fn job_run_transform_without_source_fails_fast_non_interactively() {
     let local_output = TempDir::new().unwrap();
     write_bucket_config(&config_dir, "destination");
 
-    // ADR-0138 reversed ADR-0137's alias inference: with no --source there
+    // CLI-0138 reversed CLI-0137's alias inference: with no --source there
     // is no alias to guess, so the run fails fast rather than defaulting.
     pigeon_in(&config_dir)
         .args([
@@ -856,8 +856,8 @@ fn job_run_transform_without_destination_fails_fast_non_interactively() {
         ));
 }
 
-/// The exact regression ADR-0138 fixes: the composed `alias:prefix/` form
-/// that ADR-0136 made unexpressible. Resolution must get past both bucket
+/// The exact regression CLI-0138 fixes: the composed `alias:prefix/` form
+/// that CLI-0136 made unexpressible. Resolution must get past both bucket
 /// flags (failing later only on the still-unresolved --report-bucket).
 #[test]
 fn job_run_transform_accepts_the_composed_alias_prefix_form() {
@@ -895,7 +895,7 @@ fn job_run_transform_accepts_the_composed_alias_prefix_form() {
 }
 
 /// One bucket serving as both source and destination, distinguished only
-/// by prefix -- impossible under ADR-0137's alias inference, which for a
+/// by prefix -- impossible under CLI-0137's alias inference, which for a
 /// video kind resolved both flags to the same `mp4` alias.
 #[test]
 fn job_run_transform_accepts_one_bucket_for_both_source_and_destination() {
@@ -1018,7 +1018,7 @@ fn job_run_transform_without_rclone_or_ffmpeg_on_path_fails_fast_with_a_clear_er
         .stderr(predicate::str::contains("was not found on PATH"));
 }
 
-/// ADR-0149 §6: the external-converter preflight is per input kind, so a
+/// CLI-0149 §6: the external-converter preflight is per input kind, so a
 /// `csv` run must not demand `ffmpeg` it never invokes. It still fails on
 /// `rclone`, which every kind needs -- so this asserts on *which* binary is
 /// named, not merely that something was missing.
@@ -1087,7 +1087,7 @@ fn job_run_transform_with_an_image_input_kind_still_requires_ffmpeg() {
         .stderr(predicate::str::contains("'ffmpeg' was not found on PATH"));
 }
 
-/// ADR-0149: a `numbers` run needs `soffice` rather than `ffmpeg`.
+/// CLI-0149: a `numbers` run needs `soffice` rather than `ffmpeg`.
 #[test]
 fn job_run_transform_with_a_numbers_input_kind_requires_soffice_not_ffmpeg() {
     let config_dir = TempDir::new().unwrap();
@@ -1119,7 +1119,7 @@ fn job_run_transform_with_a_numbers_input_kind_requires_soffice_not_ffmpeg() {
         .stderr(predicate::str::contains("'ffmpeg' was not found").not());
 }
 
-/// ADR-0149: an unknown kind still fails fast, and the error now names the
+/// CLI-0149: an unknown kind still fails fast, and the error now names the
 /// spreadsheet kinds among the valid ones.
 #[test]
 fn job_run_transform_rejects_an_unknown_kind_and_lists_the_spreadsheet_ones() {
@@ -1152,7 +1152,7 @@ fn job_run_transform_rejects_an_unknown_kind_and_lists_the_spreadsheet_ones() {
         ));
 }
 
-/// ADR-0153: an invalid `--audio-quality` fails fast and never falls
+/// CLI-0153: an invalid `--audio-quality` fails fast and never falls
 /// through to an interactive prompt, the same discipline
 /// `--input-file-type` and `--video-quality` already have.
 #[test]
@@ -1192,7 +1192,7 @@ fn job_run_transform_with_an_invalid_audio_quality_fails_fast() {
         ));
 }
 
-// --- ADR-0145: --keyring-path -------------------------------------------
+// --- CLI-0145: --keyring-path -------------------------------------------
 
 #[test]
 fn top_level_help_shows_the_keyring_path_flag() {
@@ -1225,7 +1225,7 @@ fn keyring_path_is_global_and_accepted_after_a_job_subcommand() {
 fn keyring_path_takes_precedence_over_the_config_dir_env_var() {
     // The env-var keyring HAS the bucket; the --keyring-path one does not.
     // Resolving the alias must therefore fail -- which it only can if the
-    // flag beat the env var (ADR-0145 §1).
+    // flag beat the env var (CLI-0145 §1).
     let config_dir = TempDir::new().unwrap();
     let alt = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
@@ -1310,7 +1310,7 @@ fn keyring_list_reads_the_overridden_keyring_path() {
 
 #[test]
 fn deduplicate_generates_the_sandboxed_rclone_config_beside_the_keyring() {
-    // ADR-0145 §5: `deduplicate` never called `write_sandboxed_config` at
+    // CLI-0145 §5: `deduplicate` never called `write_sandboxed_config` at
     // all, so it ran against whatever a previous `transform`/`rclone` run
     // happened to leave behind -- or nothing. The generated config must now
     // appear beside the keyring this run was pointed at, and it must appear
@@ -1352,16 +1352,16 @@ fn deduplicate_generates_the_sandboxed_rclone_config_beside_the_keyring() {
     );
 }
 
-// --- `job run email import` (ADR-0146) ---------------------------------
+// --- `job run email import` (CLI-0146) ---------------------------------
 //
 // No test reaches a real IMAP server or rclone transfer: every one fails at
 // the wizard, before a connection is attempted. rclone's `--retries 5
 // --low-level-retries 20` turns even a refused connection into minutes of
-// backoff (the test-cost constraint ADR-0145 recorded).
+// backoff (the test-cost constraint CLI-0145 recorded).
 
 #[test]
 fn job_run_help_lists_the_email_group_and_not_the_removed_jobs() {
-    // Until ADR-0147 this asserted only that the listing contains
+    // Until CLI-0147 this asserted only that the listing contains
     // "email", which "email-sync" already satisfied -- so it could not
     // actually distinguish the `email` group from its flat siblings. Both
     // halves are load-bearing now.
@@ -1375,7 +1375,7 @@ fn job_run_help_lists_the_email_group_and_not_the_removed_jobs() {
 }
 
 /// Both removed job types must fail as unrecognised subcommands, not
-/// merely be absent from the listing (ADR-0147).
+/// merely be absent from the listing (CLI-0147).
 #[test]
 fn job_run_rejects_the_removed_email_jobs() {
     for removed in ["email-sync", "email-pull"] {
@@ -1413,7 +1413,7 @@ fn job_run_email_import_help_shows_its_full_flag_set() {
         .stdout(predicate::str::contains("--non-interactive"));
 }
 
-/// Pins ADR-0146 §1's scoping decisions, the way ADR-0081's own
+/// Pins CLI-0146 §1's scoping decisions, the way CLI-0081's own
 /// `--encryption-key` test pinned the since-removed `email-pull`'s. Each
 /// absence is deliberate
 /// and each would be easy to add back by accident:
@@ -1477,7 +1477,7 @@ fn job_run_email_import_without_identities_fails_fast_non_interactively() {
 
 /// `--destination` is mandatory, unlike the sibling email jobs'
 /// `--remote-output`, which silently resolves to "don't upload"
-/// (ADR-0146 §1): a job whose only purpose is delivery must not be able to
+/// (CLI-0146 §1): a job whose only purpose is delivery must not be able to
 /// run without somewhere to deliver to.
 #[test]
 fn job_run_email_import_without_a_destination_fails_fast_non_interactively() {
@@ -1594,7 +1594,7 @@ fn job_run_email_import_with_an_unknown_destination_alias_fails() {
         .stderr(predicate::str::contains("no bucket-config named 'nope'"));
 }
 
-/// ADR-0138's prefix validation reaches this job's `--destination` too: a
+/// CLI-0138's prefix validation reaches this job's `--destination` too: a
 /// `..` segment would be taken literally by rclone, writing outside the
 /// configured prefix.
 #[test]
@@ -1628,7 +1628,7 @@ fn job_run_email_import_rejects_a_parent_directory_segment_in_the_destination_pr
         ));
 }
 
-/// The first email job to depend on `rclone` (ADR-0146 §9): both siblings
+/// The first email job to depend on `rclone` (CLI-0146 §9): both siblings
 /// are `minio`-only, so this preflight is new behavior for an email job and
 /// must fail before any IMAP credential is touched.
 #[test]
@@ -1662,7 +1662,7 @@ fn job_run_email_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
         .stderr(predicate::str::contains("was not found on PATH"));
 }
 
-/// ADR-0147 §2: a leftover `kind = "encryption-key"` entry must fail with a
+/// CLI-0147 §2: a leftover `kind = "encryption-key"` entry must fail with a
 /// message naming both the file and the block to delete. Asserted at the
 /// CLI level and not only in `Store::load`'s own unit tests because the
 /// failure path locks the operator out of *every* keyring command --
@@ -1683,7 +1683,7 @@ fn keyring_list_explains_how_to_remove_a_leftover_encryption_key_entry() {
         .failure()
         .code(1)
         .stderr(predicate::str::contains("encryption-key"))
-        .stderr(predicate::str::contains("ADR-0147"))
+        .stderr(predicate::str::contains("CLI-0147"))
         .stderr(predicate::str::contains("[[entries]]"))
         .stderr(predicate::str::contains("keyring.toml"));
 }
@@ -1709,7 +1709,7 @@ fn keyring_list_ignores_a_stale_encryption_key_alias_on_a_bucket_entry() {
         .stdout(predicate::str::contains("backup"));
 }
 
-/// ADR-0147 removed the `encryption-key` kind, so `keyring add` offers
+/// CLI-0147 removed the `encryption-key` kind, so `keyring add` offers
 /// exactly two.
 #[test]
 fn keyring_add_help_lists_only_email_and_bucket() {
@@ -1722,9 +1722,9 @@ fn keyring_add_help_lists_only_email_and_bucket() {
         .stdout(predicate::str::contains("encryption-key").not());
 }
 
-// --- ADR-0154: documents ---
+// --- CLI-0154: documents ---
 
-/// ADR-0154: `transform --help` names every new input kind. Backticked so
+/// CLI-0154: `transform --help` names every new input kind. Backticked so
 /// an incidental substring elsewhere in the help text cannot satisfy the
 /// assertion.
 #[test]
@@ -1768,7 +1768,7 @@ fn job_run_transform_help_names_the_new_converters() {
     assert!(help.contains("pandoc"), "{help}");
 }
 
-/// ADR-0154 §5: the preflight is now an exhaustive match, so each kind
+/// CLI-0154 §5: the preflight is now an exhaustive match, so each kind
 /// demands exactly its own converter. `tsv` is read and written in-process,
 /// so it must demand neither `ffmpeg` nor `soffice`.
 #[test]
@@ -1805,7 +1805,7 @@ fn job_run_transform_with_a_tsv_input_kind_requires_no_converter() {
 }
 
 /// A Word document goes through LibreOffice, never `ffmpeg`. Before
-/// ADR-0154 §5 replaced the preflight's wildcard arm, this run would have
+/// CLI-0154 §5 replaced the preflight's wildcard arm, this run would have
 /// demanded `ffmpeg` and never checked `soffice` at all.
 #[test]
 fn job_run_transform_with_a_docx_input_kind_requires_soffice_not_ffmpeg() {
@@ -1907,7 +1907,7 @@ fn job_run_transform_with_a_markdown_input_kind_requires_pandoc() {
         .stderr(predicate::str::contains("'soffice' was not found").not());
 }
 
-/// ADR-0154 §1: `markdown` and `mkd` are accepted spellings of the same
+/// CLI-0154 §1: `markdown` and `mkd` are accepted spellings of the same
 /// kind, so they must reach the same preflight as `md`.
 #[test]
 fn job_run_transform_accepts_every_markdown_spelling() {

@@ -1,7 +1,7 @@
 //! Consolidates every `rclone` invocation this crate makes behind one
-//! `RcloneCommand` trait and one shared runner (ADR-0132), sandboxed to a
+//! `RcloneCommand` trait and one shared runner (CLI-0132), sandboxed to a
 //! config file pigeon itself generates from its own keyring, never an
-//! externally-provisioned or user-general-purpose `rclone.conf` (ADR-0136).
+//! externally-provisioned or user-general-purpose `rclone.conf` (CLI-0136).
 //! Implementors declare what's genuinely their own (argv, log path,
 //! observation mode, labels, how to turn a finished invocation into a
 //! typed result); [`execute`] owns everything that was previously
@@ -22,15 +22,15 @@ use tokio::io::AsyncReadExt;
 pub(crate) use log::{RcloneLogSummary, RcloneLogTailer, TailDelta};
 
 /// Same cadence this crate has always used for live mid-run metrics
-/// (ADR-0102) -- independent of rclone's own fixed `--stats 30s` interval.
+/// (CLI-0102) -- independent of rclone's own fixed `--stats 30s` interval.
 const LOG_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 /// A `Streamed` command's cumulative progress line fires at most once per
-/// this many polls -- every 60s at `LOG_POLL_INTERVAL` (ADR-0156).
+/// this many polls -- every 60s at `LOG_POLL_INTERVAL` (CLI-0156).
 const PROGRESS_EVERY_POLLS: u32 = 6;
 
 /// Per-object completion/PID channels a `Streamed` command may carry
-/// (ADR-0116/ADR-0129). `Default`-empty for every command that doesn't need
+/// (CLI-0116/CLI-0129). `Default`-empty for every command that doesn't need
 /// them -- cheap to carry on every implementor via `..Default::default()`.
 #[derive(Default, Clone)]
 pub(crate) struct StreamHooks {
@@ -108,12 +108,12 @@ pub(crate) trait RcloneCommand {
 
     /// Overrides which config file this one invocation reads, instead of
     /// the keyring-derived one `config::rclone_config_path` names
-    /// (ADR-0148 §3).
+    /// (CLI-0148 §3).
     ///
     /// Exists for exactly one case: probing a remote that is **not in the
     /// keyring yet**, which is what `keyring add bucket`'s verify-before-
-    /// save does (ADR-0010). The generated config is a pure function of the
-    /// saved keyring (ADR-0136), so a candidate bucket cannot appear in it
+    /// save does (CLI-0010). The generated config is a pure function of the
+    /// saved keyring (CLI-0136), so a candidate bucket cannot appear in it
     /// without being saved first -- the ordering this breaks.
     ///
     /// Defaulted, like `retry`, so every ordinary invocation keeps reading
@@ -152,16 +152,16 @@ pub(crate) async fn check_available() -> Result<(), String> {
 
 /// Substrings in an rclone failure that mean the *destination endpoint as a
 /// whole* was unreachable, as opposed to anything being wrong with the one
-/// file being transferred (ADR-0144).
+/// file being transferred (CLI-0144).
 ///
 /// Deliberately a separate question from "does retrying help?" (the
-/// distinction ADR-0143 drew between `is_non_retryable_transcode_error` and
+/// distinction CLI-0143 drew between `is_non_retryable_transcode_error` and
 /// `is_wrong_input_kind_error`): these errors *are* retryable, but they are
 /// also *shared* -- every concurrent transfer against the same remote fails
 /// identically -- which is what licenses handling them once for the whole
 /// run instead of once per file.
 ///
-/// These match rclone/Go's own text, not pigeon's, so unlike ADR-0143's two
+/// These match rclone/Go's own text, not pigeon's, so unlike CLI-0143's two
 /// guard consts they are genuinely version-fragile -- the same caution
 /// `Lsjson`'s `"directory not found"` check carries (issue #63). Reconfirm
 /// them against whatever rclone is actually deployed. The first entry is
@@ -257,9 +257,9 @@ async fn execute_streamed<C: RcloneCommand + ?Sized>(
     // harmless -- `RcloneLogTailer::poll` treats a missing file as "no new
     // data," not an error.
     poll_interval.tick().await;
-    // ADR-0156: a cumulative progress line every `PROGRESS_EVERY_POLLS`
+    // CLI-0156: a cumulative progress line every `PROGRESS_EVERY_POLLS`
     // polls, but only when the totals moved since the last one, so a
-    // SIGSTOPped (ADR-0129) or idle transfer stays quiet. Until this, the
+    // SIGSTOPped (CLI-0129) or idle transfer stays quiet. Until this, the
     // live figures computed every poll reached only Prometheus -- which is
     // best-effort, and absent for any run that lost the port race.
     let mut polls_since_progress: u32 = 0;
@@ -434,7 +434,7 @@ fn emit_delta_metrics(labels: &Labels, delta: &TailDelta) {
 }
 
 /// Forwards each newly-copied object's relative path to `on_copied`, if a
-/// caller opted in (ADR-0116). A send error means the receiver was dropped
+/// caller opted in (CLI-0116). A send error means the receiver was dropped
 /// -- the caller stopped listening, which is fine, not a failure of the
 /// rclone subprocess itself.
 fn forward_copied(
@@ -448,7 +448,7 @@ fn forward_copied(
     }
 }
 
-/// Logs a collapsed-repeats summary (ADR-0106) -- identical regardless of
+/// Logs a collapsed-repeats summary (CLI-0106) -- identical regardless of
 /// which rclone action produced it.
 fn log_collapsed_repeats(step: &'static str, delta: &TailDelta) {
     for summary in &delta.collapsed_repeats {
@@ -467,7 +467,7 @@ fn log_collapsed_repeats(step: &'static str, delta: &TailDelta) {
 mod tests {
     use super::*;
 
-    /// The verbatim rclone error from the ADR-0144 run -- 275 of 275 failed
+    /// The verbatim rclone error from the CLI-0144 run -- 275 of 275 failed
     /// pushes carried exactly this and nothing else.
     #[test]
     fn is_endpoint_unreachable_error_matches_the_real_dns_blackout_error() {

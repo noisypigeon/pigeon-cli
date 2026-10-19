@@ -1,13 +1,13 @@
-//! `ffmpeg`/`ffprobe`-backed png/heic -> jpg transcoding (ADR-0112 Decision
-//! §4), mov/m4v/mp4 -> H.265 mp4 (ADR-0122), the six audio kinds -> Opus
-//! (ADR-0142, ADR-0153), and `media::copy_through`, the path that skips
+//! `ffmpeg`/`ffprobe`-backed png/heic -> jpg transcoding (CLI-0112 Decision
+//! §4), mov/m4v/mp4 -> H.265 mp4 (CLI-0122), the six audio kinds -> Opus
+//! (CLI-0142, CLI-0153), and `media::copy_through`, the path that skips
 //! conversion entirely for an input already in its target format -- `jpeg`,
-//! and since ADR-0149/0154 also `csv`, `pdf` and `txt`.
+//! and since CLI-0149/0154 also `csv`, `pdf` and `txt`.
 //!
 //! This module stays `ffmpeg`-only; `sheets`, `soffice` and `documents` hold
 //! the other converters. It does, however, own every wrong-input-kind error
 //! *signature* regardless of which module produces it (see
-//! `NOT_A_WORKBOOK_SIGNATURE` and the three ADR-0154 consts beside it),
+//! `NOT_A_WORKBOOK_SIGNATURE` and the three CLI-0154 consts beside it),
 //! because `NON_RETRYABLE_SIGNATURES` is a function-local const that can only
 //! be appended to here. Where the
 //! since-removed `pull_transform::media` defaulted to `-q:v 3` (tuned for
@@ -19,7 +19,7 @@
 //! guard against an unexpected ffmpeg default silently resizing the image.
 //! That guard compares pixel *area*, not exact `(width, height)` ordering,
 //! and `probe_dimensions` understands HEIF "Tile Grid" stream groups
-//! (ADR-0121) -- both needed for a grid-tiled, HEIF-rotated real-world HEIC
+//! (CLI-0121) -- both needed for a grid-tiled, HEIF-rotated real-world HEIC
 //! photo to probe and compare correctly; see `probe_dimensions`'s and
 //! `transcode_to_jpg`'s own doc comments for why.
 
@@ -82,7 +82,7 @@ struct FfprobeDimensionsOutput {
 /// dimensions are already preserved by construction).
 ///
 /// Prefers a HEIF "Tile Grid" stream group's reconstructed canvas size
-/// (ADR-0121) over the first stream's raw dimensions: a grid-tiled HEIC
+/// (CLI-0121) over the first stream's raw dimensions: a grid-tiled HEIC
 /// (the common shape for a modern phone camera's high-resolution photo)
 /// exposes its dozens of tiles as individual small streams (e.g. 512x512)
 /// with none marked `default`/primary, so `-select_streams v:0` alone only
@@ -143,26 +143,26 @@ async fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
 /// fails immediately with ffmpeg's own decoder-missing message -- returns
 /// `Err` with that stderr folded in verbatim -- `worker.rs`'s call site
 /// retries this a bounded number of times before giving up and recording
-/// the failure for just this one file (ADR-0116; no longer a whole-run
-/// abort, amending ADR-0112 Decision §7); there is no separate
+/// the failure for just this one file (CLI-0116; no longer a whole-run
+/// abort, amending CLI-0112 Decision §7); there is no separate
 /// HEIC-capability preflight probe.
 pub(crate) async fn transcode_to_jpg(input: &Path, output: &Path) -> Result<(), String> {
     transcode_still(input, output, JPG_ARGS).await
 }
 
-/// The encoder half of `transcode_to_jpg`, shared with ADR-0159's two new
+/// The encoder half of `transcode_to_jpg`, shared with CLI-0159's two new
 /// still-image paths so all three keep identical quality settings.
 const JPG_ARGS: &[&str] = &["-q:v", "1", "-pix_fmt", "yuvj444p", "-f", "mjpeg"];
 
 /// Composites any transparency onto opaque white before encoding
-/// (ADR-0159). JPEG has no alpha, and without this ffmpeg simply drops the
+/// (CLI-0159). JPEG has no alpha, and without this ffmpeg simply drops the
 /// channel, so a transparent icon's corners come out black -- measured on
 /// a real `.icns`. An opaque input passes through unchanged, and the
 /// canvas is the input's own size, so the pixel-area guard still holds.
 const FLATTEN_ONTO_WHITE: &str = "format=rgba,split[fg][bg0];[bg0]drawbox=t=fill:c=white@1,\
                                   format=rgb24[bg];[bg][fg]overlay=format=auto:shortest=1";
 
-/// `transcode_to_jpg` for the ADR-0159 raster kinds (avif, tif, tiff,
+/// `transcode_to_jpg` for the CLI-0159 raster kinds (avif, tif, tiff,
 /// webp): identical, except that transparency is flattened onto white.
 ///
 /// Deliberately **not** applied to `png`/`heic`: their already-pushed
@@ -175,7 +175,7 @@ pub(crate) async fn transcode_to_jpg_flattened(input: &Path, output: &Path) -> R
     transcode_still(input, output, &args).await
 }
 
-/// Transcodes a still image to PNG, keeping its alpha channel (ADR-0159),
+/// Transcodes a still image to PNG, keeping its alpha channel (CLI-0159),
 /// for the icon kinds. Lossless, so the only thing that can go wrong is
 /// the wrong frame or size, which the pixel-area guard catches.
 pub(crate) async fn transcode_to_png(input: &Path, output: &Path) -> Result<(), String> {
@@ -184,7 +184,7 @@ pub(crate) async fn transcode_to_png(input: &Path, output: &Path) -> Result<(), 
 
 /// One frame of `input` to `output` with `encode_args`, then the
 /// full-size guard. `-f` must be among `encode_args`: the scratch path ends
-/// in `.scratch`, which ffmpeg cannot infer a muxer from (ADR-0115).
+/// in `.scratch`, which ffmpeg cannot infer a muxer from (CLI-0115).
 async fn transcode_still(input: &Path, output: &Path, encode_args: &[&str]) -> Result<(), String> {
     let result = tokio::process::Command::new("ffmpeg")
         .args(["-y", "-loglevel", "error"])
@@ -230,7 +230,7 @@ async fn transcode_still(input: &Path, output: &Path, encode_args: &[&str]) -> R
 const DURATION_TOLERANCE_SECONDS: f64 = 0.5;
 
 /// Extra duration allowance, as a fraction of the input's own duration
-/// (ADR-0153).
+/// (CLI-0153).
 ///
 /// The absolute `DURATION_TOLERANCE_SECONDS` floor alone is wrong for any
 /// input whose duration ffprobe can only *estimate*. A raw ADTS `.aac`
@@ -250,7 +250,7 @@ const DURATION_TOLERANCE_SECONDS: f64 = 0.5;
 const DURATION_TOLERANCE_FRACTION: f64 = 0.02;
 
 /// Whether `after` is short enough of `before` to mean a truncated or
-/// partial encode (ADR-0153).
+/// partial encode (CLI-0153).
 ///
 /// **One-sided on purpose.** A partial write always produces a *shorter*
 /// output; an output *longer* than the input is never evidence of
@@ -260,7 +260,7 @@ const DURATION_TOLERANCE_FRACTION: f64 = 0.02;
 /// as a failure.
 ///
 /// Pure so the thresholds are testable without running `ffmpeg`, the same
-/// reason ADR-0143 extracted `circuit_breaker_should_trip`.
+/// reason CLI-0143 extracted `circuit_breaker_should_trip`.
 fn is_truncated_encode(before: f64, after: f64) -> bool {
     let allowance = DURATION_TOLERANCE_SECONDS.max(before.abs() * DURATION_TOLERANCE_FRACTION);
     before - after > allowance
@@ -293,7 +293,7 @@ async fn probe_duration_seconds(path: &Path) -> Option<f64> {
 }
 
 /// Best-effort diagnostic string appended to `transcode_video`'s pixel-area
-/// mismatch error only (ADR-0125, crop fields added by ADR-0126) -- one extra
+/// mismatch error only (CLI-0125, crop fields added by CLI-0126) -- one extra
 /// `ffprobe` call made once the guard is already about to fail, so the
 /// common (matching) path pays no extra cost. Surfaces exactly the fields
 /// `probe_dimensions` deliberately omits (sample/display aspect ratio, any
@@ -329,10 +329,10 @@ async fn probe_video_diagnostics(path: &Path) -> String {
     }
 }
 
-/// `transcode_video`'s audio-only rejection (ADR-0141), and
-/// `transcode_audio`'s mirror-image video rejection (ADR-0142).
+/// `transcode_video`'s audio-only rejection (CLI-0141), and
+/// `transcode_audio`'s mirror-image video rejection (CLI-0142).
 ///
-/// Named consts rather than inline literals (ADR-0143) because three
+/// Named consts rather than inline literals (CLI-0143) because three
 /// separate places have to agree on each substring: the `format!` that
 /// produces it, `NON_RETRYABLE_SIGNATURES`, and
 /// `is_wrong_input_kind_error`. Unlike every other entry in that signature
@@ -343,7 +343,7 @@ async fn probe_video_diagnostics(path: &Path) -> String {
 const NO_VIDEO_STREAM_SIGNATURE: &str = "has no video stream";
 const UNEXPECTED_VIDEO_STREAM_SIGNATURE: &str = "is not an audio-only recording";
 
-/// `sheets`'s not-a-readable-workbook rejection (ADR-0149).
+/// `sheets`'s not-a-readable-workbook rejection (CLI-0149).
 ///
 /// Lives here rather than in `sheets.rs`, despite this module otherwise
 /// being `ffmpeg`-only, for two reasons: `NON_RETRYABLE_SIGNATURES` below
@@ -353,36 +353,36 @@ const UNEXPECTED_VIDEO_STREAM_SIGNATURE: &str = "is not an audio-only recording"
 /// invite.
 pub(crate) const NOT_A_WORKBOOK_SIGNATURE: &str = "is not a readable spreadsheet";
 
-/// `documents`'s not-a-readable-document rejection (ADR-0154), covering all
+/// `documents`'s not-a-readable-document rejection (CLI-0154), covering all
 /// three of its subprocess converters -- `soffice`, `ebook-convert` and
 /// `pandoc` -- plus a malformed `tsv`. Here for the same two reasons
 /// `NOT_A_WORKBOOK_SIGNATURE` is.
 pub(crate) const NOT_A_DOCUMENT_SIGNATURE: &str = "is not a readable document";
 
 /// `icns::largest_entry`'s rejection of a file that is not an icon
-/// container it can take an image from (ADR-0159).
+/// container it can take an image from (CLI-0159).
 pub(crate) const NOT_AN_ICNS_SIGNATURE: &str = "is not a readable icns icon";
 
 /// `procreate`'s rejection of a file that is not a Procreate document it
-/// can read a composite from (ADR-0159).
+/// can read a composite from (CLI-0159).
 pub(crate) const NOT_A_PROCREATE_SIGNATURE: &str = "is not a readable Procreate document";
 
 /// `procreate`'s refusal of a composite that does not match the document's
-/// own thumbnail (ADR-0159). Non-retryable -- the same file decodes the
+/// own thumbnail (CLI-0159). Non-retryable -- the same file decodes the
 /// same way every time -- but **not** wrong-input-kind: the file is a real
 /// Procreate document whose export this job could not verify, so its local
 /// copy is kept for diagnosis.
 pub(crate) const PROCREATE_UNVERIFIED_SIGNATURE: &str = "does not match its own thumbnail";
 
-/// `soffice` dying by signal rather than exiting (ADR-0158).
+/// `soffice` dying by signal rather than exiting (CLI-0158).
 ///
 /// Non-retryable, so a systemic crash still trips the circuit breaker, but
 /// deliberately **not** wrong-input-kind: the file was never read, so its
-/// local copy is kept for diagnosis rather than deleted under ADR-0143.
+/// local copy is kept for diagnosis rather than deleted under CLI-0143.
 pub(crate) const CONVERTER_CRASHED_SIGNATURE: &str = "converter crashed";
 
 /// `documents::ensure_keynote`'s rejection of a `.key` that is not an iWork
-/// container (ADR-0154 §2).
+/// container (CLI-0154 §2).
 ///
 /// Distinct from `NOT_A_DOCUMENT_SIGNATURE` on purpose: this one is the
 /// difference between a wasted conversion and a published private key, so
@@ -391,24 +391,24 @@ pub(crate) const NOT_A_KEYNOTE_SIGNATURE: &str = "is not a Keynote presentation"
 
 /// `documents::clipping_to_text`'s rejection of a file that is not a
 /// readable macOS text clipping -- in practice a pre-OS-X resource-fork one
-/// (ADR-0154).
+/// (CLI-0154).
 pub(crate) const NOT_A_TEXTCLIPPING_SIGNATURE: &str = "is not a readable text clipping";
 
-/// `vobject`'s rejection of an `.ics` with no `BEGIN:VCALENDAR` (ADR-0160).
+/// `vobject`'s rejection of an `.ics` with no `BEGIN:VCALENDAR` (CLI-0160).
 pub(crate) const NOT_A_CALENDAR_SIGNATURE: &str = "is not an iCalendar file";
 
-/// `vobject`'s rejection of a `.vcf` with no `BEGIN:VCARD` (ADR-0160).
+/// `vobject`'s rejection of a `.vcf` with no `BEGIN:VCARD` (CLI-0160).
 pub(crate) const NOT_A_VCARD_SIGNATURE: &str = "is not a vCard file";
 
 /// `documents::eps_to_svg`'s refusal of an SVG that draws nothing
-/// (ADR-0160 §3) -- what `soffice` alone produced from a real EPS, with
+/// (CLI-0160 §3) -- what `soffice` alone produced from a real EPS, with
 /// exit 0. Non-retryable, but **not** wrong-input-kind: the local copy is
 /// kept for diagnosis, since the input may be fine and the converter wrong.
 pub(crate) const SVG_DREW_NOTHING_SIGNATURE: &str = "converted to an SVG that draws nothing";
 
 /// Whether `err` means the operator pointed this run at the wrong
 /// `--input-file-type` for this file -- the file itself is intact
-/// (ADR-0143).
+/// (CLI-0143).
 ///
 /// Deliberately a separate predicate from
 /// `is_non_retryable_transcode_error`, which answers a different question
@@ -435,7 +435,7 @@ pub(crate) fn is_wrong_input_kind_error(err: &str) -> bool {
 
 /// Whether `path` contains at least one video stream, used by
 /// `transcode_video` to reject an audio-only input before `ffmpeg` runs
-/// (ADR-0141). Unlike `probe_dimensions`/`probe_duration_seconds`, an
+/// (CLI-0141). Unlike `probe_dimensions`/`probe_duration_seconds`, an
 /// `ffprobe` failure here returns `false` rather than "skip the check": a
 /// file whose streams can't be enumerated at all has no video stream this
 /// job can transcode, and `transcode_video`'s mandatory `-map 0:v:0` would
@@ -470,14 +470,14 @@ async fn has_video_stream(path: &Path) -> bool {
         .any(|stream| stream.disposition.attached_pic == 0)
 }
 
-/// `has_video_stream`'s probe output (ADR-0153).
+/// `has_video_stream`'s probe output (CLI-0153).
 ///
 /// The `disposition` is what this exists for. ffmpeg models **embedded
 /// cover art as a video stream**, so a plain `-select_streams v` count
-/// returns 1 for any tagged music file -- which would have made ADR-0142's
+/// returns 1 for any tagged music file -- which would have made CLI-0142's
 /// has-a-video-stream guard reject essentially every `.mp3`/`.m4a`/`.aac`
-/// in a real library, classify it wrong-input-kind (so ADR-0143 deletes the
-/// local copy), and trip ADR-0121's circuit breaker into aborting the run.
+/// in a real library, classify it wrong-input-kind (so CLI-0143 deletes the
+/// local copy), and trip CLI-0121's circuit breaker into aborting the run.
 /// Measured against a real fixture: an m4a with attached art reports
 /// stream index 1 under the old probe and `attached_pic=1` under this one.
 #[derive(Debug, Deserialize, Default)]
@@ -496,14 +496,14 @@ struct VideoStreamEntry {
 struct VideoStreamDisposition {
     /// `1` for cover art, `0` for a genuine video stream. Defaulted so a
     /// probe that omits the field entirely is read as real video, which is
-    /// the conservative direction -- it preserves ADR-0141/0142's guards
+    /// the conservative direction -- it preserves CLI-0141/0142's guards
     /// rather than silently disarming them.
     #[serde(default)]
     attached_pic: u8,
 }
 
 /// Transcodes `input` (mov/m4v/mp4) to `output` (always `.mp4`, H.265/HEVC,
-/// ADR-0122):
+/// CLI-0122):
 /// ```text
 /// ffmpeg -y -loglevel error -noautorotate -apply_cropping:v codec -i <input> \
 ///   -map 0:v:0 -map 0:a:0? -c:v libx265 -tag:v hvc1 -preset medium \
@@ -512,23 +512,23 @@ struct VideoStreamDisposition {
 /// `-tag:v hvc1` is required for QuickTime/Apple-device playback of
 /// HEVC-in-MP4 -- ffmpeg's default `hev1` tag is not recognized by Apple's
 /// own players. `-f mp4` forces the muxer explicitly, exactly
-/// `transcode_to_jpg`'s own ADR-0115 lesson: `worker.rs` writes to a scratch
+/// `transcode_to_jpg`'s own CLI-0115 lesson: `worker.rs` writes to a scratch
 /// path ending in `.scratch`, not `.mp4`, so ffmpeg can never be allowed to
 /// infer the output format from the on-disk extension alone. No
 /// `-vf scale=...` or other resize filter is ever applied in pigeon's own
 /// command line, but that alone doesn't guarantee the output's raw pixel
-/// grid matches the input's: `-noautorotate` (ADR-0125) is required because
+/// grid matches the input's: `-noautorotate` (CLI-0125) is required because
 /// ffmpeg otherwise *implicitly* reshapes the decoded frame to match a
 /// container-embedded display transform (QuickTime/MP4's `tkhd` matrix) --
 /// for most phone video this is a harmless, area-preserving ±90°/180°
 /// rotation, but some real camera-captured files encode a rotation *plus* a
 /// non-unity scale, which silently shrinks/grows the actual output grid
 /// despite pigeon applying no filter of its own. `-noautorotate` suppresses
-/// that implicit reshape unconditionally; empirically confirmed (ADR-0125)
+/// that implicit reshape unconditionally; empirically confirmed (CLI-0125)
 /// that the original display matrix still survives onto the re-encoded
 /// output as frame-level side data even though this is a full re-encode,
 /// not a stream copy, so playback orientation is unaffected. `-apply_cropping:v
-/// codec` (ADR-0126) guards an independent, later-added ffmpeg mechanism: FFmpeg
+/// codec` (CLI-0126) guards an independent, later-added ffmpeg mechanism: FFmpeg
 /// 7.1 added support for QuickTime's Clean Aperture (`clap` atom) *container*-level
 /// crop metadata, which -- left at ffmpeg's own default of `all` -- gets silently
 /// auto-applied during decode exactly like autorotate's implicit reshape, shrinking
@@ -554,7 +554,7 @@ struct VideoStreamDisposition {
 /// `transcode_to_jpg`.
 ///
 /// `threads` caps libx265's own internal thread count (`-threads <n>`,
-/// ADR-0127): with no cap, every concurrent `transcode_video` call
+/// CLI-0127): with no cap, every concurrent `transcode_video` call
 /// independently defaults to using every core on the host, so `N` files
 /// transcoding at once oversubscribe CPU (and the memory that scales with
 /// it) by a factor of `N` on top of `--concurrency` itself already bounding
@@ -563,7 +563,7 @@ struct VideoStreamDisposition {
 /// invocations stays within the host's real core count.
 ///
 /// An audio-only input is rejected up front via `has_video_stream`
-/// (ADR-0141), before `ffmpeg` runs. `-map 0:v:0` is mandatory, so such a
+/// (CLI-0141), before `ffmpeg` runs. `-map 0:v:0` is mandatory, so such a
 /// file always failed anyway -- but with ffmpeg's raw `"Stream map ''
 /// matches no streams"` stderr, which named neither the real problem nor
 /// the file, and which (not being a known non-retryable signature) was
@@ -578,7 +578,7 @@ pub(crate) async fn transcode_video(
     if !has_video_stream(input).await {
         return Err(format!(
             "{} {NO_VIDEO_STREAM_SIGNATURE} (likely an audio-only recording saved with a video \
-             extension); see ADR-0142 for an audio-preserving input type",
+             extension); see CLI-0142 for an audio-preserving input type",
             input.display()
         ));
     }
@@ -653,7 +653,7 @@ pub(crate) async fn transcode_video(
     Ok(())
 }
 
-/// Transcodes `input` (an audio-only `.mp4`, ADR-0142) to `output`
+/// Transcodes `input` (an audio-only `.mp4`, CLI-0142) to `output`
 /// (always `.opus`, Ogg-encapsulated Opus):
 /// ```text
 /// ffmpeg -y -loglevel error -i <input> -map 0:a:0 \
@@ -667,7 +667,7 @@ pub(crate) async fn transcode_video(
 /// higher-fidelity mode and is already its default; do **not** "optimize"
 /// it to `voip`, whose more aggressive telephony-tuned speech bandpass
 /// would discard content a transcription model might still use.
-/// `-f opus` forces the muxer explicitly, the same ADR-0115 lesson
+/// `-f opus` forces the muxer explicitly, the same CLI-0115 lesson
 /// `transcode_to_jpg`/`transcode_video` already encode: `worker.rs` writes
 /// to a scratch path ending in `.scratch`, so ffmpeg can never be allowed
 /// to infer the container from the on-disk extension. `-map 0:a:0` pins
@@ -677,7 +677,7 @@ pub(crate) async fn transcode_video(
 /// An input that still has a video stream is **refused**, not silently
 /// stripped -- the load-bearing safety guard, not a formality. Nothing
 /// filters a `mp4-audio` run's source down to audio-only files (no
-/// extension distinguishes them), and ADR-0138/0139's prefix inference
+/// extension distinguishes them), and CLI-0138/0139's prefix inference
 /// means `--source source` with no explicit prefix resolves to
 /// `source:mp4/`: the same default address a plain `--input-file-type mp4`
 /// video run uses. Without this guard, one omitted prefix would quietly
@@ -748,9 +748,9 @@ pub(crate) async fn transcode_audio(
 /// Matches `ffmpeg`/`ffprobe` failure signatures that are deterministic --
 /// re-running `transcode_to_jpg` against the exact same input reproduces the
 /// identical failure every time, so retrying buys nothing but doubles ffmpeg
-/// invocations and adds a guaranteed sleep per file (ADR-0121). Matches
+/// invocations and adds a guaranteed sleep per file (CLI-0121). Matches
 /// substrings, not full messages or exit codes -- same caution as
-/// `destination.rs`'s rclone-stderr precedent (ADR-0120): pattern-matching
+/// `destination.rs`'s rclone-stderr precedent (CLI-0120): pattern-matching
 /// subprocess output is inherently version-fragile; reconfirm these
 /// substrings against whatever `ffmpeg` version is actually deployed.
 pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
@@ -782,7 +782,7 @@ pub(crate) fn is_non_retryable_transcode_error(err: &str) -> bool {
 
 /// An input already in the target format is never routed through a
 /// converter -- a plain byte-for-byte `fs::copy`, zero generational loss
-/// (ADR-0112 Decision §4 for `jpeg`; ADR-0149 reuses it unchanged for
+/// (CLI-0112 Decision §4 for `jpeg`; CLI-0149 reuses it unchanged for
 /// `csv`, on the same reasoning).
 pub(crate) fn copy_through(input: &Path, output: &Path) -> Result<(), String> {
     std::fs::copy(input, output).map_err(|err| {
@@ -868,7 +868,7 @@ mod tests {
     }
 
     /// A fully transparent `size` image via `lavfi`, in whatever format
-    /// `format` names (ADR-0159's flatten and icon tests).
+    /// `format` names (CLI-0159's flatten and icon tests).
     async fn generate_transparent(path: &Path, format: &str) -> Result<(), String> {
         let result = tokio::process::Command::new("ffmpeg")
             .args(["-y", "-loglevel", "error", "-f", "lavfi", "-i"])
@@ -897,7 +897,7 @@ mod tests {
         result.stdout
     }
 
-    /// ADR-0159: transparency becomes white, not ffmpeg's default black.
+    /// CLI-0159: transparency becomes white, not ffmpeg's default black.
     /// The input is fully transparent *red*, so dropping alpha alone would
     /// give red and the old behaviour black; only flattening gives white.
     #[tokio::test]
@@ -922,7 +922,7 @@ mod tests {
         );
     }
 
-    /// ADR-0160 §2: the bucket's bitmaps are 8-bit and 1-bit paletted, at
+    /// CLI-0160 §2: the bucket's bitmaps are 8-bit and 1-bit paletted, at
     /// sizes that are not multiples of anything. Both convert at their own
     /// dimensions through the same flattening path as `avif`/`webp`.
     #[tokio::test]
@@ -1020,7 +1020,7 @@ mod tests {
         ico
     }
 
-    /// ADR-0159: an icon becomes a PNG that keeps its alpha channel.
+    /// CLI-0159: an icon becomes a PNG that keeps its alpha channel.
     #[tokio::test]
     async fn transcode_to_png_keeps_an_icons_transparency() {
         if check_ffmpeg_available().await.is_err() {
@@ -1156,7 +1156,7 @@ mod tests {
     /// copy with a `degrees` display-matrix rotation attached at the
     /// container level (`-display_rotation`, an ffmpeg *input* option, on a
     /// `-c copy` remux) -- mirrors a real device-captured `.mov`'s embedded
-    /// `tkhd` rotation matrix (ADR-0125) without needing a checked-in binary
+    /// `tkhd` rotation matrix (CLI-0125) without needing a checked-in binary
     /// fixture. The rotation must be attached via a separate remux of a real
     /// container, not folded into the original `lavfi` generation command --
     /// doing the latter bakes the rotation into the raw frames instead of
@@ -1181,7 +1181,7 @@ mod tests {
         Ok(())
     }
 
-    /// ADR-0125 regression test: a `.mov`/`.mp4` whose container carries a
+    /// CLI-0125 regression test: a `.mov`/`.mp4` whose container carries a
     /// rotation display matrix must transcode without ffmpeg's implicit
     /// autorotate reshaping the output's raw pixel grid -- `-noautorotate`
     /// means the comparison must hold on the *exact* `(width, height)` tuple
@@ -1191,7 +1191,7 @@ mod tests {
     /// would *not* have failed even before this fix -- ffmpeg's CLI exposes
     /// no flag to inject the real incident's rotation-plus-non-unity-scale
     /// matrix. This test covers the mechanism, not the exact production
-    /// fingerprint (see ADR-0125's Decision §3/§4 for the manual
+    /// fingerprint (see CLI-0125's Decision §3/§4 for the manual
     /// verification that covered the latter).
     #[tokio::test]
     async fn transcode_video_preserves_raw_dimensions_for_an_input_with_a_rotation_display_matrix()
@@ -1224,7 +1224,7 @@ mod tests {
     /// (SPS "conformance window") crop attached via that filter -- mirrors
     /// the long-standing crop mechanism `probe_dimensions`'s bare
     /// `codecpar.width/height` has *always* already reflected, distinct from
-    /// ADR-0126's container-level (`clap`-atom) crop. `crop_left`/
+    /// CLI-0126's container-level (`clap`-atom) crop. `crop_left`/
     /// `crop_right` must each be a multiple of 2 (ffmpeg rejects an odd
     /// value outright); 2+2 trims the width by exactly 4px, confirmed
     /// empirically against a real `h264_metadata` run.
@@ -1273,14 +1273,14 @@ mod tests {
         Ok(())
     }
 
-    /// ADR-0126 regression test: a codec-level (SPS) crop -- the kind
+    /// CLI-0126 regression test: a codec-level (SPS) crop -- the kind
     /// `probe_dimensions` has always already reflected -- must still
     /// transcode correctly with `-apply_cropping:v codec` in place. This
     /// pins the "codec, not none" choice: if a future reader "simplifies"
     /// `-apply_cropping:v codec` to `-apply_cropping:v none`, the output
     /// reverts to the pre-crop coded size and this test starts failing
     /// (empirically confirmed via a direct ffmpeg run: `codec` and the old
-    /// pre-ADR-0126 default both produce the cropped size here; `none`
+    /// pre-CLI-0126 default both produce the cropped size here; `none`
     /// regresses to the uncropped one).
     #[tokio::test]
     async fn transcode_video_preserves_codec_level_cropped_dimensions() {
@@ -1352,7 +1352,7 @@ mod tests {
     /// Generates an audio-only `.mp4` (an AAC stream, no video stream at
     /// all) via ffmpeg's `anullsrc` test source -- mirrors the real-world
     /// `audioclip*.mp4` voice-note recordings that reached
-    /// `transcode_video` in production (ADR-0141).
+    /// `transcode_video` in production (CLI-0141).
     async fn generate_audio_only_mp4(path: &Path) -> Result<(), String> {
         let result = tokio::process::Command::new("ffmpeg")
             .args([
@@ -1378,7 +1378,7 @@ mod tests {
         Ok(())
     }
 
-    /// ADR-0141 regression test: an audio-only input must be rejected with a
+    /// CLI-0141 regression test: an audio-only input must be rejected with a
     /// message naming the real problem, before `ffmpeg` runs -- not with
     /// ffmpeg's own `"Stream map '' matches no streams"` stderr, which named
     /// neither the file nor the cause, and which was retried twice because
@@ -1417,9 +1417,9 @@ mod tests {
         );
     }
 
-    /// ADR-0142: an audio-only input transcodes to a real `.opus`, with its
+    /// CLI-0142: an audio-only input transcodes to a real `.opus`, with its
     /// duration preserved inside the shared tolerance. Also pins the
-    /// ADR-0115 muxer-inference lesson for this output format -- the
+    /// CLI-0115 muxer-inference lesson for this output format -- the
     /// scratch path ends in `.scratch`, not `.opus`, so without `-f opus`
     /// ffmpeg could not infer the container.
     #[tokio::test]
@@ -1451,10 +1451,10 @@ mod tests {
         );
     }
 
-    /// The load-bearing ADR-0142 safety guard: an input that still has a
+    /// The load-bearing CLI-0142 safety guard: an input that still has a
     /// video stream must be refused, never silently stripped of its video.
     /// A `mp4-audio` run's source is not filtered down to audio-only files
-    /// (no extension distinguishes them), and ADR-0138/0139's prefix
+    /// (no extension distinguishes them), and CLI-0138/0139's prefix
     /// inference resolves a bare `--source source` to `source:mp4/` -- the
     /// same default address a video run uses.
     #[tokio::test]
@@ -1531,11 +1531,11 @@ mod tests {
         assert!(!has_video_stream(&dir.path().join("does-not-exist.mp4")).await);
     }
 
-    /// **The ADR-0153 finding, pinned.** ffmpeg models embedded cover art
+    /// **The CLI-0153 finding, pinned.** ffmpeg models embedded cover art
     /// as a video stream, so before this `has_video_stream` returned `true`
-    /// for any tagged music file -- which would have made ADR-0142's guard
+    /// for any tagged music file -- which would have made CLI-0142's guard
     /// reject essentially every `.mp3`/`.m4a`/`.aac` in a real library,
-    /// delete its local copy (ADR-0143), and abort the run via ADR-0121's
+    /// delete its local copy (CLI-0143), and abort the run via CLI-0121's
     /// circuit breaker.
     #[tokio::test]
     async fn cover_art_does_not_count_as_a_video_stream() {
@@ -1586,7 +1586,7 @@ mod tests {
         );
         assert!(!has_video_stream(&audio).await);
 
-        // And a genuine video still does, so ADR-0141/0142's guards are
+        // And a genuine video still does, so CLI-0141/0142's guards are
         // not disarmed.
         let video = dir.path().join("real.mp4");
         if generate_test_video(&video).await.is_ok() {
@@ -1642,7 +1642,7 @@ mod tests {
         assert!(std::fs::metadata(&output).unwrap().len() > 0);
     }
 
-    /// **The second ADR-0153 finding, pinned.** The truncated-encode guard
+    /// **The second CLI-0153 finding, pinned.** The truncated-encode guard
     /// is one-sided and scales with duration, because a raw ADTS `.aac`
     /// carries no container duration and ffprobe's estimate is ~1.2% short
     /// -- measured at 177.868s reported for a 180s source, which the old
@@ -1694,7 +1694,7 @@ mod tests {
         ));
         assert!(is_non_retryable_transcode_error(
             "/x.mp4 has no video stream (likely an audio-only recording saved with a video \
-             extension); see ADR-0142 for an audio-preserving input type"
+             extension); see CLI-0142 for an audio-preserving input type"
         ));
     }
 
@@ -1713,15 +1713,15 @@ mod tests {
         assert!(!is_non_retryable_transcode_error(""));
     }
 
-    /// ADR-0143: the predicate that licenses deleting a failed file's local
+    /// CLI-0143: the predicate that licenses deleting a failed file's local
     /// source copy must match exactly the two wrong-input-kind guards and
     /// nothing else -- a corrupt file is non-retryable too, but its local
-    /// copy is still wanted for diagnosis (ADR-0124).
+    /// copy is still wanted for diagnosis (CLI-0124).
     #[test]
     fn is_wrong_input_kind_error_matches_both_guards_and_nothing_else() {
         assert!(is_wrong_input_kind_error(
             "/x.mp4 has no video stream (likely an audio-only recording saved with a video \
-             extension); see ADR-0142 for an audio-preserving input type"
+             extension); see CLI-0142 for an audio-preserving input type"
         ));
         assert!(is_wrong_input_kind_error(
             "/x.mp4 has a video stream, so it is not an audio-only recording; refusing to \
@@ -1784,7 +1784,7 @@ mod tests {
     /// The area-based comparison in `transcode_to_jpg` must accept a
     /// transposed-but-equal-area pair (a HEIF `irot` rotation between the
     /// raw input canvas reading and the rotation-corrected transcoded
-    /// output, ADR-0121) and still reject a genuinely different-area pair.
+    /// output, CLI-0121) and still reject a genuinely different-area pair.
     #[test]
     fn dimension_guard_area_comparison_accepts_a_transpose_and_rejects_a_real_mismatch() {
         let transposed_a: (u32, u32) = (4032, 3024);
@@ -1798,12 +1798,12 @@ mod tests {
         assert_ne!(area_a, area_truncated);
     }
 
-    // --- ADR-0154: documents ---
+    // --- CLI-0154: documents ---
 
     /// All three new signatures answer **both** questions: retrying does
     /// not help, and the local copy has no diagnostic value. Built from
     /// the consts so producer and matcher cannot drift -- the same shape
-    /// ADR-0153's audio pair uses.
+    /// CLI-0153's audio pair uses.
     #[test]
     fn every_document_signature_is_non_retryable_and_wrong_input_kind() {
         for signature in [
@@ -1824,7 +1824,7 @@ mod tests {
     }
 
     /// The three stay distinct strings, so a run's log can be grepped for
-    /// the private-key case specifically (ADR-0154 §9).
+    /// the private-key case specifically (CLI-0154 §9).
     #[test]
     fn the_document_signatures_do_not_overlap() {
         let all = [

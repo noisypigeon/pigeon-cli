@@ -1,4 +1,4 @@
-//! Spreadsheet -> CSV conversion (ADR-0149), kept separate from `media.rs`
+//! Spreadsheet -> CSV conversion (CLI-0149), kept separate from `media.rs`
 //! so that module stays `ffmpeg`-only.
 //!
 //! Two input routes converge on one splitter. `.xlsx`/`.xls` are read
@@ -12,7 +12,7 @@
 //! LibreOffice to the one format with no Rust reader.
 //!
 //! `.csv` input never reaches this module -- it is copied through by
-//! `media::copy_through`, the same treatment ADR-0112 gives a `jpeg`.
+//! `media::copy_through`, the same treatment CLI-0112 gives a `jpeg`.
 
 use std::path::{Path, PathBuf};
 
@@ -53,9 +53,9 @@ pub(crate) struct SheetOutput {
 }
 
 /// Converts an Apple Numbers file to `.xlsx` inside `work_dir`, returning
-/// the produced path (ADR-0149 §4).
+/// the produced path (CLI-0149 §4).
 ///
-/// Thin wrapper over `super::soffice::convert` since ADR-0154 §6 moved the
+/// Thin wrapper over `super::soffice::convert` since CLI-0154 §6 moved the
 /// runner out of this module so the document kinds could share it. The
 /// `.xlsx` target is what matters here: `calamine::open_workbook_auto`
 /// dispatches on the extension.
@@ -68,10 +68,10 @@ pub(crate) async fn convert_numbers_to_xlsx(
 
 /// Splits a workbook into one CSV per non-empty sheet, written into
 /// `work_dir` and named by `index`, returning them in workbook order
-/// (ADR-0149 §4).
+/// (CLI-0149 §4).
 ///
 /// `calamine` parsing is CPU-bound and blocking, so the whole conversion
-/// runs inside `spawn_blocking` (ADR-0090).
+/// runs inside `spawn_blocking` (CLI-0090).
 pub(crate) async fn split_workbook_to_csv(
     input: &Path,
     work_dir: &Path,
@@ -131,7 +131,7 @@ fn split_workbook_blocking(input: &Path, work_dir: &Path) -> Result<Vec<SheetOut
         ranges.push((name, range));
     }
 
-    // A `0of0` group would make ADR-0149 §3's completeness check ambiguous,
+    // A `0of0` group would make CLI-0149 §3's completeness check ambiguous,
     // so a workbook with nothing in it is a failure rather than a silent
     // no-op producing no outputs.
     if ranges.is_empty() {
@@ -421,7 +421,7 @@ mod tests {
         assert!(body.contains("\"one\ntwo\""), "{body:?}");
     }
 
-    /// A `0of0` group would make ADR-0149 §3's completeness check
+    /// A `0of0` group would make CLI-0149 §3's completeness check
     /// ambiguous, so a workbook with no data is a failure rather than a
     /// silent no-op producing nothing.
     #[tokio::test]
@@ -448,8 +448,8 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.contains(NOT_A_WORKBOOK_SIGNATURE), "{err}");
-        // Classified both ways: retrying cannot help (ADR-0121), and the
-        // local source copy has no diagnostic value (ADR-0143).
+        // Classified both ways: retrying cannot help (CLI-0121), and the
+        // local source copy has no diagnostic value (CLI-0143).
         assert!(super::super::media::is_non_retryable_transcode_error(&err));
         assert!(super::super::media::is_wrong_input_kind_error(&err));
     }

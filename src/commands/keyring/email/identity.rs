@@ -4,12 +4,12 @@ use crate::commands::keyring::email::provider::Provider;
 
 /// A single authenticated email identity's metadata, including its secret
 /// (app/bridge password) as a plain field -- `keyring.toml` is this
-/// identity's sole storage since ADR-0135 retired the OS keychain, protected
+/// identity's sole storage since CLI-0135 retired the OS keychain, protected
 /// only by `Store::save`'s `0600` file permissions. Deliberately has no
-/// `#[serde(default)]`: a pre-ADR-0135 `keyring.toml` entry with no `secret`
+/// `#[serde(default)]`: a pre-CLI-0135 `keyring.toml` entry with no `secret`
 /// field fails to parse loudly rather than silently loading an empty
 /// secret. Metadata persistence itself lives in
-/// `crate::commands::keyring::store` (ADR-0022) -- this struct is kept here
+/// `crate::commands::keyring::store` (CLI-0022) -- this struct is kept here
 /// since `commands::job::email_import` is its main consumer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Identity {
@@ -19,12 +19,12 @@ pub struct Identity {
     pub host: String,
     pub port: u16,
     /// IMAP app/bridge password. See `crate::core::keyring::credentials::resolve_secret`
-    /// for the one remaining override (ADR-0087's `PIGEON_SECRET_<ALIAS>`).
+    /// for the one remaining override (CLI-0087's `PIGEON_SECRET_<ALIAS>`).
     pub secret: String,
     /// Caps how many simultaneous IMAP connections `job run email import`
     /// (`commands::job::email_import::worker`) will open to this identity,
     /// overriding that job's `--max-connections-per-identity` default for
-    /// this identity only (ADR-0080). `None` (the default for every
+    /// this identity only (CLI-0080). `None` (the default for every
     /// existing `keyring.toml` entry, via `#[serde(default)]`) means "use
     /// the job's default cap" -- set via `pigeon keyring add/modify email`
     /// once a provider is known to reject that default for this account.
@@ -78,7 +78,7 @@ pub fn sanitize_segment(input: &str) -> String {
 }
 
 /// Derives a default alias from an email address's local part, following
-/// ADR-0001's file-naming scheme.
+/// CLI-0001's file-naming scheme.
 ///
 /// e.g. `first.last@example.com` -> `first-last`
 pub fn sanitize_alias(email: &str) -> String {

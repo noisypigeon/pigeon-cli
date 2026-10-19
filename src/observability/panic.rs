@@ -4,7 +4,7 @@ use tracing_error::SpanTrace;
 
 /// Installs a panic hook that captures a full backtrace plus the active
 /// `tracing` span stack (so a panic mid-batch still carries whatever
-/// identity/mailbox/uid/step context the enclosing spans set, ADR-0073) into
+/// identity/mailbox/uid/step context the enclosing spans set, CLI-0073) into
 /// one durable structured log event, then chains to whatever hook was
 /// previously installed -- today's stderr crash output is unchanged; this
 /// only adds a structured record alongside it. Safe to call given this

@@ -5,7 +5,7 @@ use dialoguer::{Confirm, Password, theme::ColorfulTheme};
 /// One value a wizard needs, resolved either from a CLI flag or an
 /// interactive prompt. Captures a pattern that appeared five times,
 /// independently hand-written, in this codebase's job wizard before
-/// ADR-0023 (`resolve_identities`, `resolve_local_output`,
+/// CLI-0023 (`resolve_identities`, `resolve_local_output`,
 /// `resolve_remote_output`, `resolve_concurrency`, `confirm_and_proceed`).
 pub(crate) trait WizardInput {
     type Value;
@@ -28,7 +28,7 @@ pub(crate) trait WizardInput {
     /// The shared resolution algorithm every wizard input follows, given
     /// once here so implementors only define the three methods above.
     ///
-    /// `non_interactive` is the job-wide `--non-interactive` flag (ADR-0114):
+    /// `non_interactive` is the job-wide `--non-interactive` flag (CLI-0114):
     /// when set, every input goes straight to `non_interactive_fallback()`
     /// regardless of whether stdin is actually a TTY, so a run from an
     /// interactive shell can still be made to never prompt.

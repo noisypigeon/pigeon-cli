@@ -1,4 +1,4 @@
-//! Picks the largest image out of a macOS `.icns` container (ADR-0159).
+//! Picks the largest image out of a macOS `.icns` container (CLI-0159).
 //!
 //! ffmpeg cannot open the container at all, but every image a modern
 //! `.icns` carries at a useful size is an embedded PNG or JPEG 2000 file,

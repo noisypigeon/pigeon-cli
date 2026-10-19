@@ -15,15 +15,15 @@ use crate::core::wizard::WizardInput;
 use super::{RcloneCopyJob, RcloneDeleteJob};
 
 /// Resolves `--source-bucket`, a pigeon keyring `BucketConfig` alias
-/// (ADR-0136, reversing ADR-0101's original raw-passthrough design) --
+/// (CLI-0136, reversing CLI-0101's original raw-passthrough design) --
 /// `rclone` only ever sees a config file pigeon itself generates from this
 /// alias, never an externally-provisioned or user-general-purpose
 /// `rclone.conf`. Structurally identical to
 /// `shared_wizard::SourceBucketInput`'s flag/prompt/error shape; kept local
 /// since no second consumer exists yet. Shared by both `copy` and `delete`.
 ///
-/// Accepts the composed `alias[:prefix/]` form (ADR-0138) -- a bare alias
-/// is the whole bucket root, as it was under ADR-0136. Unlike
+/// Accepts the composed `alias[:prefix/]` form (CLI-0138) -- a bare alias
+/// is the whole bucket root, as it was under CLI-0136. Unlike
 /// `transform`'s version there is no prefix default: this job has no
 /// file-type concept to derive one from, so an omitted prefix stays the
 /// root. The interactive picker yields a bucket root too; a prefix is
@@ -116,8 +116,8 @@ impl WizardInput for LocalOutputInput {
     }
 }
 
-/// Entry point for `pigeon job run rclone copy` (ADR-0101, restructured by
-/// ADR-0110).
+/// Entry point for `pigeon job run rclone copy` (CLI-0101, restructured by
+/// CLI-0110).
 #[allow(clippy::too_many_arguments)]
 pub fn dispatch_copy(
     source_bucket: Option<String>,
@@ -164,7 +164,7 @@ async fn dispatch_copy_async(
 ) -> i32 {
     // Held for this whole async fn's lifetime -- every early `return
     // fail(...)` below drops it, aborting the sampling task automatically
-    // (ADR-0073).
+    // (CLI-0073).
     let _sampler =
         crate::observability::resources::ResourceSampler::spawn(std::time::Duration::from_secs(5));
 
@@ -292,7 +292,7 @@ async fn dispatch_copy_async(
     exit_code
 }
 
-/// Entry point for `pigeon job run rclone delete` (ADR-0110).
+/// Entry point for `pigeon job run rclone delete` (CLI-0110).
 pub fn dispatch_delete(
     source_bucket: Option<String>,
     local_output: Option<PathBuf>,

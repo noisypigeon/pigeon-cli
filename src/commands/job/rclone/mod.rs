@@ -1,12 +1,12 @@
-//! `pigeon job run rclone copy`/`rclone delete` (ADR-0101, restructured by
-//! ADR-0110): copies or recursively deletes data by shelling out to the
+//! `pigeon job run rclone copy`/`rclone delete` (CLI-0101, restructured by
+//! CLI-0110): copies or recursively deletes data by shelling out to the
 //! external `rclone` binary. `--source-bucket`/`--destination-bucket` are
-//! pigeon keyring `BucketConfig` aliases (ADR-0136, reversing ADR-0101's
+//! pigeon keyring `BucketConfig` aliases (CLI-0136, reversing CLI-0101's
 //! original "raw passthrough, never a bucket alias" design) -- `rclone` is
 //! always invoked against a config file pigeon itself generates from the
 //! keyring, never an externally-provisioned or user-general-purpose
 //! `rclone.conf`. `copy`'s `--transfers`/`--checkers`/`--tpslimit` are
-//! overridable per-destination (ADR-0108); every other rclone
+//! overridable per-destination (CLI-0108); every other rclone
 //! performance/retry flag stays fixed. `delete` (`rclone purge`) has no
 //! destination and no transfer-tuning flags at all.
 
@@ -49,7 +49,7 @@ impl Job for RcloneCopyJob {
 
     /// Ignores both concurrency parameters -- rclone's own
     /// `--transfers`/`--checkers` flags own that dial, resolved per-run
-    /// (ADR-0108), matching `DecryptFilesJob`'s precedent (ADR-0090) for a
+    /// (CLI-0108), matching `DecryptFilesJob`'s precedent (CLI-0090) for a
     /// job this trait parameter doesn't apply to.
     async fn run(
         self,
@@ -69,7 +69,7 @@ impl Job for RcloneCopyJob {
     }
 }
 
-/// The `Job` implementor for `pigeon job run rclone delete` (ADR-0110).
+/// The `Job` implementor for `pigeon job run rclone delete` (CLI-0110).
 /// Kept as its own struct rather than folded into `RcloneCopyJob` with an
 /// action discriminant -- its `Plan`/`Summary` shape genuinely differs (no
 /// destination, no transfers/tpslimit, no bytes-transferred count), and

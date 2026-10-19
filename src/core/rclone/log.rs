@@ -1,11 +1,11 @@
-//! Parses rclone's `--use-json-log` output (ADR-0101, incrementally tailed
-//! per ADR-0102) into live deltas plus this run's final counts. Every field
+//! Parses rclone's `--use-json-log` output (CLI-0101, incrementally tailed
+//! per CLI-0102) into live deltas plus this run's final counts. Every field
 //! read is `#[serde(default)]`/`Option`, and an unparseable line is skipped
 //! rather than failing the whole parse -- robust to rclone-version field
 //! drift, at the cost of silently under-counting if rclone's schema changes
 //! in a way this doesn't anticipate. Also surfaces each individual
 //! "Copied (new)"/"Copied (replaced existing)" line's object path
-//! (`TailDelta::copied_objects`, ADR-0116) -- the authoritative, race-free
+//! (`TailDelta::copied_objects`, CLI-0116) -- the authoritative, race-free
 //! per-object completion signal `transform` uses to pipeline work off a
 //! still-running bulk pull instead of waiting for it to exit.
 
@@ -46,13 +46,13 @@ pub(crate) struct RcloneLogSummary {
     pub bytes: u64,
     pub deletes: u64,
     /// `notice`-level "Duplicate object found in source - ignoring" lines
-    /// (ADR-0151).
+    /// (CLI-0151).
     ///
     /// rclone resolves a case collision itself and reports it here, at a
     /// level nothing in this crate used to read, while leaving its own
-    /// error count at **zero**. That is exactly why ADR-0130's
+    /// error count at **zero**. That is exactly why CLI-0130's
     /// `rclone_errors` vs. undelivered-files cross-check fires on a
-    /// perfectly explicable run (ADR-0144 traced the mechanism but read it
+    /// perfectly explicable run (CLI-0144 traced the mechanism but read it
     /// only out of rclone's *stderr*, never the log). Counting them lets
     /// the two sides of that comparison be stated rather than inferred.
     pub duplicate_notices: u64,
@@ -68,14 +68,14 @@ pub(crate) struct TailDelta {
     pub bytes: u64,
     pub deletes: u64,
     /// Consecutive identical-cause error lines collapsed since the last
-    /// poll (ADR-0106), beyond the first occurrence (already emitted live
+    /// poll (CLI-0106), beyond the first occurrence (already emitted live
     /// by `record_error`). Independent of the numeric fields above -- a
     /// poll can carry a non-empty `collapsed_repeats` with no new
     /// transfer/error/byte delta, or vice versa.
     pub collapsed_repeats: Vec<CollapsedErrorSummary>,
     /// Relative object paths rclone's own JSON log reported as newly
     /// finished ("Copied (new)" / "Copied (replaced existing)") since the
-    /// last poll (ADR-0116) -- the authoritative, race-free signal that an
+    /// last poll (CLI-0116) -- the authoritative, race-free signal that an
     /// object's bytes are now fully and durably present at the
     /// destination, used by `transform` to pipeline transcode/push work
     /// off a still-running bulk pull instead of waiting for it to exit.
@@ -92,7 +92,7 @@ impl TailDelta {
 }
 
 /// An in-progress run of consecutive error lines sharing the same cause
-/// (ADR-0106) -- tracked so only the first occurrence is logged live and
+/// (CLI-0106) -- tracked so only the first occurrence is logged live and
 /// the rest are counted, not individually logged.
 #[derive(Debug, Clone)]
 struct ErrorStreak {
@@ -102,7 +102,7 @@ struct ErrorStreak {
 }
 
 /// A finished streak of more than one consecutive identical-cause error
-/// line, ready for the caller to log as a single "N more" summary (ADR-0106).
+/// line, ready for the caller to log as a single "N more" summary (CLI-0106).
 #[derive(Debug, Clone)]
 pub(crate) struct CollapsedErrorSummary {
     pub cause: String,
@@ -112,7 +112,7 @@ pub(crate) struct CollapsedErrorSummary {
 }
 
 /// Incrementally reads an rclone `--use-json-log` file as it grows, for live
-/// mid-run metrics (ADR-0102) -- unlike a one-shot parse, this is polled
+/// mid-run metrics (CLI-0102) -- unlike a one-shot parse, this is polled
 /// repeatedly while the `rclone copy` subprocess is still running. Tracks a
 /// byte offset (so each poll only reads what's new) and a buffered partial
 /// line (the file's tail may be mid-write, not yet newline-terminated, when
@@ -126,12 +126,12 @@ pub(crate) struct RcloneLogTailer {
     current_streak: Option<ErrorStreak>,
     /// The `step` field value this tailer's own per-object `tracing::warn!`
     /// lines carry -- `"transfer"` for a copy tailer, `"delete"` for a
-    /// delete tailer (ADR-0110). Shared error-handling code, so this can't
+    /// delete tailer (CLI-0110). Shared error-handling code, so this can't
     /// stay a bare literal the way it did when only one action existed.
     step: &'static str,
     /// Relative paths of objects whose "Copied" line has been seen since
     /// the last `poll()`/`flush_only_delta()` drained this buffer
-    /// (ADR-0116) -- unlike `cumulative`, this is not a running total to
+    /// (CLI-0116) -- unlike `cumulative`, this is not a running total to
     /// diff against; each entry is drained into exactly one `TailDelta`.
     pending_copied: Vec<String>,
 }
@@ -214,7 +214,7 @@ impl RcloneLogTailer {
     /// path in `poll()` (missing file, seek/read failure, no new bytes) so a
     /// pending streak is never silently dropped just because this particular
     /// poll happened to see no new log lines. Also drains `pending_copied`
-    /// for the same reason (ADR-0116), even though in practice it is only
+    /// for the same reason (CLI-0116), even though in practice it is only
     /// ever populated inside `poll()`'s own line-processing loop, never on
     /// one of these early-return paths -- draining it here uniformly is
     /// cheap insurance against ever silently dropping a copied-object event.
@@ -256,9 +256,9 @@ impl RcloneLogTailer {
             self.pending_copied.push(object.clone());
         }
 
-        // ADR-0151: rclone's own account of a case collision. Not an error
+        // CLI-0151: rclone's own account of a case collision. Not an error
         // on its side, so it never reaches `stats.errors`, but it is the
-        // other half of ADR-0130's cross-check.
+        // other half of CLI-0130's cross-check.
         if parsed.level.eq_ignore_ascii_case("notice")
             && parsed.msg.contains("Duplicate object found in source")
         {
@@ -272,7 +272,7 @@ impl RcloneLogTailer {
     }
 
     /// Logs the first occurrence of a new error cause immediately (same
-    /// shape as before ADR-0106) and silently counts consecutive repeats of
+    /// shape as before CLI-0106) and silently counts consecutive repeats of
     /// the same cause instead of logging each one individually. Returns a
     /// summary of whatever streak was just displaced, if it had any repeats
     /// worth reporting.
@@ -316,7 +316,7 @@ impl RcloneLogTailer {
 
     /// Ends the current error streak (if any) and, if it had repeats beyond
     /// the one already logged live, returns a summary for the caller to log
-    /// (ADR-0106). A streak of exactly 1 returns `None` -- nothing to
+    /// (CLI-0106). A streak of exactly 1 returns `None` -- nothing to
     /// summarize beyond what `record_error` already logged.
     fn flush_error_streak(&mut self) -> Option<CollapsedErrorSummary> {
         let streak = self.current_streak.take()?;
@@ -355,9 +355,9 @@ mod tests {
         file.write_all(contents.as_bytes()).unwrap();
     }
 
-    /// ADR-0151: rclone's own account of a case collision. It is `notice`
+    /// CLI-0151: rclone's own account of a case collision. It is `notice`
     /// level and leaves `stats.errors` at zero, which is exactly why
-    /// ADR-0130's cross-check fires on a run where nothing is wrong.
+    /// CLI-0130's cross-check fires on a run where nothing is wrong.
     #[test]
     fn duplicate_object_notices_are_counted_separately_from_errors() {
         let (_dir, path) = write_log(&[

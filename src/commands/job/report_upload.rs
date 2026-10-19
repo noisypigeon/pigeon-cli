@@ -1,9 +1,9 @@
 //! Shared "upload this run's report/log/transcript to a bucket" logic
-//! (ADR-0100), used identically by every job wizard's `dispatch_async`: a
+//! (CLI-0100), used identically by every job wizard's `dispatch_async`: a
 //! mandatory `ReportBucketInput` (`shared_wizard.rs`) resolves a
 //! bucket-config, and this module generates a per-run identifier, writes a
 //! generic `Debug`-based report for jobs that don't already have their own
-//! (ADR-0082's `deduplicate` keeps its bespoke one instead), and uploads the
+//! (CLI-0082's `deduplicate` keeps its bespoke one instead), and uploads the
 //! report, the shared `pigeon.jsonl` log, and the run's transcript
 //! (`observability::transcript::Transcript`) under one dated prefix.
 
@@ -20,7 +20,7 @@ use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 use crate::observability::{self, transcript::Transcript};
 
-/// Resolves `--report-bucket` (mandatory, ADR-0100) and fetches its
+/// Resolves `--report-bucket` (mandatory, CLI-0100) and fetches its
 /// `BucketConfig`/secret -- the same three-step lookup every job's other
 /// bucket-config inputs already do (e.g. `SourceBucketInput`'s call sites).
 pub(crate) fn resolve(
@@ -40,7 +40,7 @@ pub(crate) fn resolve(
 /// A collision-resistant-enough per-run identifier, deliberately with no new
 /// crate dependency (this codebase has no `uuid`/`rand` dependency) -- a
 /// nanosecond timestamp, this process's id, and the cached instance hostname
-/// (ADR-0097, disambiguating across hosts), hex/string-joined. Not
+/// (CLI-0097, disambiguating across hosts), hex/string-joined. Not
 /// cryptographically unique, just unique enough for a path segment.
 pub(crate) fn generate_run_id() -> String {
     let nanos = SystemTime::now()
@@ -52,7 +52,7 @@ pub(crate) fn generate_run_id() -> String {
         observability::instance(),
         std::process::id()
     );
-    // ADR-0151: stamp it onto the ambient `command` span here, the one
+    // CLI-0151: stamp it onto the ambient `command` span here, the one
     // chokepoint every job funnels through, so every later line carries it
     // and the log becomes filterable to a single run for the first time.
     observability::record_run_id(&run_id);
@@ -60,7 +60,7 @@ pub(crate) fn generate_run_id() -> String {
 }
 
 /// `{YYYY-MM-DD}-{job_name}-{run_id}` -- the destination prefix a run's
-/// report/log/transcript upload lands under (ADR-0100).
+/// report/log/transcript upload lands under (CLI-0100).
 pub(crate) fn run_prefix(job_name: &str, run_id: &str) -> String {
     let now = time::OffsetDateTime::now_utc();
     format!(
@@ -73,7 +73,7 @@ pub(crate) fn run_prefix(job_name: &str, run_id: &str) -> String {
 
 /// Writes `<job_name>-report.txt` under `local_output` by `Debug`-formatting
 /// `summary` -- the generic report for the job types that don't have a
-/// bespoke one of their own (ADR-0100). Used both for a successful run's
+/// bespoke one of their own (CLI-0100). Used both for a successful run's
 /// `*Summary` struct and, on failure, for the error message itself, so a
 /// report always exists to upload either way.
 pub(crate) fn write_summary_report(
@@ -97,14 +97,14 @@ pub(crate) fn new_transcript(local_output: &Path) -> Result<(Transcript, PathBuf
 }
 
 /// Prints `message` exactly like a bare `println!` always has, while also
-/// recording it to this run's transcript (ADR-0100).
+/// recording it to this run's transcript (CLI-0100).
 pub(crate) fn say(transcript: &Transcript, message: impl AsRef<str>) {
     let message = message.as_ref();
     println!("{message}");
     transcript.line(message);
 }
 
-/// Records "Error: {err}" to both stdout and the transcript (ADR-0105) --
+/// Records "Error: {err}" to both stdout and the transcript (CLI-0105) --
 /// call immediately before `fail(err)` at any call site where a
 /// `Transcript` is already in scope, so the same failure message that
 /// reaches stderr/pigeon.jsonl also lands in the archived transcript.txt
@@ -113,7 +113,7 @@ pub(crate) fn say_error(transcript: &Transcript, err: impl std::fmt::Display) {
     say(transcript, format!("Error: {err}"));
 }
 
-/// Logs this run's own outcome (ADR-0104) immediately before
+/// Logs this run's own outcome (CLI-0104) immediately before
 /// `upload_run_artifacts` runs, from inside the still-open `command` span --
 /// so the uploaded `pigeon.jsonl` snapshot always contains at least one line
 /// stating how the run ended, instead of relying solely on
@@ -133,9 +133,9 @@ pub(crate) fn log_run_outcome(exit_code: i32) {
 /// Uploads `report_path`, the shared `pigeon.jsonl` log, and
 /// `transcript_path` to `bucket_config` under `{prefix}/`. Best-effort: a
 /// failure here is `tracing::warn!`-logged but never changes the calling
-/// job's own exit code (ADR-0100) -- this is instrumentation about the run,
+/// job's own exit code (CLI-0100) -- this is instrumentation about the run,
 /// not the run's primary deliverable.
-/// Takes no secret: since ADR-0148 these go through `rclone copyto`,
+/// Takes no secret: since CLI-0148 these go through `rclone copyto`,
 /// which reads credentials from the generated config (and, since that
 /// ADR's §1, honours `PIGEON_SECRET_<ALIAS>` while doing so).
 pub(crate) async fn upload_run_artifacts(
@@ -155,8 +155,8 @@ pub(crate) async fn upload_run_artifacts(
     for (name, path) in uploads {
         upload_one(&destination, &format!("{prefix}/{name}"), path, log_dir).await;
     }
-    // ADR-0151: upload *this run's* lines, not the whole shared log.
-    // ADR-0100 chose whole-file deliberately, but at the 326 MB the real
+    // CLI-0151: upload *this run's* lines, not the whole shared log.
+    // CLI-0100 chose whole-file deliberately, but at the 326 MB the real
     // deployment reached, that upload stopped completing -- so the choice
     // had come to cost a run its log artifact entirely rather than merely
     // over-supply it.
@@ -184,7 +184,7 @@ pub(crate) async fn upload_run_artifacts(
 }
 
 /// Writes the lines carrying `run_id` from every rotated log generation
-/// into one file beside the report, returning its path (ADR-0151).
+/// into one file beside the report, returning its path (CLI-0151).
 ///
 /// Matched by substring rather than by parsing each line as JSON: the id is
 /// a unique hex-and-pid string, the log is line-delimited, and a 326 MB file
@@ -244,7 +244,7 @@ fn extract_matching_lines(sources: &[PathBuf], run_id: &str) -> Vec<String> {
 ///
 /// Each gets its own rclone log, named after the flattened key -- many
 /// single-file `rclone` invocations cannot safely share one `--log-file`
-/// (ADR-0116), and these three run back to back.
+/// (CLI-0116), and these three run back to back.
 async fn upload_one(destination: &str, key: &str, path: &Path, log_dir: &Path) {
     let flattened: String = key
         .chars()
@@ -270,9 +270,9 @@ async fn upload_one(destination: &str, key: &str, path: &Path, log_dir: &Path) {
 mod tests {
     use super::*;
 
-    /// ADR-0151: the artifact is this run's lines, not the whole shared
+    /// CLI-0151: the artifact is this run's lines, not the whole shared
     /// log. The real deployment's log reached 326 MB / 696k lines spanning
-    /// three weeks, and ADR-0100's whole-file upload stopped completing --
+    /// three weeks, and CLI-0100's whole-file upload stopped completing --
     /// so a run lost its log artifact entirely rather than merely
     /// over-supplying it.
     #[test]
@@ -386,11 +386,11 @@ mod tests {
 
     /// A minimal `tracing_subscriber::Layer` that captures every event's
     /// fields into a plain map, for asserting on `log_run_outcome`'s
-    /// (ADR-0104) `tracing::info!`/`error!` calls without needing a global
+    /// (CLI-0104) `tracing::info!`/`error!` calls without needing a global
     /// subscriber or an extra test-only crate dependency. Mirrors the
     /// `CapturedEvents`/`CaptureLayer` pattern already established in
     /// the since-removed `email_sync/transform.rs`'s test module
-    /// (ADR-0080); duplicated here
+    /// (CLI-0080); duplicated here
     /// per this codebase's "duplicate until the third consumer" precedent.
     #[derive(Clone, Default)]
     struct CapturedEvents(

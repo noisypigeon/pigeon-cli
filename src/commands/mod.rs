@@ -11,7 +11,7 @@ pub const FAILURE_EXIT_CODE: i32 = 1;
 
 /// Prints `message` to stderr and returns `FAILURE_EXIT_CODE` -- the shared
 /// landing point every job wizard's `dispatch_async` uses to turn an `Err`
-/// into an exit code (ADR-0097). Previously each job wizard defined this
+/// into an exit code (CLI-0097). Previously each job wizard defined this
 /// identically but without the `tracing::error!` call, so a
 /// handled job failure reached stderr but never the structured JSONL log
 /// (issue #18). `run_instrumented` still logs its own "command finished"

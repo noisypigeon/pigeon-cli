@@ -1,18 +1,18 @@
-//! `pigeon job run email import` (ADR-0146): reads one or more
+//! `pigeon job run email import` (CLI-0146): reads one or more
 //! authenticated IMAP identities and delivers each message's raw `.eml`
 //! plus its unpacked attachments to an rclone-addressed `--destination`,
 //! at a declared, rate-limit-respecting pace.
 //!
 //! Deliberately minimal: no deduplication, no indexing, no renaming, no
 //! content transform, and no encryption. It moves bytes and nothing else
-//! (ADR-0146 Out of scope).
+//! (CLI-0146 Out of scope).
 //!
 //! The shape that distinguishes it from `email-sync`/`email-pull` is
 //! per-message delivery: fetch -> push -> **delete the local copy**, on
 //! success and on failure alike. There is no staged-then-published tree and
 //! no separate upload phase, so local disk is bounded to the in-flight
 //! window unconditionally, a long run delivers incrementally rather than
-//! all at the end, and `--upload-only` has nothing to resume (ADR-0146 §5).
+//! all at the end, and `--upload-only` has nothing to resume (CLI-0146 §5).
 //!
 //! One directory exists per identity under `--local-output`:
 //! `<alias>/.staging/` holds bookkeeping only (the `.pushed` checkpoint and
@@ -48,7 +48,7 @@ use worker::JobSummary;
 /// identity by default.
 ///
 /// Deliberately far below `email_sync`'s `DEFAULT_MAX_CONNECTIONS_PER_IDENTITY`
-/// of 6 (ADR-0071, chosen to sit under Gmail's documented 15-connection
+/// of 6 (CLI-0071, chosen to sit under Gmail's documented 15-connection
 /// cap): this job's premise is a run that must stay welcome on a server for
 /// days, and its throughput comes from the pacer rather than from
 /// parallelism, so additional connections buy nothing and only widen the
@@ -66,7 +66,7 @@ pub(crate) struct ImportContext {
     /// markers. Never uploaded.
     pub staging_dir: PathBuf,
     /// Where in-flight messages land between fetch and push. Kept
-    /// near-empty by the GC (ADR-0146 §5).
+    /// near-empty by the GC (CLI-0146 §5).
     pub scratch_dir: PathBuf,
 }
 
@@ -75,7 +75,7 @@ pub(crate) struct ImportContext {
 /// No byte or attachment estimate: producing one costs a `BODYSTRUCTURE`
 /// fetch per pending UID, a second full-corpus traversal that at this job's
 /// throttled pace costs about as much as the fetch it would be estimating
-/// (ADR-0146 §7, inverting ADR-0032/0034's reasoning for this job only).
+/// (CLI-0146 §7, inverting CLI-0032/0034's reasoning for this job only).
 #[derive(Debug, Default)]
 pub(crate) struct IdentitySummary {
     pub alias: String,
@@ -96,7 +96,7 @@ pub(crate) struct PendingMailbox {
 /// delivered".
 ///
 /// Deliberately does **not** call `email_sync::manifest::pull_manifest`
-/// (ADR-0146 §7). The one `UID SEARCH` per mailbox is needed for resume
+/// (CLI-0146 §7). The one `UID SEARCH` per mailbox is needed for resume
 /// regardless and costs a single round trip.
 #[tracing::instrument(skip_all, fields(identity = %ctx.identity.alias, email = %ctx.identity.email))]
 pub(crate) async fn gather_pending(
@@ -153,7 +153,7 @@ pub(crate) async fn gather_pending(
             // Every UID this mailbox ever reported is now meaningless. Only
             // the checkpoint needs clearing -- unlike the sibling jobs there
             // is no local `.eml` tree to invalidate, since nothing survives
-            // its own delivery (ADR-0146 §5).
+            // its own delivery (CLI-0146 §5).
             manifest::clear_checkpoint_for_mailbox(&ctx.staging_dir, mailbox_name)?;
         }
         sink::write_uidvalidity(&marker_dir, current_validity)?;
@@ -184,7 +184,7 @@ pub(crate) async fn gather_pending(
     }
     bar.finish();
 
-    // Best-effort (ADR-0068): every mailbox is already scanned by this
+    // Best-effort (CLI-0068): every mailbox is already scanned by this
     // point, so a logout-time disconnect must not discard the result.
     let _ = session.logout().await;
 
@@ -209,7 +209,7 @@ pub(crate) fn batches_from_pending(pending: &[PendingMailbox], batch_size: usize
 
 /// The `Job` implementor. No `encryptor` field and no `remote: Option<..>`:
 /// the destination is mandatory and encryption is permanently out of scope
-/// (ADR-0146 §1).
+/// (CLI-0146 §1).
 pub(crate) struct ImportJob {
     pub contexts: Vec<ImportContext>,
     pub destination: RemoteTarget,
@@ -244,7 +244,7 @@ impl Job for ImportJob {
     }
 
     /// `concurrency` is ignored -- this job has no `--concurrency` flag
-    /// (ADR-0146 §1); worker count is derived from `--max-connections` and
+    /// (CLI-0146 §1); worker count is derived from `--max-connections` and
     /// the identity count. `upload_concurrency` carries
     /// `--push-concurrency`, the one transfer knob that applies.
     async fn run(
@@ -303,8 +303,8 @@ mod tests {
     /// throughput here comes from the pacer rather than from parallelism.
     ///
     /// This used to assert `DEFAULT_MAX_CONNECTIONS < email_sync`'s own
-    /// default of 6 (ADR-0071), which is how the "deliberately lower"
-    /// intent was pinned. ADR-0147 removed that job, so the comparison has
+    /// default of 6 (CLI-0071), which is how the "deliberately lower"
+    /// intent was pinned. CLI-0147 removed that job, so the comparison has
     /// no referent and the value is pinned directly instead -- 6 recorded
     /// here as the historical figure it was chosen against.
     #[test]

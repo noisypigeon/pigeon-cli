@@ -1,11 +1,11 @@
-//! Per-file push via `rclone copyto` (ADR-0116) -- replaces the old bulk
+//! Per-file push via `rclone copyto` (CLI-0116) -- replaces the old bulk
 //! Phase C `rclone copy` of the whole `result/` tree. `copyto <src-file>
 //! <dest-file>` is rclone's documented single-file-to-single-file-path
 //! primitive: no directory listing round trip for one named object, unlike
 //! the bulk-tree `copy` the pull phase still uses. Pushing immediately after
 //! each file transcodes (rather than waiting for the whole batch) is the
 //! other half of the fix for a single bad file silently discarding every
-//! already-succeeded file's push (ADR-0116's Context).
+//! already-succeeded file's push (CLI-0116's Context).
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +19,7 @@ use crate::core::rclone::command::CopyTo;
 /// Where `push_one` writes this output's own rclone log.
 ///
 /// Exposed so `worker` can delete it alongside the output once the push
-/// succeeds (ADR-0151) -- there is one of these per output object and
+/// succeeds (CLI-0151) -- there is one of these per output object and
 /// nothing used to remove them.
 pub(crate) fn log_path(push_log_dir: &Path, destination_filename: &str) -> PathBuf {
     push_log_dir.join(format!("{destination_filename}.jsonl"))
@@ -37,7 +37,7 @@ pub(crate) async fn push_one(
     );
     let log_path = log_path(push_log_dir, destination_filename);
 
-    // Read before the push: ADR-0124's GC deletes this file immediately
+    // Read before the push: CLI-0124's GC deletes this file immediately
     // after a successful push, so its size is unavailable afterwards.
     let bytes = std::fs::metadata(local_path)
         .map(|meta| meta.len())

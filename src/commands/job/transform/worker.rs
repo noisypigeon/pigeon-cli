@@ -1,4 +1,4 @@
-//! Per-file pull-&gt;transcode-&gt;push pipeline (ADR-0116, amending ADR-0112
+//! Per-file pull-&gt;transcode-&gt;push pipeline (CLI-0116, amending CLI-0112
 //! Decision §2/§6/§7). Download stays one bulk `rclone copy` subprocess
 //! (unchanged invocation, still gets rclone's own connection-reuse/listing
 //! efficiency), but the worker consumes it *live* instead of blocking on its
@@ -9,7 +9,7 @@
 //! it never waits for the rest of the batch to finish downloading. Transcode
 //! is bounded by `--concurrency` (CPU-bound); the new per-file push (`rclone
 //! copyto`, replacing the old bulk Phase C) is bounded by its own semaphore
-//! sized from `--transfers` (IO-bound, deliberately decoupled, ADR-0090's
+//! sized from `--transfers` (IO-bound, deliberately decoupled, CLI-0090's
 //! CPU-vs-IO split precedent).
 //!
 //! A single file's failure (transcode or push, after retries exhaust) is
@@ -24,7 +24,7 @@
 //! `enqueue`, which decides "already done" by checking each file's
 //! deterministic `placement::compute_destination_name` against a listing of
 //! `--destination-path` fetched once up front (`destination::
-//! list_existing_filenames`, ADR-0120) -- not a local checkpoint, since
+//! list_existing_filenames`, CLI-0120) -- not a local checkpoint, since
 //! `transform` runs on a freshly-provisioned, ephemeral VM per invocation
 //! and local disk never survives a VM replacement; `--destination-path` is
 //! the thing that actually persists. The two dispatch sources are disjoint
@@ -34,7 +34,7 @@
 //! guards against double-enqueueing, on top of `placement::place_one`'s own
 //! independent hard-error-on-collision backstop.
 //!
-//! **Local disk usage (ADR-0124).** Nothing above downloads or retains more
+//! **Local disk usage (CLI-0124).** Nothing above downloads or retains more
 //! than it needs to: before Phase A's pull is even spawned,
 //! `destination::list_source_relative_paths` lists the source tree
 //! (metadata only, no bytes) and `files_needing_pull` filters out anything
@@ -48,7 +48,7 @@
 //! -- so steady-state local disk usage during a run is bounded by the
 //! in-flight window (`--concurrency`/`--transfers` wide), not by the total
 //! size of the source/destination trees. A file that fails is deliberately
-//! left in place on disk for diagnosis -- with one exception (ADR-0143): a
+//! left in place on disk for diagnosis -- with one exception (CLI-0143): a
 //! file rejected because this run was given the wrong `--input-file-type`
 //! for it is deleted too, since it is undamaged and still present at
 //! `--source`, so retaining it only lets a fully-misdirected run
@@ -86,33 +86,33 @@ const TRANSCODE_RETRY_BACKOFF: Duration = Duration::from_secs(1);
 
 /// Sampled over the first `CIRCUIT_BREAKER_SAMPLE_SIZE` per-file pipeline
 /// completions (in completion order, not dispatch order); see
-/// `run_transform_job`'s circuit-breaker state and doc comment (ADR-0121).
+/// `run_transform_job`'s circuit-breaker state and doc comment (CLI-0121).
 const CIRCUIT_BREAKER_SAMPLE_SIZE: usize = 20;
 
 /// How many of those `CIRCUIT_BREAKER_SAMPLE_SIZE` completions must be
-/// non-retryable transcode failures to trip the breaker (ADR-0143).
+/// non-retryable transcode failures to trip the breaker (CLI-0143).
 ///
-/// ADR-0121 required unanimity, which made the breaker disarmable by a
+/// CLI-0121 required unanimity, which made the breaker disarmable by a
 /// single interleaved success -- and since `circuit_breaker_samples` only
 /// ever counts up to the sample size, that disarming was *permanent*. A
 /// mixed source, which is the common shape of a run pointed at the wrong
 /// `--input-file-type`, could therefore grind through every remaining file.
-/// 18 of 20 is still decisive rather than marginal: ADR-0130 already
+/// 18 of 20 is still decisive rather than marginal: CLI-0130 already
 /// narrowed what counts here to transcode-stage *and* non-retryable, so
 /// this is 18 same-class deterministic failures, not 18 assorted errors.
 const CIRCUIT_BREAKER_TRIP_THRESHOLD: usize = 18;
 
 /// Whether the circuit breaker should trip, given how many completions have
-/// been sampled and how many of those matched (ADR-0143). Extracted as a
+/// been sampled and how many of those matched (CLI-0143). Extracted as a
 /// pure function so the threshold is unit-testable without depending on
-/// concurrent completion ordering -- the same move ADR-0137 made with
+/// concurrent completion ordering -- the same move CLI-0137 made with
 /// `default_bucket_index`.
 fn circuit_breaker_should_trip(samples: usize, matches: usize) -> bool {
     samples == CIRCUIT_BREAKER_SAMPLE_SIZE && matches >= CIRCUIT_BREAKER_TRIP_THRESHOLD
 }
 
 /// How many times a single file will wait out a destination-endpoint outage
-/// before giving up on it (ADR-0144). Bounds the per-file cost of an outage
+/// before giving up on it (CLI-0144). Bounds the per-file cost of an outage
 /// that never ends; `EndpointGate`'s own backoff is what bounds the cost of
 /// one that does.
 const PUSH_ENDPOINT_RECOVERY_ROUNDS: usize = 4;
@@ -134,7 +134,7 @@ enum GateDecision {
 }
 
 /// Serialises recovery from a destination-endpoint outage so one outage
-/// costs the run one wait, not one wait per in-flight file (ADR-0144).
+/// costs the run one wait, not one wait per in-flight file (CLI-0144).
 ///
 /// Whichever task first observes an `is_endpoint_unreachable_error` wins an
 /// election and becomes *the prober*: it closes the gate, sleeps a backoff
@@ -146,7 +146,7 @@ enum GateDecision {
 /// (`Lsjson` on `--destination-path`) is a full-tree listing of a
 /// 38k-object prefix, far too expensive to use as a health check.
 ///
-/// This is the push-leg analogue of ADR-0121/0143's transcode circuit
+/// This is the push-leg analogue of CLI-0121/0143's transcode circuit
 /// breaker, with one deliberate difference: it **pauses and resumes**
 /// rather than aborting the run. A transient network fault is not the
 /// systemic converter-capability gap that breaker exists for, so the response
@@ -245,7 +245,7 @@ impl EndpointGate {
 /// `tracing::warn!` per attempt, `tracing::error!` on exhaustion) but adds
 /// one branch: a transcode error classified non-retryable by
 /// `media::is_non_retryable_transcode_error` returns immediately, with no
-/// sleep and no further attempt (ADR-0121) -- re-running `transcode_to_jpg`
+/// sleep and no further attempt (CLI-0121) -- re-running `transcode_to_jpg`
 /// against the exact same bytes reproduces the identical failure every time,
 /// so retrying only doubles ffmpeg invocations and adds a guaranteed sleep
 /// for zero benefit. Kept local rather than added as a parameter to the
@@ -254,9 +254,9 @@ impl EndpointGate {
 /// specific to `transcode_to_jpg`'s error strings alone.
 ///
 /// `context` is the file's source-relative path, emitted as a
-/// `relative_path` field on every event below (ADR-0141). Without it these
+/// `relative_path` field on every event below (CLI-0141). Without it these
 /// events named no file at all: `process_one`'s own span carries
-/// `relative_path` but stays at `debug` per ADR-0099's log-volume
+/// `relative_path` but stays at `debug` per CLI-0099's log-volume
 /// reasoning, so it is absent from a default-level run -- which is exactly
 /// the run whose failures someone reads afterwards.
 async fn retry_transcode_unless_fatal<T, F, Fut>(
@@ -315,12 +315,12 @@ pub(crate) struct TransformPlan {
     pub destination_path: String,
     pub local_output: PathBuf,
     pub input_file_type: InputFileType,
-    /// Only consulted when `input_file_type.is_video()` (ADR-0122); an
+    /// Only consulted when `input_file_type.is_video()` (CLI-0122); an
     /// unused, harmless `VideoQuality::Medium` default on an image run.
     pub video_quality: VideoQuality,
-    /// Only consulted when `input_file_type.is_audio()` (ADR-0153); its
+    /// Only consulted when `input_file_type.is_audio()` (CLI-0153); its
     /// default varies by kind (`InputFileType::default_audio_quality`), so
-    /// `mp4-audio` keeps ADR-0142's 48k while a music kind gets the top
+    /// `mp4-audio` keeps CLI-0142's 48k while a music kind gets the top
     /// tier.
     pub audio_quality: AudioQuality,
     pub download_transfers: usize,
@@ -335,7 +335,7 @@ pub(crate) enum Outcome {
     Transcoded,
     CopiedThrough,
     Failed,
-    /// A Markdown rendering of an `.eml` message (ADR-0157). Deliberately
+    /// A Markdown rendering of an `.eml` message (CLI-0157). Deliberately
     /// not a failure: nothing is pushed, and that is the intended result.
     SkippedEmailShaped,
 }
@@ -351,7 +351,7 @@ impl Outcome {
     }
 }
 
-/// Which stage of a file's pipeline failed (ADR-0130). Previously the
+/// Which stage of a file's pipeline failed (CLI-0130). Previously the
 /// failing stage survived only as prose inside `FileOutcome.detail`, so a
 /// run's failures could not be tallied per stage the way every other job's
 /// `FailureBreakdown` already does -- and the circuit breaker had to match
@@ -359,7 +359,7 @@ impl Outcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FailureStage {
     /// The file was in this run's intended pull set but `rclone` never
-    /// delivered it (ADR-0130's reconciliation), so no local pipeline ever
+    /// delivered it (CLI-0130's reconciliation), so no local pipeline ever
     /// ran for it.
     Pull,
     Transcode,
@@ -379,15 +379,15 @@ impl FailureStage {
 }
 
 /// One file's pipeline result: its placed local path(s), or the stage that
-/// failed plus that stage's error (ADR-0130).
+/// failed plus that stage's error (CLI-0130).
 ///
-/// A `Vec` since ADR-0149: a workbook yields one output per non-empty
+/// A `Vec` since CLI-0149: a workbook yields one output per non-empty
 /// sheet. Every other input kind yields a one-element vector.
 type ProcessResult = Result<Processed, (FailureStage, String)>;
 
 /// What a file's pipeline produced when it did not fail.
 ///
-/// A skip is its own variant (ADR-0157) rather than an empty `Pushed`, so
+/// A skip is its own variant (CLI-0157) rather than an empty `Pushed`, so
 /// "done, nothing to push" can never be confused with a converter that
 /// silently produced no output.
 #[derive(Debug)]
@@ -396,7 +396,7 @@ enum Processed {
     SkippedEmailShaped(email_shape::EmailSignals),
 }
 
-/// Per-stage failure tally (ADR-0130), reusing the field names
+/// Per-stage failure tally (CLI-0130), reusing the field names
 /// `metrics::record_phase`'s doc comment already expects a job's breakdown
 /// to share with its `phase` label.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -426,18 +426,18 @@ impl FailureBreakdown {
 pub(crate) struct FileOutcome {
     pub relative_path: String,
     /// Every output this input produced -- several for a multi-sheet
-    /// workbook (ADR-0149), one for every other kind, none on failure.
-    /// A row stays per *input* file, which is what leaves ADR-0130's pull
+    /// workbook (CLI-0149), one for every other kind, none on failure.
+    /// A row stays per *input* file, which is what leaves CLI-0130's pull
     /// reconciliation unchanged.
     pub destination_filenames: Vec<String>,
     pub outcome: Outcome,
-    /// `Some` iff `outcome` is `Outcome::Failed` (ADR-0130).
+    /// `Some` iff `outcome` is `Outcome::Failed` (CLI-0130).
     pub stage: Option<FailureStage>,
     pub detail: String,
 }
 
 /// `Job::Summary`. `failed` is `true` iff at least one file's outcome is
-/// `Outcome::Failed` after retries exhausted (ADR-0116) -- no longer "did
+/// `Outcome::Failed` after retries exhausted (CLI-0116) -- no longer "did
 /// the run abort" (there is no more whole-run abort). Every discovered file
 /// is attempted regardless of this value, and `pushed` reflects exactly how
 /// many files were actually pushed, independent of whether any other file
@@ -448,33 +448,33 @@ pub(crate) struct TransformSummary {
     pub pulled: u64,
     pub pushed: u64,
     pub failed: bool,
-    /// Per-stage tally of everything in `outcomes` that failed (ADR-0130).
+    /// Per-stage tally of everything in `outcomes` that failed (CLI-0130).
     pub failures: FailureBreakdown,
     /// Source files excluded before download because their deterministic
     /// destination name was already present at `--destination-path`
-    /// (ADR-0130) -- previously discarded silently by `files_needing_pull`,
+    /// (CLI-0130) -- previously discarded silently by `files_needing_pull`,
     /// which made a run that correctly skipped 500k already-done files
     /// indistinguishable in the report from one that found nothing to do.
     pub skipped_already_done: u64,
     /// macOS AppleDouble sidecars (`._*`) excluded from the pull set and
-    /// from dispatch (ADR-0130). Deliberately not a failure: these carry no
+    /// from dispatch (CLI-0130). Deliberately not a failure: these carry no
     /// user data, and their absence from the destination is correct.
     pub skipped_apple_double: u64,
-    /// Excel lock stubs (`~$*`) excluded the same way (ADR-0149), counted
-    /// separately since ADR-0151 -- they were folded into the AppleDouble
+    /// Excel lock stubs (`~$*`) excluded the same way (CLI-0149), counted
+    /// separately since CLI-0151 -- they were folded into the AppleDouble
     /// tally, so no artifact could say which kind of stub a run had
     /// actually skipped.
     pub skipped_lock_file: u64,
     /// Markdown renderings of `.eml` messages, pulled but not converted
-    /// (ADR-0157). Unlike the two counts above these were downloaded,
+    /// (CLI-0157). Unlike the two counts above these were downloaded,
     /// since only their content identifies them.
     pub skipped_email_shaped: u64,
     /// `rclone`'s own aggregate transfer-error count for the pull phase,
     /// retained as a cross-check against the reconciled per-file `Pull`
-    /// failures rather than being dropped on the floor (ADR-0130).
+    /// failures rather than being dropped on the floor (CLI-0130).
     pub pull_errors: u64,
     /// Every group of source keys differing only by letter case, each
-    /// sorted (ADR-0156). Listed in full in the report, since the log now
+    /// sorted (CLI-0156). Listed in full in the report, since the log now
     /// carries only an aggregate line with a few examples.
     pub case_collision_groups: Vec<Vec<String>>,
 }
@@ -495,13 +495,13 @@ fn result_dir(local_output: &Path) -> PathBuf {
     local_output.join("result")
 }
 
-/// Where a case-colliding source key's bytes land (ADR-0152).
+/// Where a case-colliding source key's bytes land (CLI-0152).
 ///
 /// Deliberately **outside** `source/`: `manifest::gather_pending` scans
 /// that tree and reconstructs each file's key from its path, which a
 /// disambiguated name would make it get wrong. Keeping variants out of it
-/// means ADR-0127's crash resume does not cover them -- after a crash they
-/// are simply re-pulled (one small bulk `copy` per slot since ADR-0156) --
+/// means CLI-0127's crash resume does not cover them -- after a crash they
+/// are simply re-pulled (one small bulk `copy` per slot since CLI-0156) --
 /// and that is exactly why no on-disk key-to-path side map is needed.
 fn case_variant_dir(local_output: &Path) -> PathBuf {
     staging_dir(local_output).join("case-variants")
@@ -509,7 +509,7 @@ fn case_variant_dir(local_output: &Path) -> PathBuf {
 
 /// One slot's own directory under `case_variant_dir`.
 ///
-/// A directory per *slot* rather than per key (ADR-0156). ADR-0152's
+/// A directory per *slot* rather than per key (CLI-0156). CLI-0152's
 /// per-key directory was what made the pull one `copyto` subprocess per
 /// key; a slot holds at most one member of each colliding group, so it is
 /// collision-free on a case-insensitive volume by construction and can
@@ -520,7 +520,7 @@ fn case_variant_dir(local_output: &Path) -> PathBuf {
 /// `slot_dir.join(key)` has exactly the same shape as the bulk pull's
 /// `source_dir.join(key)` in `enqueue` -- which is why recovering the
 /// source key from the local path is never needed, the same reasoning
-/// ADR-0152 used for its per-key directories.
+/// CLI-0152 used for its per-key directories.
 fn case_variant_slot_dir(local_output: &Path, slot: usize) -> PathBuf {
     case_variant_dir(local_output).join(format!("slot{slot}"))
 }
@@ -547,7 +547,7 @@ fn path_prefixes(source_key: &str) -> Vec<String> {
 }
 
 /// Distributes `variants` across the fewest slots in which every slot is
-/// collision-free under case folding (ADR-0156).
+/// collision-free under case folding (CLI-0156).
 ///
 /// Greedy, first-fit over the already-sorted input, so the assignment is a
 /// pure function of the key set and stable across runs -- the property
@@ -595,7 +595,7 @@ fn push_log_dir(local_output: &Path) -> PathBuf {
     staging_dir(local_output).join("push-logs")
 }
 
-/// A scratch directory that removes itself (ADR-0149).
+/// A scratch directory that removes itself (CLI-0149).
 ///
 /// `process_one` has many `?` early-returns, and a spreadsheet's scratch
 /// directory can hold a whole LibreOffice user profile -- hundreds of files
@@ -646,10 +646,10 @@ struct PendingOutput {
 }
 
 /// Local `result/` files belonging to `group`, newest-run-agnostic and
-/// sorted by name (ADR-0149's per-group extension of ADR-0127's resume).
+/// sorted by name (CLI-0149's per-group extension of CLI-0127's resume).
 ///
 /// `result_dir` is bounded by the in-flight window, not the dataset, because
-/// ADR-0124's GC empties it as files are pushed -- so reading it per input
+/// CLI-0124's GC empties it as files are pushed -- so reading it per input
 /// file is cheap.
 fn existing_group_outputs(result_dir: &Path, group: &str) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(result_dir) else {
@@ -674,7 +674,7 @@ fn existing_group_outputs(result_dir: &Path, group: &str) -> Vec<PathBuf> {
 /// deterministic, collision-free name, then push each one. Returns the
 /// final local paths on success so the caller can report them.
 ///
-/// **One input may yield several outputs** since ADR-0149: a workbook's
+/// **One input may yield several outputs** since CLI-0149: a workbook's
 /// sheets each become their own CSV. Every other input kind still produces
 /// exactly one, and takes a path through here that is behaviourally
 /// identical to before.
@@ -700,7 +700,7 @@ async fn process_one(
 ) -> ProcessResult {
     let group = placement::group_key(source_path, &pending_file.source_key, input_file_type);
 
-    // ADR-0127, extended per-group by ADR-0149: outputs already sitting in
+    // CLI-0127, extended per-group by CLI-0149: outputs already sitting in
     // `result_dir` survived a prior crash *after* a successful, verified
     // conversion -- placement only ever renames a scratch file in once the
     // converter exited 0 and passed its own guards -- so they are never
@@ -723,7 +723,7 @@ async fn process_one(
     {
         existing
     } else {
-        // ADR-0157: a Markdown rendering of an `.eml` message is left at
+        // CLI-0157: a Markdown rendering of an `.eml` message is left at
         // the source instead of converted. Checked here, after the pull,
         // because nothing in its key identifies it. A read error is not a
         // verdict: the file goes on to `pandoc`, which reports it properly.
@@ -740,7 +740,7 @@ async fn process_one(
                 None,
             );
             // Undamaged and still at `--source`, so the local copy has no
-            // value -- ADR-0143's reasoning for a wrong-input-kind failure.
+            // value -- CLI-0143's reasoning for a wrong-input-kind failure.
             remove_local_copy(&pending_file.absolute_path);
             return Ok(Processed::SkippedEmailShaped(signals));
         }
@@ -748,9 +748,9 @@ async fn process_one(
         let scratch = ScratchDir::create(scratch_dir, &group)
             .map_err(|err| (FailureStage::Transcode, err))?;
 
-        // ADR-0130: the run's real disk high-water mark. A 4K video's
+        // CLI-0130: the run's real disk high-water mark. A 4K video's
         // scratch output is multi-GB and a workbook's CSVs can exceed the
-        // workbook itself, while ADR-0124's post-push GC only bounds
+        // workbook itself, while CLI-0124's post-push GC only bounds
         // steady-state usage, not this transient peak. Fails just this one
         // file, matching `check_disk_space`'s documented contract.
         crate::commands::job::local::check_disk_space(scratch.path(), 0)
@@ -779,8 +779,8 @@ async fn process_one(
             1,
             None,
         );
-        // ADR-0143: a wrong-`--input-file-type` failure is the one class
-        // where ADR-0124's retain-the-failed-file-for-diagnosis rule buys
+        // CLI-0143: a wrong-`--input-file-type` failure is the one class
+        // where CLI-0124's retain-the-failed-file-for-diagnosis rule buys
         // nothing -- the file is undamaged, still present at `--source`
         // (where a rerun pulls it from anyway), and the error already says
         // exactly what is wrong. Keeping it would let a fully-misdirected
@@ -797,7 +797,7 @@ async fn process_one(
         let mut placed = Vec::with_capacity(outputs.len());
         for output in &outputs {
             // A single-output kind keeps `place_one`, whose hard error on an
-            // existing target is ADR-0112 §5's deliberate choice: at this
+            // existing target is CLI-0112 §5's deliberate choice: at this
             // scale a collision means a bug or an astronomically unlucky
             // hash, and a verifiably-unique scheme must fail loudly rather
             // than fall back to the probabilistic disambiguation it exists
@@ -852,7 +852,7 @@ async fn process_one(
                     format!("push semaphore closed unexpectedly: {err}"),
                 )
             })?;
-        // ADR-0144: an endpoint-level failure is shared by every concurrent
+        // CLI-0144: an endpoint-level failure is shared by every concurrent
         // push, so it is waited out once for the whole run via
         // `endpoint_gate` rather than being re-paid per file. Anything else
         // (a 403, a per-file read error) fails this file immediately,
@@ -884,14 +884,14 @@ async fn process_one(
 
         // This output's bytes are now durably present at
         // `destination_path`, so its local copy no longer serves any
-        // purpose (ADR-0124). The *source* is kept until every output has
+        // purpose (CLI-0124). The *source* is kept until every output has
         // pushed -- a partially-pushed workbook must still be re-convertible
         // from it on the next attempt.
         remove_local_copy(final_path);
-        // And so does its push log (ADR-0151). One per *output* object since
-        // ADR-0149, none of them ever cleaned: a single real run left 1318
+        // And so does its push log (CLI-0151). One per *output* object since
+        // CLI-0149, none of them ever cleaned: a single real run left 1318
         // behind. A *failed* push keeps its log -- that is the one case where
-        // it has diagnostic value, matching ADR-0124's retain-on-failure
+        // it has diagnostic value, matching CLI-0124's retain-on-failure
         // rule, and this line is only reached once the push succeeded.
         remove_local_copy(&push::log_path(push_log_dir, &destination_filename));
     }
@@ -905,7 +905,7 @@ async fn process_one(
 }
 
 /// Converts one input into its output(s) inside `scratch`, retrying a
-/// transient converter failure (ADR-0121) but never a deterministic one.
+/// transient converter failure (CLI-0121) but never a deterministic one.
 ///
 /// Every kind but the spreadsheets produces exactly one output, named
 /// exactly as it always was. A workbook produces one per non-empty sheet --
@@ -934,17 +934,17 @@ async fn convert_one(
     let input = &pending_file.absolute_path;
 
     // Each arm returns the path it actually produced, rather than writing
-    // to `scratch_path` by convention (ADR-0154 §5). `soffice` and
+    // to `scratch_path` by convention (CLI-0154 §5). `soffice` and
     // `ebook-convert` derive their own output name -- the former inside
     // `--outdir`, the latter from the extension it is given -- so a single
     // caller-chosen path cannot serve every converter.
     let produced: PathBuf = match input_file_type {
         // Already in the target format: copied through byte-for-byte on
-        // ADR-0112's reasoning. `Pdf` and `Txt` joined `Jpeg` in ADR-0154.
+        // CLI-0112's reasoning. `Pdf` and `Txt` joined `Jpeg` in CLI-0154.
         InputFileType::Jpeg | InputFileType::Pdf | InputFileType::Txt | InputFileType::Svg => {
             media::copy_through(input, &scratch_path).map(|()| scratch_path.clone())
         }
-        // ADR-0159: still raster images to JPEG, transparency flattened
+        // CLI-0159: still raster images to JPEG, transparency flattened
         // onto white. Retried like `png`/`heic`, since it is the same
         // ffmpeg invocation and the same transient-failure exposure.
         InputFileType::Avif
@@ -959,7 +959,7 @@ async fn convert_one(
         )
         .await
         .map(|()| scratch_path.clone()),
-        // ADR-0159: icons keep their transparency, as PNG.
+        // CLI-0159: icons keep their transparency, as PNG.
         InputFileType::Ico => retry_transcode_unless_fatal(
             TRANSCODE_RETRIES,
             TRANSCODE_RETRY_BACKOFF,
@@ -981,7 +981,7 @@ async fn convert_one(
             .await
             .map(|()| scratch_path.clone())
         }
-        // In-process and CPU-bound, so off the async runtime (ADR-0090).
+        // In-process and CPU-bound, so off the async runtime (CLI-0090).
         // Not retried: decoding the same file gives the same result.
         InputFileType::Procreate | InputFileType::Procreate2 => {
             let (from, to) = (input.clone(), scratch_path.clone());
@@ -991,10 +991,10 @@ async fn convert_one(
                 .map(|()| scratch_path.clone())
         }
         InputFileType::Ai | InputFileType::Emz => documents::to_svg(input, scratch).await,
-        // ADR-0160 §3: `soffice` alone writes an empty page for an EPS, so
+        // CLI-0160 §3: `soffice` alone writes an empty page for an EPS, so
         // Ghostscript interprets it first. Not retried, as above.
         InputFileType::Eps => documents::eps_to_svg(input, scratch).await,
-        // ADR-0160 §4: in-process and blocking, like `Tsv` below. Not
+        // CLI-0160 §4: in-process and blocking, like `Tsv` below. Not
         // retried: the same bytes render the same way.
         InputFileType::Ics | InputFileType::Vcf => {
             let (from, to) = (input.clone(), scratch_path.clone());
@@ -1039,13 +1039,13 @@ async fn convert_one(
         )
         .await
         .map(|()| scratch_path.clone()),
-        // The six LibreOffice-readable document kinds (ADR-0154). `Key`
+        // The six LibreOffice-readable document kinds (CLI-0154). `Key`
         // is sniffed inside `to_pdf` before soffice sees it.
         //
-        // Deliberately **not** retried, matching ADR-0149's reasoning for
+        // Deliberately **not** retried, matching CLI-0149's reasoning for
         // `.numbers`: a document converter fails deterministically on a
         // given file, so retrying would burn two extra invocations for a
-        // fixed outcome -- ADR-0141's pathology.
+        // fixed outcome -- CLI-0141's pathology.
         InputFileType::Doc
         | InputFileType::Docx
         | InputFileType::Pages
@@ -1065,7 +1065,7 @@ async fn convert_one(
         }
         InputFileType::Tsv => {
             // CPU-bound and blocking, so it runs off the async runtime
-            // (ADR-0090), as `sheets::split_workbook_to_csv` already does.
+            // (CLI-0090), as `sheets::split_workbook_to_csv` already does.
             let (from, to) = (input.clone(), scratch_path.clone());
             tokio::task::spawn_blocking(move || documents::tsv_to_csv(&from, &to))
                 .await
@@ -1082,7 +1082,7 @@ async fn convert_one(
     }])
 }
 
-/// The spreadsheet half of `convert_one` (ADR-0149).
+/// The spreadsheet half of `convert_one` (CLI-0149).
 async fn convert_spreadsheet(
     pending_file: &PendingFile,
     input_file_type: InputFileType,
@@ -1092,7 +1092,7 @@ async fn convert_spreadsheet(
 ) -> Result<Vec<PendingOutput>, String> {
     let input = &pending_file.absolute_path;
 
-    // Already CSV: copied through byte-for-byte, exactly as ADR-0112 treats
+    // Already CSV: copied through byte-for-byte, exactly as CLI-0112 treats
     // a `jpeg` input already in the target format. Encoding, line endings,
     // delimiter, and quoting are deliberately untouched.
     if input_file_type == InputFileType::Csv {
@@ -1135,7 +1135,7 @@ async fn convert_spreadsheet(
 }
 
 /// Best-effort local cleanup. Two call contexts: once a file is confirmed
-/// durably pushed (ADR-0124), and -- since ADR-0143 -- when a file failed
+/// durably pushed (CLI-0124), and -- since CLI-0143 -- when a file failed
 /// because this run was given the wrong `--input-file-type` for it, where
 /// the local copy has no diagnostic value.
 ///
@@ -1160,16 +1160,16 @@ fn remove_local_copy(path: &Path) {
 fn outcome_for(input_file_type: InputFileType) -> Outcome {
     match input_file_type {
         InputFileType::Jpeg => Outcome::CopiedThrough,
-        // ADR-0149: `csv` is already in the target format, so it is copied
-        // through on exactly ADR-0112's reasoning for `jpeg`.
+        // CLI-0149: `csv` is already in the target format, so it is copied
+        // through on exactly CLI-0112's reasoning for `jpeg`.
         //
         // `Opus` is **not** here despite also arriving in its target
-        // format: ADR-0153 re-encodes it to normalize a mixed library to
+        // format: CLI-0153 re-encodes it to normalize a mixed library to
         // one bitrate, so it is genuinely transcoded.
         //
-        // ADR-0154 adds `Pdf` and `Txt` on the same reasoning.
+        // CLI-0154 adds `Pdf` and `Txt` on the same reasoning.
         InputFileType::Csv | InputFileType::Pdf | InputFileType::Txt => Outcome::CopiedThrough,
-        // ADR-0159.
+        // CLI-0159.
         InputFileType::Svg => Outcome::CopiedThrough,
         InputFileType::Png
         | InputFileType::Heic
@@ -1213,7 +1213,7 @@ fn outcome_for(input_file_type: InputFileType) -> Outcome {
     }
 }
 
-/// Send SIGSTOP to pause a process (Unix only, ADR-0129).
+/// Send SIGSTOP to pause a process (Unix only, CLI-0129).
 #[cfg(unix)]
 fn pause_pull_process(pid: u32) {
     if let Err(err) = unsafe {
@@ -1229,7 +1229,7 @@ fn pause_pull_process(pid: u32) {
     }
 }
 
-/// Send SIGCONT to resume a process (Unix only, ADR-0129).
+/// Send SIGCONT to resume a process (Unix only, CLI-0129).
 #[cfg(unix)]
 fn resume_pull_process(pid: u32) {
     if let Err(err) = unsafe {
@@ -1248,7 +1248,7 @@ fn resume_pull_process(pid: u32) {
 /// Enqueues `relative_path` into `queue` unless it is already fully done --
 /// its deterministic `placement::compute_destination_name` already exists in
 /// `existing_destination_filenames` (fetched once from `--destination-path`
-/// before dispatch begins, ADR-0120) -- or already dispatched this run
+/// before dispatch begins, CLI-0120) -- or already dispatched this run
 /// (`dispatched`, guarding against the live tail re-reporting a file the
 /// initial scan already queued -- see this module's doc comment).
 fn enqueue(
@@ -1260,7 +1260,7 @@ fn enqueue(
     dispatched: &mut HashSet<String>,
     queue: &mut VecDeque<PendingFile>,
 ) -> EnqueueOutcome {
-    // ADR-0130: the second of two AppleDouble choke points. `files_needing_pull`
+    // CLI-0130: the second of two AppleDouble choke points. `files_needing_pull`
     // keeps these out of the download set in the first place; this one covers
     // the other two dispatch sources -- the initial on-disk scan (a stub left
     // by an earlier run, or an operator-staged tree) and rclone's live tail --
@@ -1268,7 +1268,7 @@ fn enqueue(
     if crate::core::data::is_apple_double_basename(&relative_path) {
         return EnqueueOutcome::SkippedAppleDouble;
     }
-    // ADR-0149: an Excel lock stub matches `--include '*.xlsx'` but is not a
+    // CLI-0149: an Excel lock stub matches `--include '*.xlsx'` but is not a
     // workbook. Same two choke points, and the same reason, as the
     // AppleDouble filter above: without this it arrives as a deterministic
     // *failure*, which is exactly what can trip the circuit breaker.
@@ -1296,9 +1296,9 @@ fn enqueue(
 /// Why `enqueue` did or didn't queue a path.
 ///
 /// Both skip variants are counted by the caller, each into its own tally
-/// (ADR-0130 for AppleDouble, ADR-0151 for the lock file). The rest are
+/// (CLI-0130 for AppleDouble, CLI-0151 for the lock file). The rest are
 /// ordinary, expected outcomes of the two overlapping dispatch sources.
-/// ADR-0149 added `SkippedLockFile` but left every call site matching only
+/// CLI-0149 added `SkippedLockFile` but left every call site matching only
 /// on `SkippedAppleDouble`, so a lock file skipped here was counted
 /// nowhere at all.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1307,7 +1307,7 @@ enum EnqueueOutcome {
     AlreadyDone,
     AlreadyDispatched,
     SkippedAppleDouble,
-    /// An Excel `~$` lock stub (ADR-0149), counted with the AppleDouble
+    /// An Excel `~$` lock stub (CLI-0149), counted with the AppleDouble
     /// skips: neither carries user data, and neither belongs at the
     /// destination.
     SkippedLockFile,
@@ -1316,8 +1316,8 @@ enum EnqueueOutcome {
 /// Filters `source_relative_paths` down to the ones that still need
 /// pulling: a relative path whose `placement::compute_destination_name` is
 /// already present in `existing_destination_filenames` is already fully
-/// done and must not be downloaded again at all (ADR-0124) -- this
-/// supersedes ADR-0120's "Accepted limitation" that Phase A could only ever
+/// done and must not be downloaded again at all (CLI-0124) -- this
+/// supersedes CLI-0120's "Accepted limitation" that Phase A could only ever
 /// re-pull already-done files on a rerun. That limitation assumed the
 /// destination's hash-based naming was one-way and therefore unusable as a
 /// pull-side filter; in fact `compute_destination_name` is a pure *forward*
@@ -1333,7 +1333,7 @@ fn files_needing_pull(
 ) -> PullSelection {
     let mut selection = PullSelection::default();
     for relative_path in source_relative_paths {
-        // ADR-0130: an AppleDouble stub matches rclone's `--include
+        // CLI-0130: an AppleDouble stub matches rclone's `--include
         // '*.<ext>'` filter but is an 82-byte resource fork, not decodable
         // media. Excluding it here means it is never downloaded at all,
         // rather than pulled and then failed by `ffmpeg` with an error that
@@ -1342,15 +1342,15 @@ fn files_needing_pull(
             selection.skipped_apple_double += 1;
             continue;
         }
-        // ADR-0149, the first of the two choke points -- see `enqueue`.
+        // CLI-0149, the first of the two choke points -- see `enqueue`.
         if crate::core::data::is_excel_lock_basename(&relative_path) {
             selection.skipped_lock_file += 1;
             continue;
         }
-        // ADR-0149: "already done" is a group-completeness question, not
+        // CLI-0149: "already done" is a group-completeness question, not
         // single-name membership, because a workbook maps to several
         // destination names. The group key is still a pure forward function
-        // of the path alone, which is what keeps ADR-0124's pre-pull filter
+        // of the path alone, which is what keeps CLI-0124's pre-pull filter
         // working at all -- a sheet *count* needs the file, a group key does
         // not.
         if destination_groups.is_complete(&placement::group_key(
@@ -1369,7 +1369,7 @@ fn files_needing_pull(
 
 /// Why a file this run asked rclone for never entered the pipeline.
 ///
-/// Extracted as a pure function (ADR-0144) for the same reason ADR-0143
+/// Extracted as a pure function (CLI-0144) for the same reason CLI-0143
 /// extracted `circuit_breaker_should_trip`: the branch is the interesting
 /// part, and it is untestable while buried in `run_transform_job`'s
 /// reconciliation loop.
@@ -1378,14 +1378,14 @@ fn files_needing_pull(
 /// For a case-collision it was actively *wrong* -- rclone does report such
 /// a file, at `notice` level as `Duplicate object found in source -
 /// ignoring`, which this job never reads -- and that wrongness sent the
-/// original ADR-0144 investigation down a false-positive path for a while.
+/// original CLI-0144 investigation down a false-positive path for a while.
 ///
-/// ADR-0152 replaces the collision arm entirely. A colliding key is no
+/// CLI-0152 replaces the collision arm entirely. A colliding key is no
 /// longer dropped by the bulk pull: it is fetched separately, so the only
 /// way one goes undelivered now is that its own pull failed -- and
 /// `case_variant_failures` carries rclone's actual error for it, which is
 /// strictly more useful than any prose this function could invent. Since
-/// ADR-0156 that pull is its slot's bulk `copy`, and the error is the
+/// CLI-0156 that pull is its slot's bulk `copy`, and the error is the
 /// slot's, attributed only to the keys that did not land.
 fn undelivered_detail(
     relative_path: &str,
@@ -1395,7 +1395,7 @@ fn undelivered_detail(
     if let Some(err) = case_variant_failures.get(relative_path) {
         format!(
             "this source key collides with another under case-folding, so it was pulled \
-             separately to its own local path (ADR-0152/0156) -- and that pull failed: {err}"
+             separately to its own local path (CLI-0152/0156) -- and that pull failed: {err}"
         )
     } else if case_collisions.contains(relative_path) {
         // Reachable only if a colliding key went missing without its own
@@ -1412,8 +1412,8 @@ fn undelivered_detail(
 }
 
 /// Splits this run's pull set into the keys the bulk `rclone copy` can take
-/// and the ones that must be fetched separately (ADR-0152), into the
-/// collision-free slots `assign_case_variant_slots` builds (ADR-0156).
+/// and the ones that must be fetched separately (CLI-0152), into the
+/// collision-free slots `assign_case_variant_slots` builds (CLI-0156).
 ///
 /// Deliberately removes *every* member of a colliding group, not just the
 /// ones rclone would have dropped: which one it keeps is its own ordering
@@ -1439,24 +1439,24 @@ fn split_pull_set(
     (bulk, variants)
 }
 
-/// Cadence of the main loop's `transform: progress` line (ADR-0156).
+/// Cadence of the main loop's `transform: progress` line (CLI-0156).
 const PROGRESS_INTERVAL: Duration = Duration::from_secs(60);
 
 /// How many undelivered files the pull reconciliation names in the log
-/// before collapsing the rest into one line (ADR-0156).
+/// before collapsing the rest into one line (CLI-0156).
 const UNDELIVERED_LOG_LIMIT: u64 = 50;
 
 /// How many colliding groups the aggregate collision log line names
-/// (ADR-0156); the report carries the rest.
+/// (CLI-0156); the report carries the rest.
 const COLLISION_LOG_EXAMPLES: usize = 10;
 
 /// The name a source key has on the local volume, for deciding which keys
-/// collide there (ADR-0158): NFC, then lowercase.
+/// collide there (CLI-0158): NFC, then lowercase.
 ///
 /// APFS matches names regardless of both letter case and Unicode
 /// normalization, so `Montréal` spelled with a precomposed `é` and with
 /// `e` + U+0301 are one local file even though they are two S3 keys.
-/// Lowercasing alone (ADR-0144) missed that. This approximates APFS rather
+/// Lowercasing alone (CLI-0144) missed that. This approximates APFS rather
 /// than reproducing it -- APFS uses its own case-folding tables -- and a
 /// pair it misses still surfaces as an undelivered file, never silently.
 fn local_fold(key: &str) -> String {
@@ -1466,7 +1466,7 @@ fn local_fold(key: &str) -> String {
 
 /// `case_collisions` regrouped by folded key, each group and the list of
 /// groups sorted, so the log line's examples and the report's listing are
-/// stable across runs (ADR-0156).
+/// stable across runs (CLI-0156).
 fn case_collision_groups(case_collisions: &HashSet<String>) -> Vec<Vec<String>> {
     let mut by_folded: HashMap<String, Vec<String>> = HashMap::new();
     for key in case_collisions {
@@ -1488,7 +1488,7 @@ fn case_collision_groups(case_collisions: &HashSet<String>) -> Vec<Vec<String>> 
 
 /// Source keys in `relative_paths` that differ from another key *only* by
 /// letter case, and so cannot both exist in the local pull tree on a
-/// case-insensitive volume (APFS's default, and HFS+ before it) -- ADR-0144.
+/// case-insensitive volume (APFS's default, and HFS+ before it) -- CLI-0144.
 ///
 /// Returns every member of every colliding group, not just the ones that
 /// lose: which member rclone keeps and which it discards is its own
@@ -1497,8 +1497,8 @@ fn case_collision_groups(case_collisions: &HashSet<String>) -> Vec<Vec<String>> 
 /// Why these go undetected without this: rclone resolves the collision
 /// itself, logging `Duplicate object found in source - ignoring` at
 /// **`notice`** level and leaving its aggregate error count at zero, so
-/// ADR-0130's reconciliation correctly sees the file as undelivered while
-/// `pull_summary.errors` disagrees -- exactly the mismatch ADR-0130's own
+/// CLI-0130's reconciliation correctly sees the file as undelivered while
+/// `pull_summary.errors` disagrees -- exactly the mismatch CLI-0130's own
 /// warning exists to surface. S3 keys are case-sensitive, so two such keys
 /// are entirely legitimate objects with potentially different content;
 /// rclone's "duplicate" judgment is purely name-based and never compares
@@ -1520,7 +1520,7 @@ fn case_insensitive_collisions(relative_paths: &[String]) -> HashSet<String> {
 }
 
 /// What `files_needing_pull` decided, including the two counts it used to
-/// discard silently (ADR-0130). `to_pull` doubles as the expected set the
+/// discard silently (CLI-0130). `to_pull` doubles as the expected set the
 /// pull phase is reconciled against once the pipeline drains.
 #[derive(Debug, Default)]
 struct PullSelection {
@@ -1529,19 +1529,19 @@ struct PullSelection {
     skipped_apple_double: u64,
     skipped_lock_file: u64,
     /// Members of `to_pull` that collide with another member under
-    /// case-folding (ADR-0144), so they cannot all share one directory on
+    /// case-folding (CLI-0144), so they cannot all share one directory on
     /// a case-insensitive local volume.
     ///
-    /// Since ADR-0152 these are **excluded from the bulk pull and fetched
-    /// separately** into their own directories (per-slot since ADR-0156),
+    /// Since CLI-0152 these are **excluded from the bulk pull and fetched
+    /// separately** into their own directories (per-slot since CLI-0156),
     /// so every one of them arrives. Before that, rclone resolved the clash itself by keeping
     /// one and ignoring the rest, and the rest became `Pull` failures.
     case_collisions: HashSet<String>,
 }
 
 /// Writes `relative_paths` newline-delimited to `dir/file_name`, for
-/// `Copy`'s `files_from` (ADR-0124). The name is the caller's since
-/// ADR-0156, which needs one list per case-variant slot beside the bulk
+/// `Copy`'s `files_from` (CLI-0124). The name is the caller's since
+/// CLI-0156, which needs one list per case-variant slot beside the bulk
 /// pull's own `pull-files-from.txt`.
 fn write_files_from(
     dir: &Path,
@@ -1563,7 +1563,7 @@ fn write_files_from(
 /// file's outcome survives for the report.
 ///
 /// `upload_concurrency` sizes the `push_semaphore` (`Arc<Semaphore>`), the
-/// concurrency cap for per-file `rclone copyto` push subprocesses (ADR-0129).
+/// concurrency cap for per-file `rclone copyto` push subprocesses (CLI-0129).
 pub(crate) async fn run_transform_job(
     plan: &TransformPlan,
     concurrency: usize,
@@ -1575,14 +1575,14 @@ pub(crate) async fn run_transform_job(
     let push_log_dir = push_log_dir(&plan.local_output);
 
     // A `.scratch` file surviving from a prior crashed run is never a
-    // resumable artifact (ADR-0127): `transcode_video`/`transcode_to_jpg`
+    // resumable artifact (CLI-0127): `transcode_video`/`transcode_to_jpg`
     // write `ffmpeg`'s output directly to this path, so anything found here
     // at startup is, by construction, a truncated/corrupt partial, always
     // silently overwritten (`-y`) the next time its still-present `source/`
     // file is reprocessed anyway. Clearing it here just reclaims that disk
     // space proactively instead of leaving it until then. Best-effort: a
     // missing directory (first run) or a removal failure is not fatal.
-    // ADR-0152 clears the case-variant tree on the same reasoning: a
+    // CLI-0152 clears the case-variant tree on the same reasoning: a
     // variant left behind is not resumable state (nothing records which key
     // it came from), and re-pulling it costs one small per-slot `copy`.
     for stale in [&scratch_dir, &case_variant_dir(&plan.local_output)] {
@@ -1597,12 +1597,12 @@ pub(crate) async fn run_transform_job(
         }
     }
 
-    // The authoritative "already done" source (ADR-0120) -- fetched once,
+    // The authoritative "already done" source (CLI-0120) -- fetched once,
     // before the pull subprocess exists, since `--destination-path` is the
     // one thing that actually persists across this job's ephemeral VMs.
     let existing_destination_filenames =
         destination::list_existing_filenames(&plan.destination_path).await?;
-    // ADR-0149 §3: indexed once, so the per-source-path cost stays O(1)
+    // CLI-0149 §3: indexed once, so the per-source-path cost stays O(1)
     // exactly as the `HashSet` it replaces.
     let destination_groups = placement::DestinationGroups::index(&existing_destination_filenames);
 
@@ -1631,17 +1631,17 @@ pub(crate) async fn run_transform_job(
         }
     }
 
-    // ADR-0124: compute which source files still need pulling *before*
+    // CLI-0124: compute which source files still need pulling *before*
     // spawning Phase A at all -- a file already fully done at the
     // destination is excluded here, never downloaded in the first place,
     // rather than discovered redundant only after its bytes already landed
-    // locally (ADR-0120's "Accepted limitation").
+    // locally (CLI-0120's "Accepted limitation").
     let source_relative_paths = destination::list_source_relative_paths(
         &plan.source_path,
         plan.input_file_type.extensions(),
     )
     .await?;
-    // ADR-0139: a listing that matches nothing produces a run that is
+    // CLI-0139: a listing that matches nothing produces a run that is
     // byte-for-byte indistinguishable from a successful no-op (0 pulled, 0
     // failed, 0 rclone errors, exit 0) -- which is exactly how the
     // `.jpg`-vs-`.jpeg` filter bug stayed invisible. Say so out loud.
@@ -1649,7 +1649,7 @@ pub(crate) async fn run_transform_job(
     // init` deliberately registers no console layer, so a `warn!` alone
     // reaches only `pigeon.jsonl` and never the operator's terminal. Safe
     // here specifically because `transform` runs no `MultiProgress` bars
-    // for a stray write to corrupt (ADR-0015).
+    // for a stray write to corrupt (CLI-0015).
     if source_relative_paths.is_empty() {
         let patterns = plan
             .input_file_type
@@ -1686,7 +1686,7 @@ pub(crate) async fn run_transform_job(
     skipped_apple_double += selection.skipped_apple_double;
     skipped_lock_file += selection.skipped_lock_file;
 
-    // ADR-0130: fail fast before a single byte is downloaded. Nothing has
+    // CLI-0130: fail fast before a single byte is downloaded. Nothing has
     // been pulled yet at this point, so there is nothing to salvage -- unlike
     // the per-file check in `process_one`, which fails only its own file.
     if !files_to_pull.is_empty() {
@@ -1695,17 +1695,17 @@ pub(crate) async fn run_transform_job(
         crate::commands::job::local::check_disk_space(&source_dir, 0)?;
     }
 
-    // ADR-0144 surfaced this before the pull so the operator learns about it
+    // CLI-0144 surfaced this before the pull so the operator learns about it
     // from the log rather than from an inexplicable `Pull` failure hours
-    // later. ADR-0152 keeps the per-group line and the named keys, but it is
+    // later. CLI-0152 keeps the per-group line and the named keys, but it is
     // no longer a warning about data this job is about to lose: every member
     // is now pulled to its own directory, so this is an INFO describing what
-    // was done. ADR-0144's "rclone will deliver at most one of them" became
+    // was done. CLI-0144's "rclone will deliver at most one of them" became
     // false the moment that landed.
     //
-    // ADR-0156: one aggregate line, not one per group. Per-group lines were
+    // CLI-0156: one aggregate line, not one per group. Per-group lines were
     // 428 of one `md` run's 430, re-inflating the per-run log artifact
-    // ADR-0151 had just shrunk. The complete list moved to the report,
+    // CLI-0151 had just shrunk. The complete list moved to the report,
     // which is the right home for a list that scales with the source.
     let case_collision_groups = case_collision_groups(&case_collisions);
     if !case_collision_groups.is_empty() {
@@ -1787,14 +1787,14 @@ pub(crate) async fn run_transform_job(
     };
     drop(pull_pid_tx);
 
-    // ADR-0152: colliding keys are fetched outside the bulk pull and queued
+    // CLI-0152: colliding keys are fetched outside the bulk pull and queued
     // directly, because each lands at a path its key does not describe, so
     // the live tail's `enqueue` (`source_dir.join(key)`) would be wrong for
     // it -- the queue entry carries the two separately, which is what
     // `PendingFile`'s rename made explicit.
     //
-    // ADR-0156: one bulk `Copy` per collision-free *slot*, all concurrent,
-    // instead of ADR-0152's one sequential `copyto` per key. ADR-0152 called
+    // CLI-0156: one bulk `Copy` per collision-free *slot*, all concurrent,
+    // instead of CLI-0152's one sequential `copyto` per key. CLI-0152 called
     // the per-key pass "inherently tiny"; a real `md` run had 428 groups /
     // 870 keys and spent 19m45s here -- almost all of it rclone process
     // startup -- with the whole pipeline stalled behind it. Still a barrier
@@ -1822,7 +1822,7 @@ pub(crate) async fn run_transform_job(
                     job: "transform",
                     step: "pull",
                     upload_metrics: false,
-                    // No `pid_tx`: these are not under ADR-0129 backpressure,
+                    // No `pid_tx`: these are not under CLI-0129 backpressure,
                     // since they finish before the main loop starts.
                     hooks: crate::core::rclone::StreamHooks::default(),
                 })
@@ -1879,7 +1879,7 @@ pub(crate) async fn run_transform_job(
     // Caps each concurrent `ffmpeg` transcode's own internal thread count so
     // the whole in-flight fleet stays within the host's real core count
     // instead of each process independently defaulting to all of them
-    // (ADR-0127).
+    // (CLI-0127).
     let transcode_threads = (std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
@@ -1889,7 +1889,7 @@ pub(crate) async fn run_transform_job(
     let push_semaphore = Arc::new(Semaphore::new(upload_concurrency.max(1)));
     let endpoint_gate = Arc::new(EndpointGate::new());
 
-    // Backpressure: pause/resume pull based on backlog depth (ADR-0129).
+    // Backpressure: pause/resume pull based on backlog depth (CLI-0129).
     let high_water_mark = plan.max_pending_downloads;
     let low_water_mark = (high_water_mark / 2).max(1);
     let mut pull_pid: Option<u32> = None;
@@ -1904,12 +1904,12 @@ pub(crate) async fn run_transform_job(
     let mut failures = FailureBreakdown::default();
     let mut skipped_email_shaped: u64 = 0;
 
-    // Circuit breaker (ADR-0121): if the first `CIRCUIT_BREAKER_SAMPLE_SIZE`
+    // Circuit breaker (CLI-0121): if the first `CIRCUIT_BREAKER_SAMPLE_SIZE`
     // per-file completions (in completion order, not dispatch order -- see
     // this module's doc comment on concurrency) are *all* transcode failures
     // sharing the same deterministic, non-retryable error class, this is a
     // systemic environment-capability gap, not an isolated bad file --
-    // categorically different from, and must not regress, ADR-0116's
+    // categorically different from, and must not regress, CLI-0116's
     // removal of whole-run-abort-on-a-single-failure. Once tripped, no new
     // work is dispatched or enqueued; whatever's already in-flight (and the
     // pull subprocess, left to finish naturally) still completes.
@@ -1918,19 +1918,19 @@ pub(crate) async fn run_transform_job(
     let mut circuit_breaker_tripped = false;
     let mut circuit_breaker_example: Option<String> = None;
 
-    // ADR-0141: `tokio::spawn` does not propagate the caller's ambient span,
+    // CLI-0141: `tokio::spawn` does not propagate the caller's ambient span,
     // so without this every per-file event below (notably
     // `retry_transcode_unless_fatal`'s WARN/ERROR lines) landed in
     // `pigeon.jsonl` with no `command` span at all -- invisible to the
     // `analyze-job-run` skill's documented `spans[].command` filter. Same
-    // capture-then-`.instrument()` shape ADR-0098 applied to
+    // capture-then-`.instrument()` shape CLI-0098 applied to
     // `deduplicate::worker`'s own spawned tasks.
     let command_span = tracing::Span::current();
 
-    // ADR-0156: the run body used to emit nothing between "pull phase
+    // CLI-0156: the run body used to emit nothing between "pull phase
     // starting" and "run complete" -- on a ~18h `md` run, one line and then
     // silence. These are the numbers that explain a stopped pull (backlog
-    // vs. ADR-0129's water marks) and make an ETA computable, and they
+    // vs. CLI-0129's water marks) and make an ETA computable, and they
     // exist nowhere but this function's locals. Unconditional rather than
     // change-gated: an unchanged line is itself the evidence of a stall.
     let mut progress_interval = tokio::time::interval_at(
@@ -2009,7 +2009,7 @@ pub(crate) async fn run_transform_job(
                 let Some(joined) = joined else { continue; };
                 let (relative_path, result) = joined.expect("transform pipeline task panicked");
 
-                // ADR-0157: an email-shaped skip says something about the
+                // CLI-0157: an email-shaped skip says something about the
                 // input, not the converter, so it takes no breaker sample --
                 // a mostly-email bucket would otherwise fill the window with
                 // non-evidence.
@@ -2019,7 +2019,7 @@ pub(crate) async fn run_transform_job(
                     && circuit_breaker_samples < CIRCUIT_BREAKER_SAMPLE_SIZE
                 {
                     circuit_breaker_samples += 1;
-                    // ADR-0130: require the failure to have actually come from
+                    // CLI-0130: require the failure to have actually come from
                     // the transcode stage, not merely to carry a string that
                     // matches. A place/push error is never evidence of the
                     // systemic converter-capability gap this breaker exists for.
@@ -2035,7 +2035,7 @@ pub(crate) async fn run_transform_job(
                         circuit_breaker_matches,
                     ) {
                         circuit_breaker_tripped = true;
-                        // ADR-0129: deadlock guard -- if pull is paused, resume it so
+                        // CLI-0129: deadlock guard -- if pull is paused, resume it so
                         // backlog can drain (the circuit breaker stops dispatch anyway).
                         if let (Some(pid), true) = (pull_pid, pull_is_paused) {
                             resume_pull_process(pid);
@@ -2061,7 +2061,7 @@ pub(crate) async fn run_transform_job(
                         });
                     }
                     Ok(Processed::Pushed(final_paths)) => {
-                        // Counts output *objects* (ADR-0149): a workbook
+                        // Counts output *objects* (CLI-0149): a workbook
                         // pushing three sheets is three pushes.
                         pushed += final_paths.len() as u64;
                         outcomes.push(FileOutcome {
@@ -2078,7 +2078,7 @@ pub(crate) async fn run_transform_job(
                         });
                     }
                     Err((stage, err)) => {
-                        // ADR-0156: the one choke point every stage's
+                        // CLI-0156: the one choke point every stage's
                         // failure funnels through. Before this, only the
                         // ffmpeg kinds logged a failure at all (inside
                         // `retry_transcode_unless_fatal`); every document,
@@ -2103,10 +2103,10 @@ pub(crate) async fn run_transform_job(
                     }
                 }
 
-                // ADR-0129: dynamic backpressure -- check backlog and adjust
+                // CLI-0129: dynamic backpressure -- check backlog and adjust
                 // pull pause state.
                 //
-                // ADR-0151: only while the pull is still running. Without the
+                // CLI-0151: only while the pull is still running. Without the
                 // `!pull_finished` guard, a run whose pull outpaces local work
                 // -- which is most of them, and reliably so for small inputs --
                 // signalled the exited pid moments after it finished, then
@@ -2149,7 +2149,7 @@ pub(crate) async fn run_transform_job(
             joined = &mut pull_handle, if !pull_finished => {
                 let result = joined.map_err(|err| format!("rclone pull task join failed: {err}"))?;
                 pull_finished = true;
-                // An exited process is not paused (ADR-0151).
+                // An exited process is not paused (CLI-0151).
                 pull_is_paused = false;
                 // Drain anything buffered between the last select poll and
                 // the subprocess's exit -- `try_recv` is non-blocking, so
@@ -2177,7 +2177,7 @@ pub(crate) async fn run_transform_job(
     }
 
     let mut pull_summary = pull_result.expect("loop only exits after pull_finished is set")?;
-    // ADR-0156: the case-variant slots are real pulls too, so they count
+    // CLI-0156: the case-variant slots are real pulls too, so they count
     // toward the totals the cross-check, the summary line and the report use.
     pull_summary.transferred += case_variant_summary.transferred;
     pull_summary.errors += case_variant_summary.errors;
@@ -2195,35 +2195,35 @@ pub(crate) async fn run_transform_job(
              files, so the run is being aborted instead of grinding through every remaining file \
              with a guaranteed-identical failure. The usual causes: (1) the wrong \
              --input-file-type for what this source actually holds -- e.g. a mp4-audio run \
-             pointed at real video, or vice versa (ADR-0143); a spreadsheet kind pointed at \
-             something that is not a workbook (ADR-0149); or a document kind pointed at \
+             pointed at real video, or vice versa (CLI-0143); a spreadsheet kind pointed at \
+             something that is not a workbook (CLI-0149); or a document kind pointed at \
              something unreadable, which for `key` specifically means a file that is not an \
-             iWork container at all, often a private key (ADR-0154); or (2) an \
+             iWork container at all, often a private key (CLI-0154); or (2) an \
              environment/capability gap, the converter on this job's host lacking support for \
              this input's format or a feature it uses -- `ffmpeg` for image/video/audio kinds, \
              `soffice` for numbers/doc/docx/pages/rtf/pptx/key, `ebook-convert` for epub, and \
              `pandoc` for md/rst; or (3) the converter itself crashing, which says \
-             `converter crashed` and is not the files' fault (ADR-0158). The example error \
+             `converter crashed` and is not the files' fault (CLI-0158). The example error \
              below distinguishes them. \
              Example error: {example}"
         ));
     }
 
-    // ADR-0130: reconcile the pull phase against its own intended set.
+    // CLI-0130: reconcile the pull phase against its own intended set.
     // `files_to_pull` is exactly what this run asked rclone for, and every
     // path that entered the pipeline by *either* dispatch source passed
     // through `enqueue` and so is recorded in `dispatched`. Anything intended
     // but never dispatched was therefore never delivered -- a real per-file
     // pull failure, at a fidelity rclone's own aggregate error count can't
     // give us without `-v`-level logging this job doesn't enable (the same
-    // limit ADR-0102 recorded for `import`).
+    // limit CLI-0102 recorded for `import`).
     //
     // Deliberately after the circuit-breaker return above: a tripped breaker
     // stops dispatch on purpose, so reconciling there would manufacture
     // hundreds of spurious "pull failures" out of work that was correctly
     // abandoned.
     //
-    // ADR-0156: each undelivered file is also logged, but only the first
+    // CLI-0156: each undelivered file is also logged, but only the first
     // `UNDELIVERED_LOG_LIMIT` by name -- a pull that failed wholesale would
     // otherwise write one WARN per file in the source. The report still
     // names every one.
@@ -2274,7 +2274,7 @@ pub(crate) async fn run_transform_job(
     // transfer *errors*, this counts *undelivered files* -- so a mismatch is
     // surfaced rather than silently reconciled away.
     // The two counts measure subtly different things, so a mismatch is
-    // surfaced rather than reconciled away -- but ADR-0151 makes it say what
+    // surfaced rather than reconciled away -- but CLI-0151 makes it say what
     // accounts for the gap when the job already knows. A case collision is
     // the common case: rclone resolves it itself, logs `Duplicate object
     // found in source - ignoring` at **notice** level, and leaves its error
@@ -2326,7 +2326,7 @@ pub(crate) async fn run_transform_job(
         pigeon_job = "transform",
         pulled = pull_summary.transferred,
         // Output objects, where `transcoded`/`copied_through` below count
-        // input files (ADR-0149). The field name is kept because the
+        // input files (CLI-0149). The field name is kept because the
         // `analyze-job-run` runbook reads this line, and it genuinely is
         // the number of pushes.
         pushed,
@@ -2359,7 +2359,7 @@ pub(crate) async fn run_transform_job(
     })
 }
 
-/// Bespoke, tab-separated `<local_output>/transform-report.txt` (ADR-0112
+/// Bespoke, tab-separated `<local_output>/transform-report.txt` (CLI-0112
 /// Decision §8) -- not the generic `Debug`-based report
 /// `report_upload::write_summary_report` writes for jobs without a bespoke
 /// one, mirroring `deduplicate-report.txt`'s precedent. Written at
@@ -2371,7 +2371,7 @@ pub(crate) fn write_report(
 ) -> Result<PathBuf, String> {
     use std::fmt::Write as _;
 
-    // `stage` column added by ADR-0130 -- a failed row now says which stage
+    // `stage` column added by CLI-0130 -- a failed row now says which stage
     // failed without the reader having to parse `detail`'s prose.
     let mut body =
         String::from("source_relative_path\toutcome\tstage\tdestination_filenames\tdetail\n");
@@ -2427,7 +2427,7 @@ pub(crate) fn write_report(
         "pull: {} transferred, {} rclone error(s) reported.",
         summary.pulled, summary.pull_errors
     );
-    // ADR-0156: the full list the log line now only samples. One line per
+    // CLI-0156: the full list the log line now only samples. One line per
     // group, keys separated by " | " -- a source key can contain a comma
     // but this listing is prose after the table, not a TSV column.
     if !summary.case_collision_groups.is_empty() {
@@ -2455,13 +2455,13 @@ mod tests {
 
     const TEST_RETRIES: usize = 3;
 
-    /// ADR-0143: the breaker trips on a strong majority, not unanimity.
+    /// CLI-0143: the breaker trips on a strong majority, not unanimity.
     /// Unit-tested through the extracted pure function because the real
     /// loop's `matches` count depends on concurrent completion ordering,
     /// which a test can't pin deterministically.
     #[test]
     fn circuit_breaker_trips_on_a_strong_majority_not_only_unanimity() {
-        // Unanimous still trips, as it always did (ADR-0121).
+        // Unanimous still trips, as it always did (CLI-0121).
         assert!(circuit_breaker_should_trip(
             CIRCUIT_BREAKER_SAMPLE_SIZE,
             CIRCUIT_BREAKER_SAMPLE_SIZE
@@ -2472,7 +2472,7 @@ mod tests {
             CIRCUIT_BREAKER_TRIP_THRESHOLD
         ));
         // One below the threshold must not trip -- this is what keeps
-        // ADR-0116's "one bad apple doesn't abort the run" guarantee.
+        // CLI-0116's "one bad apple doesn't abort the run" guarantee.
         assert!(!circuit_breaker_should_trip(
             CIRCUIT_BREAKER_SAMPLE_SIZE,
             CIRCUIT_BREAKER_TRIP_THRESHOLD - 1
@@ -2485,7 +2485,7 @@ mod tests {
         assert!(!circuit_breaker_should_trip(0, 0));
     }
 
-    /// The whole point of the gate (ADR-0144): one outage costs the run one
+    /// The whole point of the gate (CLI-0144): one outage costs the run one
     /// recovery round, not one per in-flight file. Without this, the 275
     /// files of the motivating run would each have paid the full recovery
     /// budget over again.
@@ -2529,7 +2529,7 @@ mod tests {
     /// An outage that never ends must not stall the run forever: after
     /// `PUSH_ENDPOINT_RECOVERY_ROUNDS` fruitless rounds the gate latches,
     /// so every remaining file fails immediately instead of re-paying the
-    /// budget (ADR-0144).
+    /// budget (CLI-0144).
     #[tokio::test(start_paused = true)]
     async fn endpoint_gate_gives_up_and_stays_latched_once_the_budget_is_exhausted() {
         let gate = EndpointGate::new();
@@ -2669,7 +2669,7 @@ mod tests {
             .collect();
         assert_eq!(pushed_names.len(), 2);
 
-        // ADR-0124: once a file is durably pushed, its local source and
+        // CLI-0124: once a file is durably pushed, its local source and
         // result copies must be gone -- steady-state disk usage should not
         // scale with the whole dataset.
         assert!(
@@ -2693,7 +2693,7 @@ mod tests {
         assert!(rerun_summary.outcomes.is_empty());
     }
 
-    /// The end-to-end regression test for ADR-0139, and the coverage hole
+    /// The end-to-end regression test for CLI-0139, and the coverage hole
     /// that let it ship: every pre-existing jpeg test used a `.jpeg`
     /// fixture and none used `.jpg`, so a filter that matched only one
     /// spelling passed the whole suite. A `--input-file-type=jpeg` run over
@@ -2758,7 +2758,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 2);
     }
 
-    /// ADR-0139: a source whose listing matches nothing is a clean, quiet
+    /// CLI-0139: a source whose listing matches nothing is a clean, quiet
     /// no-op in the summary (0 pulled, 0 failed, exit 0) -- which is why it
     /// was mistaken for success. The run must stay a no-op, but also emit a
     /// warning; run with `--nocapture` to see the WARNING line this prints.
@@ -2800,7 +2800,7 @@ mod tests {
         assert_eq!(std::fs::read_dir(&destination).unwrap().count(), 0);
     }
 
-    /// The direct regression test for ADR-0116's production incident: one
+    /// The direct regression test for CLI-0116's production incident: one
     /// permanently-corrupt file among several good ones must not stop the
     /// others from being attempted and pushed.
     #[tokio::test]
@@ -2916,7 +2916,7 @@ mod tests {
         );
     }
 
-    /// ADR-0127 regression test: a file whose transcode already completed
+    /// CLI-0127 regression test: a file whose transcode already completed
     /// and was placed into `result/` in a prior, crashed run (survived past
     /// `place_one`'s atomic rename but never got pushed) must be pushed
     /// directly on a rerun, never re-transcoded. Proven with a deliberately
@@ -2979,14 +2979,14 @@ mod tests {
         );
     }
 
-    /// The direct regression test for ADR-0120's production gap: on a truly
+    /// The direct regression test for CLI-0120's production gap: on a truly
     /// fresh VM (no local-disk seeding at all -- `local_output` starts
     /// completely empty, unlike the "already on disk" test above, which is
     /// what actually simulates a VM replacement), a file already pushed to
     /// `--destination-path` in a prior run must be skipped entirely --
     /// neither re-transcoded nor re-pushed. Also the direct regression test
-    /// for ADR-0124's pre-pull filter: this file must not even be
-    /// downloaded, superseding ADR-0120's "Accepted limitation" that it
+    /// for CLI-0124's pre-pull filter: this file must not even be
+    /// downloaded, superseding CLI-0120's "Accepted limitation" that it
     /// would always be redundantly re-pulled.
     #[tokio::test]
     async fn run_transform_job_skips_transcode_and_push_for_a_file_already_present_at_the_destination()
@@ -3034,15 +3034,15 @@ mod tests {
             std::fs::read(destination.join(&destination_filename)).unwrap(),
             b"already pushed"
         );
-        // ADR-0124: the file must never even be downloaded -- the
+        // CLI-0124: the file must never even be downloaded -- the
         // pre-pull filter excludes it before Phase A's `rclone copy` runs
         // at all, not merely discovered-and-skipped afterward.
         assert!(!source_dir(&local_output).join("a.jpeg").exists());
     }
 
-    /// The direct regression test for ADR-0121's circuit breaker: a batch
+    /// The direct regression test for CLI-0121's circuit breaker: a batch
     /// where every file is the same kind of permanently-corrupt input (not
-    /// one bad apple among many good ones -- that's ADR-0116's scenario,
+    /// one bad apple among many good ones -- that's CLI-0116's scenario,
     /// covered by `a_mixed_batch_with_one_permanently_failing_file_...`
     /// above) must abort fast with `Err` instead of attempting every file.
     #[tokio::test]
@@ -3091,7 +3091,7 @@ mod tests {
     /// Proves the circuit breaker does *not* trip on a batch that's mostly
     /// healthy, at a scale that actually exercises its 20-sample threshold
     /// (unlike the 3-file mixed-batch test above, which never reaches it) --
-    /// the real proof this doesn't regress ADR-0116 at the scale that
+    /// the real proof this doesn't regress CLI-0116 at the scale that
     /// matters for this new logic.
     #[tokio::test]
     async fn run_transform_job_does_not_trip_the_circuit_breaker_on_a_mostly_healthy_batch() {
@@ -3131,7 +3131,7 @@ mod tests {
         assert!(summary.failed);
         assert_eq!(summary.pushed, 24);
 
-        // ADR-0124: every successfully-pushed file's local source copy is
+        // CLI-0124: every successfully-pushed file's local source copy is
         // gone, but the one failed file is deliberately left in place for
         // diagnosis.
         assert!(source_dir(&local_output).join("bad.png").exists());
@@ -3202,7 +3202,7 @@ mod tests {
         Ok(())
     }
 
-    /// The direct regression test for ADR-0122: a video input pushes as
+    /// The direct regression test for CLI-0122: a video input pushes as
     /// `.mp4`, mirroring the existing jpeg/png/heic pipeline tests above.
     #[tokio::test]
     async fn run_transform_job_transcodes_and_pushes_a_video_file() {
@@ -3294,7 +3294,7 @@ mod tests {
         assert_eq!(queue.len(), 1);
     }
 
-    /// The "already done" check is no longer a local checkpoint (ADR-0120)
+    /// The "already done" check is no longer a local checkpoint (CLI-0120)
     /// -- it's membership in a pre-fetched listing of `--destination-path`,
     /// keyed by each file's deterministic `compute_destination_name`.
     #[test]
@@ -3324,7 +3324,7 @@ mod tests {
         assert!(queue.is_empty());
     }
 
-    /// ADR-0124: the same "already done" check `enqueue` performs after
+    /// CLI-0124: the same "already done" check `enqueue` performs after
     /// download should exclude an already-done path from the pull-side
     /// candidate list entirely, before any bytes are downloaded.
     #[test]
@@ -3349,10 +3349,10 @@ mod tests {
         assert_eq!(result.skipped_apple_double, 0);
     }
 
-    /// The exact shape found in the ADR-0144 run: `IMG_0260.JPG` and
+    /// The exact shape found in the CLI-0144 run: `IMG_0260.JPG` and
     /// `IMG_0260.jpg` were the only two case-insensitive duplicates among
     /// 38,232 source keys, and the lowercase one silently never arrived.
-    /// ADR-0158: the real pair from the docx run -- `é` precomposed (NFC,
+    /// CLI-0158: the real pair from the docx run -- `é` precomposed (NFC,
     /// U+00E9) and decomposed (NFD, `e` + U+0301). Two S3 keys, one APFS
     /// file.
     const MONTREAL_NFC: &str = "Solutions S Montr\u{e9}al.docx";
@@ -3455,7 +3455,7 @@ mod tests {
     }
 
     /// `files_needing_pull` must surface the collision alongside its other
-    /// counts rather than discarding it -- the whole point of ADR-0130's
+    /// counts rather than discarding it -- the whole point of CLI-0130's
     /// `PullSelection`.
     #[test]
     fn files_needing_pull_reports_case_colliding_keys_without_dropping_them() {
@@ -3478,7 +3478,7 @@ mod tests {
 
     /// Case-colliding keys hash to *distinct* destination names, so this is
     /// a missing-file problem at the source side only -- there is no
-    /// destination collision to worry about (ADR-0112's naming scheme is
+    /// destination collision to worry about (CLI-0112's naming scheme is
     /// case-sensitive).
     #[test]
     fn case_colliding_keys_still_map_to_distinct_destination_names() {
@@ -3491,8 +3491,8 @@ mod tests {
         assert!(upper.starts_with("IMG_0260-") && lower.starts_with("IMG_0260-"));
     }
 
-    /// ADR-0144's rule survives -- the arms must not be swapped, because the
-    /// generic one is a false statement for a case-collision -- but ADR-0152
+    /// CLI-0144's rule survives -- the arms must not be swapped, because the
+    /// generic one is a false statement for a case-collision -- but CLI-0152
     /// changes what the collision arm says. A colliding key is now pulled
     /// separately, so the only way one goes undelivered is that its own
     /// pull failed, and the detail carries rclone's real error.
@@ -3530,7 +3530,7 @@ mod tests {
         assert!(detail.contains("reported no error"), "{detail}");
     }
 
-    /// ADR-0130: an AppleDouble stub matches rclone's `--include '*.<ext>'`
+    /// CLI-0130: an AppleDouble stub matches rclone's `--include '*.<ext>'`
     /// filter but is a resource fork, not decodable media -- it must never be
     /// downloaded, and must be counted as skipped rather than failed.
     #[test]
@@ -3551,10 +3551,10 @@ mod tests {
         assert_eq!(selection.skipped_already_done, 0);
     }
 
-    /// The second AppleDouble choke point (ADR-0130): `enqueue` covers the
+    /// The second AppleDouble choke point (CLI-0130): `enqueue` covers the
     /// initial on-disk scan and rclone's live tail, so a stub cannot reach
     /// `ffmpeg` by any dispatch route even if it bypassed the pull filter.
-    /// ADR-0151: `enqueue` returned `SkippedLockFile` from ADR-0149 on, but
+    /// CLI-0151: `enqueue` returned `SkippedLockFile` from CLI-0149 on, but
     /// every call site matched only on `SkippedAppleDouble`, so a lock stub
     /// reaching *this* choke point -- the on-disk scan or rclone's live
     /// tail -- was counted nowhere at all.
@@ -3661,7 +3661,7 @@ mod tests {
         assert_eq!(queue.len(), 1);
     }
 
-    /// ADR-0130's reconciliation, in isolation: the set difference between
+    /// CLI-0130's reconciliation, in isolation: the set difference between
     /// what the run intended to pull and what actually reached the pipeline
     /// is exactly the set of silently-undelivered files that used to vanish.
     #[test]
@@ -3776,18 +3776,18 @@ mod tests {
 
         assert!(contents.contains("a.png\ttranscoded\t\ta-abc123.jpg\t"));
         assert!(contents.contains("bad.heic\tfailed\ttranscode\t\tffmpeg: boom"));
-        // ADR-0149: the summary now names the output-object count too,
+        // CLI-0149: the summary now names the output-object count too,
         // since `pushed` and the per-outcome counts measure different units.
         assert!(
             contents.contains("1 transcoded, 0 copied through, 1 failed; 1 output file(s) pushed.")
         );
-        // ADR-0130's added lines.
+        // CLI-0130's added lines.
         assert!(contents.contains("failures by stage: 0 pull, 1 transcode, 0 place, 0 push."));
         assert!(contents.contains(
             "skipped: 3 already done at the destination, 2 AppleDouble sidecar(s), 1 Excel lock \
              stub(s), 1 email-shaped Markdown file(s)."
         ));
-        // ADR-0157: a skip is its own row, naming why, and is not a failure.
+        // CLI-0157: a skip is its own row, naming why, and is not a failure.
         assert!(
             contents.contains(
                 "mail.md\tskipped_email_shaped\t\t\temail-shaped: provenance, raw-headers"
@@ -3799,7 +3799,7 @@ mod tests {
         assert!(!contents.contains("case-colliding"));
     }
 
-    /// ADR-0156: the log line only samples the colliding groups, so the
+    /// CLI-0156: the log line only samples the colliding groups, so the
     /// report must carry every one of them.
     #[test]
     fn write_report_lists_every_case_collision_group() {
@@ -3829,7 +3829,7 @@ mod tests {
         assert!(contents.contains("\n  B.md | b.md | b.MD\n"));
     }
 
-    // --- ADR-0153: audio kinds -------------------------------------------
+    // --- CLI-0153: audio kinds -------------------------------------------
 
     /// End-to-end for a `wav` run. `wav` is chosen because ffmpeg can
     /// generate the fixture natively with no external codec, and because it
@@ -3875,7 +3875,7 @@ mod tests {
         assert!(!summary.failed, "{:?}", summary.outcomes);
         assert_eq!(summary.pushed, 1);
         assert_eq!(summary.outcomes.len(), 1);
-        // Transcoded, not copied through -- ADR-0153 re-encodes.
+        // Transcoded, not copied through -- CLI-0153 re-encodes.
         assert_eq!(summary.outcomes[0].outcome, Outcome::Transcoded);
 
         let expected =
@@ -3883,7 +3883,7 @@ mod tests {
         assert!(expected.ends_with(".opus"), "{expected}");
         assert!(destination.join(&expected).exists(), "missing {expected}");
 
-        // ADR-0124: both local trees empty once it is pushed.
+        // CLI-0124: both local trees empty once it is pushed.
         assert!(
             std::fs::read_dir(source_dir(&local_output))
                 .map(|mut entries| entries.next().is_none())
@@ -3892,8 +3892,8 @@ mod tests {
     }
 
     /// `opus` input is re-encoded rather than copied through, so its
-    /// outcome is `Transcoded` -- the one place ADR-0153 departs from
-    /// ADR-0112's and ADR-0149's treatment of an input already in the
+    /// outcome is `Transcoded` -- the one place CLI-0153 departs from
+    /// CLI-0112's and CLI-0149's treatment of an input already in the
     /// target format.
     #[test]
     fn outcome_for_treats_opus_as_transcoded_not_copied_through() {
@@ -3912,12 +3912,12 @@ mod tests {
         }
     }
 
-    // --- ADR-0152: case-colliding source keys ----------------------------
+    // --- CLI-0152: case-colliding source keys ----------------------------
 
     /// Every slot must be collision-free under case folding -- for whole
     /// keys *and* for every directory prefix -- since that is the only
     /// property that lets one bulk `rclone copy` deliver a whole slot onto
-    /// a case-insensitive volume (ADR-0156).
+    /// a case-insensitive volume (CLI-0156).
     fn assert_slots_are_collision_free(slots: &[Vec<String>]) {
         for slot in slots {
             let mut seen: HashMap<String, String> = HashMap::new();
@@ -3933,7 +3933,7 @@ mod tests {
 
     #[test]
     fn case_variant_slots_hold_one_member_per_group_and_as_few_slots_as_the_largest_group() {
-        // ADR-0156's real distribution in miniature: groups of 2, 3 and 4.
+        // CLI-0156's real distribution in miniature: groups of 2, 3 and 4.
         let mut variants: Vec<String> = [
             "a.md", "A.md", "bb.md", "Bb.md", "BB.md", "cc.md", "Cc.md", "cC.md", "CC.md",
         ]
@@ -4035,7 +4035,7 @@ mod tests {
     /// `ledger.xlsx` overwrites `Ledger.xlsx` in the local source
     /// directory), and on a case-sensitive host the bulk pull would deliver
     /// both anyway, so the test would pass without the new path ever
-    /// running -- the ADR-0139 mistake. The collision only exists because
+    /// running -- the CLI-0139 mistake. The collision only exists because
     /// the real source is S3, which is case-sensitive while the local pull
     /// tree may not be.
     ///
@@ -4093,7 +4093,7 @@ mod tests {
         assert_eq!(split_a, vec!["B.xlsx".to_string(), "b.xlsx".to_string()]);
     }
 
-    // --- ADR-0149: spreadsheets ------------------------------------------
+    // --- CLI-0149: spreadsheets ------------------------------------------
 
     /// Minimal valid `.xlsx`, built with the `zip` crate already in this
     /// tree. A thin wrapper over `sheets`' own fixture writer's approach,
@@ -4168,10 +4168,10 @@ mod tests {
         }
     }
 
-    /// The headline ADR-0149 case. Deliberately **not** gated on
+    /// The headline CLI-0149 case. Deliberately **not** gated on
     /// `check_ffmpeg_available`, unlike every pre-existing end-to-end test
     /// here: a spreadsheet run invokes no `ffmpeg`, so gating it would make
-    /// it silently never run -- the ADR-0139 mistake in miniature.
+    /// it silently never run -- the CLI-0139 mistake in miniature.
     #[tokio::test]
     async fn a_multi_sheet_workbook_pushes_every_sheet_on_one_report_row() {
         let dir = tempfile::tempdir().unwrap();
@@ -4213,7 +4213,7 @@ mod tests {
             ]
         );
 
-        // ADR-0124: both local trees empty once everything is pushed.
+        // CLI-0124: both local trees empty once everything is pushed.
         assert!(
             std::fs::read_dir(source_dir(&local_output))
                 .unwrap()
@@ -4228,14 +4228,14 @@ mod tests {
                 .is_none(),
             "local result/ should be empty"
         );
-        // ADR-0149: the scratch directory removes itself.
+        // CLI-0149: the scratch directory removes itself.
         assert!(
             std::fs::read_dir(scratch_dir(&local_output))
                 .map(|mut entries| entries.next().is_none())
                 .unwrap_or(true),
             "scratch/ should hold no leftover per-input directories"
         );
-        // ADR-0151: so does each output's push log. A real run left 1318
+        // CLI-0151: so does each output's push log. A real run left 1318
         // behind, one per output object, none of them ever cleaned.
         assert!(
             std::fs::read_dir(push_log_dir(&local_output))
@@ -4251,7 +4251,7 @@ mod tests {
         assert_eq!(rerun.skipped_already_done, 1);
     }
 
-    /// **The decision the `{nn}of{tt}` marker exists for** (ADR-0149 §3).
+    /// **The decision the `{nn}of{tt}` marker exists for** (CLI-0149 §3).
     /// A destination holding only some of a workbook's sheets must be
     /// detected as incomplete, so the workbook is re-pulled and finished --
     /// where an "any member present" test would call it done and lose the
@@ -4324,7 +4324,7 @@ mod tests {
         assert!(destination.join(&expected).exists(), "expected {expected}");
     }
 
-    /// `.csv` input is copied through byte-for-byte, on exactly ADR-0112's
+    /// `.csv` input is copied through byte-for-byte, on exactly CLI-0112's
     /// reasoning for a `jpeg` already in the target format.
     #[tokio::test]
     async fn a_csv_input_is_copied_through_unchanged() {
@@ -4357,7 +4357,7 @@ c;d
 
     /// An Excel `~$` lock stub matches `--include '*.xlsx'` but is not a
     /// workbook, so it is skipped rather than failed -- the same treatment
-    /// ADR-0130 gives an AppleDouble sidecar, and for the same reason: a
+    /// CLI-0130 gives an AppleDouble sidecar, and for the same reason: a
     /// deterministic failure class is what trips the circuit breaker.
     #[tokio::test]
     async fn an_excel_lock_stub_is_skipped_not_failed() {
@@ -4377,8 +4377,8 @@ c;d
         assert_eq!(summary.pushed, 1);
         assert_eq!(summary.outcomes.len(), 1);
         assert_eq!(summary.outcomes[0].relative_path, "Real.xlsx");
-        // ADR-0151: counted as a lock file, not folded into the AppleDouble
-        // tally. ADR-0149 reported "2 AppleDouble sidecar(s)" on a real run
+        // CLI-0151: counted as a lock file, not folded into the AppleDouble
+        // tally. CLI-0149 reported "2 AppleDouble sidecar(s)" on a real run
         // for stubs that may have been either kind, with no way to tell.
         assert_eq!(summary.skipped_lock_file, 1, "the stub is a lock-file skip");
         assert_eq!(
@@ -4389,7 +4389,7 @@ c;d
 
     /// A misdirected run (a spreadsheet kind pointed at something that is
     /// not a workbook) fails with a message classified as a wrong-input-kind
-    /// error, so ADR-0143's rule applies and the local source copy is
+    /// error, so CLI-0143's rule applies and the local source copy is
     /// dropped rather than retained.
     #[tokio::test]
     async fn a_non_workbook_fails_and_drops_its_local_source_copy() {
@@ -4414,9 +4414,9 @@ c;d
         );
         assert!(
             !source_dir(&local_output).join("bogus.xlsx").exists(),
-            "ADR-0143: a wrong-input-kind failure drops its local copy"
+            "CLI-0143: a wrong-input-kind failure drops its local copy"
         );
-        // ADR-0151's cleanup is keyed to a *successful* push, so a file that
+        // CLI-0151's cleanup is keyed to a *successful* push, so a file that
         // never reached the push leg leaves no push log to clean either.
         assert!(
             std::fs::read_dir(push_log_dir(&local_output))
@@ -4426,7 +4426,7 @@ c;d
         );
     }
 
-    /// ADR-0142 end-to-end: a `mp4-audio` run must pull an audio-only
+    /// CLI-0142 end-to-end: a `mp4-audio` run must pull an audio-only
     /// `.mp4`, transcode it, and push a `.opus` -- exercising the
     /// `Mp4Audio` dispatch arm, `output_extension()`'s new `opus` value,
     /// and `outcome_for`'s mapping in one pass.
@@ -4508,8 +4508,8 @@ c;d
         );
     }
 
-    /// ADR-0143: a `mp4-audio` run pointed at real video -- the exact
-    /// mistake ADR-0142's guard exists to catch, which an omitted
+    /// CLI-0143: a `mp4-audio` run pointed at real video -- the exact
+    /// mistake CLI-0142's guard exists to catch, which an omitted
     /// `--source` prefix makes easy (`source:mp4/` is the default address
     /// for *both* kinds). Every file must fail at the transcode stage,
     /// nothing may be pushed, and crucially the local source copies must
@@ -4589,10 +4589,10 @@ c;d
         }
 
         // Nothing reached the destination -- no video was converted to
-        // audio-only, which is the whole point of ADR-0142's guard.
+        // audio-only, which is the whole point of CLI-0142's guard.
         assert!(std::fs::read_dir(&destination).unwrap().next().is_none());
 
-        // ADR-0143: and no local source copy was retained.
+        // CLI-0143: and no local source copy was retained.
         for i in 0..3 {
             let retained = source_dir(&local_output).join(format!("video-{i}.mp4"));
             assert!(
@@ -4603,9 +4603,9 @@ c;d
         }
     }
 
-    // --- ADR-0154: documents ---
+    // --- CLI-0154: documents ---
 
-    /// Asserts the four local trees ADR-0124/0149/0151 each require to be
+    /// Asserts the four local trees CLI-0124/0149/0151 each require to be
     /// empty once every file is durably pushed.
     fn assert_local_trees_are_clean(local_output: &Path) {
         for (label, dir) in [
@@ -4625,7 +4625,7 @@ c;d
 
     /// Deliberately **not** gated on `check_ffmpeg_available`: a `tsv` run
     /// invokes no `ffmpeg`, so gating it would make this silently never
-    /// run -- the ADR-0139 mistake ADR-0149 named.
+    /// run -- the CLI-0139 mistake CLI-0149 named.
     #[tokio::test]
     async fn a_tsv_run_converts_and_pushes_a_csv() {
         let dir = tempfile::tempdir().unwrap();
@@ -4711,7 +4711,7 @@ c;d
     }
 
     /// `pdf` and `txt` join `jpeg` and `csv` as copy-through kinds
-    /// (ADR-0154 §9): byte-identical output, no re-encode.
+    /// (CLI-0154 §9): byte-identical output, no re-encode.
     #[tokio::test]
     async fn a_pdf_input_is_copied_through_unchanged() {
         let dir = tempfile::tempdir().unwrap();
@@ -4747,7 +4747,7 @@ c;d
             InputFileType::Md,
             InputFileType::Textclipping,
             InputFileType::Tsv,
-            // ADR-0160: none arrives in its target format.
+            // CLI-0160: none arrives in its target format.
             InputFileType::Bmp,
             InputFileType::Eps,
             InputFileType::Ics,
@@ -4757,9 +4757,9 @@ c;d
         }
     }
 
-    /// **The ADR-0154 §2 regression test, end to end.** A private key
+    /// **The CLI-0154 §2 regression test, end to end.** A private key
     /// named `.key` must fail rather than reaching the destination, and
-    /// ADR-0143 must drop its local copy so it does not linger on the host.
+    /// CLI-0143 must drop its local copy so it does not linger on the host.
     #[tokio::test]
     async fn a_private_key_named_dot_key_never_reaches_the_destination() {
         let dir = tempfile::tempdir().unwrap();
@@ -4789,7 +4789,7 @@ c;d
             .collect();
         assert!(landed.is_empty(), "{landed:?} reached the destination");
 
-        // ADR-0143: the local copy is dropped. The source object is
+        // CLI-0143: the local copy is dropped. The source object is
         // untouched at `--source`, which is where it already was.
         assert!(
             std::fs::read_dir(source_dir(&local_output))
@@ -4931,7 +4931,7 @@ c;d
         );
     }
 
-    /// Markdown end to end, pinning ADR-0154 §8's recorded loss at the
+    /// Markdown end to end, pinning CLI-0154 §8's recorded loss at the
     /// level that actually ships: the URL does not reach the destination.
     #[tokio::test]
     async fn a_markdown_run_pushes_prose_with_its_link_urls_discarded() {
@@ -4955,7 +4955,7 @@ c;d
         assert!(!landed.contains("**"), "{landed}");
     }
 
-    /// ADR-0157: an email-shaped file in an `md` run is skipped -- not
+    /// CLI-0157: an email-shaped file in an `md` run is skipped -- not
     /// pushed, not a failure, its local copy gone -- while an ordinary note
     /// in the same batch still converts.
     #[tokio::test]
