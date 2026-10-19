@@ -301,6 +301,19 @@ disagree, this section describes what is true.
    `ADR-NNNN` survives only in this record's examples of the old form.
 8. **`.dockerignore`** excludes `adr/`, `.lib-src/` and `.lib-observability/`
    in place of `docs/`.
+9. **The first release through the hub failed, and `v0.4.54` is a hole.** The
+   Consequences above claim the crate's published contents are unaffected.
+   That was wrong. `Cargo.toml`'s `include` patterns (CLI-0086) were not
+   anchored, and Cargo matches them gitignore-style at any depth. So
+   `README.md` and `CHANGELOG.md` also matched the 51 READMEs and CHANGELOGs
+   inside the gitignored `.lib-src/` that the workflow had just fetched.
+   `cargo publish` refused them as uncommitted, after the CLI-0150 ordering had
+   already pushed the `chore(release): v0.4.54` commit and its tag. `v0.4.54`
+   therefore exists on `main` and as a tag, with no crates.io version, GitHub
+   Release or binaries. This is the version-sequence hole CLI-0150 accepts,
+   and it is left as one. The patterns are now anchored (`/src/**`,
+   `/README.md`, …), and `cargo package --list` is otherwise unchanged. The next
+   merge releases `0.4.55`.
 
 ## Verification
 

@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- CLI-0161: anchors `Cargo.toml`'s `include` patterns at the repo root, so the gitignored `.lib-src/` library clone is never packaged; it broke the first hub-driven release, leaving `v0.4.54` tagged but unpublished ([#137](https://github.com/noisypigeon/pigeon-cli/pull/137)).
+
 ## [0.4.54] - 2026-10-19
 
 - CLI-0161: pigeon-cli now consumes `noisypigeon/library` by pinned version: `release.yml` is a thin caller of the library's `rust-crate-release.yml`, `.github/scripts/` is gone (`mise run release`/`build-release`/`adr-issue` run the library's scripts through a spoke-standard `fetch-lib.sh` and `.lib-version`), the local observability stack and its dashboard come from `observability/pigeon-cli`, and the `analyze-job-run` skill is the `pigeon-cli@library` Claude Code plugin; `docs/report/` and `docs/VISION.md` are removed ([#136](https://github.com/noisypigeon/pigeon-cli/pull/136)).
