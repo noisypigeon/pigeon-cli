@@ -1,3 +1,13 @@
+# A thin caller since CLI-0161: the release body -- fmt-check, lint, cut,
+# commit+tag+push, publish, GitHub Release, then the per-target binaries --
+# lives in the library's rust-crate-release.yml, at the version the `uses:`
+# ref below pins. Keep that ref equal to /.lib-version: the workflow runs this
+# repo's fetch-lib.sh, which checks out the library at .lib-version for the
+# scripts it calls.
+#
+# This file keeps what cannot live in the library: the trigger, the loop
+# guard, permissions and concurrency. Unlike the library's other spokes, this
+# repo writes its own vX.Y.Z tags (LIB-0001's 2026-10-19 amendment).
 name: Release
 
 on:
@@ -14,84 +24,17 @@ concurrency:
 jobs:
   release:
     if: "${{ !startsWith(github.event.head_commit.message, 'chore(release): v') }}"
-    runs-on: ubuntu-latest
-    outputs:
-      new_version: ${{ steps.release.outputs.version }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: jdx/mise-action@v2
-
-      - name: Install rustfmt/clippy components
-        run: rustup component add rustfmt clippy
-
-      - name: Configure release commit identity
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-      - run: mise run fmt-check
-      - run: mise run lint
-
-      - name: Cut release and publish
-        id: release
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: |
-          output="$(mise run release)"
-          echo "$output"
-          new_version="$(echo "$output" | tail -1 | sed 's/^NEW_VERSION=//')"
-          echo "version=${new_version}" >> "$GITHUB_OUTPUT"
-
-      - name: Create GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release create "v${{ steps.release.outputs.version }}" \
-            --title "v${{ steps.release.outputs.version }}" \
-            --notes "See CHANGELOG.md for details."
-
-  build-binaries:
-    needs: release
-    strategy:
-      matrix:
-        include:
-          - runner: macos-14
-            triple: aarch64-apple-darwin
-            smoke_test: true
-          - runner: ubuntu-24.04-arm
-            triple: aarch64-unknown-linux-gnu
-            smoke_test: true
-          - runner: macos-14
-            triple: x86_64-apple-darwin
-            smoke_test: false
-          - runner: ubuntu-24.04
-            triple: x86_64-unknown-linux-gnu
-            smoke_test: true
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: v${{ needs.release.outputs.new_version }}
-
-      - uses: jdx/mise-action@v2
-
-      - run: mise run build-release -- --target ${{ matrix.triple }}
-
-      - name: Smoke test
-        if: matrix.smoke_test
-        run: target/${{ matrix.triple }}/release/pigeon --version
-
-      - name: Package binary
-        run: |
-          version="${{ needs.release.outputs.new_version }}"
-          triple="${{ matrix.triple }}"
-          tar czf "pigeon-v${version}-${triple}.tar.gz" -C "target/${triple}/release" pigeon -C "$GITHUB_WORKSPACE" LICENSE.md
-
-      - name: Upload release asset
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          version="${{ needs.release.outputs.new_version }}"
-          triple="${{ matrix.triple }}"
-          gh release upload "v${version}" "pigeon-v${version}-${triple}.tar.gz"
+    uses: noisypigeon/library/.github/workflows/rust-crate-release.yml@workflows/v3.3.0
+    with:
+      crate: pigeon-cli
+      bin: pigeon
+      codesign_id: dev.pigeon.cli
+      targets: |
+        [
+          { "runner": "macos-14", "triple": "aarch64-apple-darwin", "smoke_test": true },
+          { "runner": "ubuntu-24.04-arm", "triple": "aarch64-unknown-linux-gnu", "smoke_test": true },
+          { "runner": "macos-14", "triple": "x86_64-apple-darwin", "smoke_test": false },
+          { "runner": "ubuntu-24.04", "triple": "x86_64-unknown-linux-gnu", "smoke_test": true }
+        ]
+    secrets:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

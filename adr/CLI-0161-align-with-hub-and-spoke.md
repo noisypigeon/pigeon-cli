@@ -2,9 +2,9 @@
 
 - **Author**: Willow Graysen ([@noisypigeon](https://github.com/noisypigeon)).
 - **Date**: 2026-10-19.
-- **Status**: Accepted. Not yet implemented. Amends CLI-0029 and CLI-0031.
-  Needs a companion amendment to LIB-0017 §5 and LIB-0001 §2 in
-  `noisypigeon/library` (§7).
+- **Status**: Accepted. Implemented on 2026-10-19 (see the Amendment).
+  Amends CLI-0029 and CLI-0031. The companion amendments to LIB-0017 and
+  LIB-0001 landed as noisypigeon/library#80.
 
 ## Context
 
@@ -241,6 +241,66 @@ these ways only:
   boundary, per LIB-0017 §3. Those are read as `CLI-`.
 - **Running a node-exporter in the local stack** so the disk panel populates.
   It isn't needed for local diagnosis, so this is a permanent boundary.
+
+## Amendment (2026-10-19): implementation
+
+Landed in the §7 order: noisypigeon/library#80 (LIB amendments), #81
+(`workflows/v3.2.0`: `rust-crate-release.yml` and the scripts), #82
+(`observability/pigeon-cli/v1.0.0`, `claude-plugins/pigeon-cli/v1.0.0`,
+`grafana-dashboards/pigeon-cli/v1.1.0`, `workflows/v3.3.0`), then this repo's
+pure rename (#135) and rewiring. Where this section and the text above
+disagree, this section describes what is true.
+
+1. **§3's library fetch matches the other spokes.** The text above calls for an
+   inline mise task, a `.library/` folder and `LIBRARY_VERSION` in
+   `.mise.toml`. The family already had a mechanism, so this repo uses it
+   unchanged: a root `fetch-lib.sh`, copied from `noisypigeon/blog`'s with only
+   its comment and its `LIB_SRC` sanity check changed, plus a `/.lib-version`
+   naming a `workflows/vX.Y.Z` tag, cloned into a gitignored `.lib-src/`.
+   LIB-0002 already names that script as the one a spoke may hold. The
+   two-place version declaration §3 predicted is real: `/.lib-version` and the
+   `uses:` ref in `release.yml` must match.
+2. **The hub scripts are named `crate-release.sh`, `crate-cut-release.sh` and
+   `crate-build-release.sh`**, so they don't read as the hub's own release.
+   `adr-issue.sh` keeps its name. It gained `--repo` and `--label-meta FILE`,
+   so this repo's `area:*` taxonomy lives in `.github/adr-issue-labels.txt`
+   (data, not a script). Its in-place edit also no longer needs BSD `sed -i ''`.
+3. **The observability stack keeps its data.** Moving the compose file out of
+   `observability/` would have changed the default compose project name, and
+   with it the named volumes. The hub's compose file pins `name: observability`,
+   so `observability_prom-data` and `observability_grafana-data` carry over.
+   `observability-stack` extracts the pinned tag's `observability/pigeon-cli`
+   and `grafana-dashboards/pigeon-cli` with `git archive` into a gitignored
+   `.lib-observability/`. `observability-down` and `-logs` address the project
+   by name, so they work without that folder.
+4. **The hub dashboard needed one fix to work locally.** Its `instance`
+   variable is populated from node-exporter metrics, which the local stack
+   does not scrape. Its "All" therefore matched nothing, and every pigeon panel
+   was empty. `grafana-dashboards/pigeon-cli/v1.1.0` sets `allValue: ".*"`,
+   which leaves Cockpit unchanged.
+5. **The plugin marketplace is named `library`**, so the plugin is
+   `pigeon-cli@library`. It is pinned with `ref` in `.claude/settings.json`.
+   The Claude Code docs do not say whether a ref may contain `/`. A
+   `git clone --branch claude-plugins/pigeon-cli/v1.0.0` of the library
+   succeeds, which is the mechanism a github source uses. The entries apply
+   only in a trusted folder. A contributor who sees "enabled in project
+   settings but isn't installed" runs
+   `claude plugin install pigeon-cli@library --scope project` once.
+6. **The rewrite (§1) found three things.**
+   - Only one compound citation actually mixed domains:
+     `ADR-0036/0037/0052` → `CLI-0036/DEV-0037/DEV-0052`.
+   - The word-boundary regex missed `\nADR-0147` inside a Rust string. The
+     test that checks that message caught it.
+   - Test aliases and one env-var name embedded ADR numbers (`adr-0148-…`,
+     `PIGEON_SECRET_ADR_0148_…`). They follow the prefix.
+7. **Verification 2 was too strict.** `docs/adr` still appears where prose
+   describes an earlier layout (the monorepo's `docs/adr/` in CLI-0036, CLI-0050
+   and CLI-0084), where it names the library's own `docs/adr/`, and in this
+   record's own description of the move. Those are history or another repo's
+   path, so they are not rewritten. No live reference remains. Likewise
+   `ADR-NNNN` survives only in this record's examples of the old form.
+8. **`.dockerignore`** excludes `adr/`, `.lib-src/` and `.lib-observability/`
+   in place of `docs/`.
 
 ## Verification
 
