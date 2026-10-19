@@ -1,6 +1,6 @@
 [package]
 name = "pigeon-cli"
-version = "0.4.51"
+version = "0.4.52"
 edition = "2024"
 rust-version = "1.92"
 description = "Pigeon: imports, transcodes, and deduplicates personal data into S3-compatible remotes."
