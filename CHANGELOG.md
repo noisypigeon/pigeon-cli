@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- CLI-0161: moves `docs/adr/` to `adr/` and re-prefixes the whole corpus `CLI-` (every `ADR-NNNN` citation, including in `src/` and this changelog, is now `CLI-NNNN`; the old monorepo's ADR-0037/0052 are `DEV-`), with branches and commits now `cli-XXXX`. A pure rename with no behaviour change ([#135](https://github.com/noisypigeon/pigeon-cli/pull/135)).
+
 ## [0.4.52] - 2026-10-19
 
 - CLI-0161: records aligning pigeon-cli with library's hub-and-spoke model. `docs/adr/` moves to `adr/` and is re-prefixed `CLI-` everywhere. The skills, the release workflow and its scripts, and the observability stack move to the hub, pinned by version. `docs/report/` and `docs/VISION.md` are removed. The recorded exceptions are its own ADRs, issues, tags and publish ([#133](https://github.com/noisypigeon/pigeon-cli/pull/133)).
