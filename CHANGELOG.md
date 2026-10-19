@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- CLI-0161: pigeon-cli now consumes `noisypigeon/library` by pinned version: `release.yml` is a thin caller of the library's `rust-crate-release.yml`, `.github/scripts/` is gone (`mise run release`/`build-release`/`adr-issue` run the library's scripts through a spoke-standard `fetch-lib.sh` and `.lib-version`), the local observability stack and its dashboard come from `observability/pigeon-cli`, and the `analyze-job-run` skill is the `pigeon-cli@library` Claude Code plugin; `docs/report/` and `docs/VISION.md` are removed ([#136](https://github.com/noisypigeon/pigeon-cli/pull/136)).
+
 ## [0.4.53] - 2026-10-19
 
 - CLI-0161: moves `docs/adr/` to `adr/` and re-prefixes the whole corpus `CLI-` (every `ADR-NNNN` citation, including in `src/` and this changelog, is now `CLI-NNNN`; the old monorepo's ADR-0037/0052 are `DEV-`), with branches and commits now `cli-XXXX`. A pure rename with no behaviour change ([#135](https://github.com/noisypigeon/pigeon-cli/pull/135)).
