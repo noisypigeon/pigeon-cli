@@ -3,7 +3,7 @@ use dialoguer::{Input, Select, theme::ColorfulTheme};
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::cli::AddKind;
 use crate::commands::keyring::email::identity::{self, Identity};
-use crate::commands::keyring::email::imap_client;
+use crate::commands::keyring::email::imap_client::{self, ImapSecurity};
 use crate::commands::keyring::email::provider::Provider;
 use crate::commands::keyring::store::{Entry, Store};
 use crate::commands::{FAILURE_EXIT_CODE, print_table};
@@ -33,6 +33,30 @@ fn resolve_host_port(
         .ok_or_else(|| format!("--host is required for provider '{provider}'"))?;
     let port = port.or(defaults.map(|(_, port)| port)).unwrap_or(993);
     Ok((host, port))
+}
+
+/// Prompts for how an IMAP connection is secured, defaulting to `default`.
+fn prompt_security(default: ImapSecurity) -> Result<ImapSecurity, String> {
+    let options = [ImapSecurity::Tls, ImapSecurity::StartTls];
+    let labels = [
+        "tls (implicit TLS, usually port 993)",
+        "starttls (plaintext greeting then STARTTLS, usually 143 or Bridge's 1143)",
+    ];
+    let default_index = options.iter().position(|o| *o == default).unwrap_or(0);
+    Select::with_theme(&ColorfulTheme::default())
+        .with_prompt("Connection security")
+        .items(labels)
+        .default(default_index)
+        .interact()
+        .map(|index| options[index])
+        .map_err(|err| format!("failed to read connection security: {err}"))
+}
+
+/// What to persist as an identity's `security`: `None` when the choice is
+/// just the provider's default, so a later change to that default (or to
+/// the port) still applies; the explicit value only when it overrides.
+fn stored_security(provider: Provider, port: u16, chosen: ImapSecurity) -> Option<ImapSecurity> {
+    (chosen != provider.default_security(port)).then_some(chosen)
 }
 
 /// Verifies a candidate bucket-config is reachable before it is saved
@@ -149,7 +173,8 @@ pub fn add(kind: Option<AddKind>) -> i32 {
             provider,
             host,
             port,
-        }) => add_email(Some(email), alias, provider, host, port),
+            security,
+        }) => add_email(Some(email), alias, provider, host, port, security),
         Some(AddKind::Bucket { alias }) => add_bucket(alias),
         None => match Select::with_theme(&ColorfulTheme::default())
             .with_prompt("What would you like to add?")
@@ -157,7 +182,7 @@ pub fn add(kind: Option<AddKind>) -> i32 {
             .default(0)
             .interact()
         {
-            Ok(0) => add_email(None, None, None, None, None),
+            Ok(0) => add_email(None, None, None, None, None, None),
             Ok(_) => add_bucket(None),
             Err(err) => fail(format!("failed to read selection: {err}")),
         },
@@ -170,6 +195,7 @@ fn add_email(
     provider: Option<Provider>,
     host: Option<String>,
     port: Option<u16>,
+    security: Option<ImapSecurity>,
 ) -> i32 {
     let path = match Store::resolve_path() {
         Ok(path) => path,
@@ -209,6 +235,12 @@ fn add_email(
         Err(err) => return fail(err),
     };
 
+    // Not prompted: the provider's (or, for custom, the port's) default is
+    // right unless --security says otherwise, and a prompt here would break
+    // a piped secret the way CLI-0003's masked-input note describes
+    // (CLI-0162).
+    let effective_security = security.unwrap_or_else(|| provider.default_security(port));
+
     let secret = match read_secret(&format!("App password for {email}")) {
         Ok(secret) => secret,
         Err(err) => return fail(err),
@@ -219,6 +251,7 @@ fn add_email(
         port,
         &email,
         &secret,
+        effective_security,
         provider.accepts_invalid_certs(),
     ) {
         return fail(err);
@@ -246,6 +279,7 @@ fn add_email(
         host,
         port,
         max_imap_connections,
+        security: stored_security(provider, port, effective_security),
         secret,
     }));
     if let Err(err) = store.save(&path) {
@@ -398,6 +432,11 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         Err(err) => return fail(format!("failed to read port: {err}")),
     };
 
+    let security = match prompt_security(current.security()) {
+        Ok(security) => security,
+        Err(err) => return fail(err),
+    };
+
     let new_secret = match read_secret("App password (press enter to keep current)") {
         Ok(secret) if secret.is_empty() => None,
         Ok(secret) => Some(secret),
@@ -411,6 +450,7 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         port,
         &current.email,
         &secret,
+        security,
         provider.accepts_invalid_certs(),
     ) {
         return fail(err);
@@ -441,6 +481,7 @@ fn modify_email(store: &mut Store, path: &std::path::Path, current: &Identity) -
         host,
         port,
         max_imap_connections,
+        security: stored_security(provider, port, security),
         secret,
     };
     store.remove(&current.alias);
@@ -597,6 +638,26 @@ fn resolve_existing_alias(store: &Store, alias: Option<String>) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stored_security_is_none_for_the_provider_default_and_explicit_otherwise() {
+        assert_eq!(
+            stored_security(Provider::Proton, 1143, ImapSecurity::StartTls),
+            None
+        );
+        assert_eq!(
+            stored_security(Provider::Proton, 1143, ImapSecurity::Tls),
+            Some(ImapSecurity::Tls)
+        );
+        assert_eq!(
+            stored_security(Provider::Custom, 143, ImapSecurity::StartTls),
+            None
+        );
+        assert_eq!(
+            stored_security(Provider::Custom, 993, ImapSecurity::StartTls),
+            Some(ImapSecurity::StartTls)
+        );
+    }
 
     fn candidate(alias: &str) -> BucketConfig {
         BucketConfig {

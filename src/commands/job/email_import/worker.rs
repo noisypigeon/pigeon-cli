@@ -81,6 +81,7 @@ pub(crate) async fn connect_with_retry(ctx: &ImportContext) -> Result<ImapSessio
             ctx.identity.port,
             &ctx.identity.email,
             &ctx.secret,
+            ctx.identity.security(),
             ctx.identity.provider.accepts_invalid_certs(),
         )
     })

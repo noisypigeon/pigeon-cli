@@ -107,7 +107,61 @@ fn keyring_add_email_help_lists_provider_and_custom_host_flags() {
         .success()
         .stdout(predicate::str::contains("--provider"))
         .stdout(predicate::str::contains("--host"))
-        .stdout(predicate::str::contains("--port"));
+        .stdout(predicate::str::contains("--port"))
+        .stdout(predicate::str::contains("--security"));
+}
+
+#[test]
+fn keyring_add_email_rejects_a_plaintext_security_mode() {
+    // CLI-0162: there is deliberately no plaintext option.
+    pigeon()
+        .args([
+            "keyring",
+            "add",
+            "email",
+            "first.last@example.com",
+            "--provider",
+            "custom",
+            "--host",
+            "127.0.0.1",
+            "--security",
+            "plain",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("invalid value 'plain'"));
+}
+
+#[test]
+fn keyring_add_email_starttls_against_a_refusing_port_fails_without_persisting() {
+    let config_dir = TempDir::new().unwrap();
+
+    pigeon_in(&config_dir)
+        .args([
+            "keyring",
+            "add",
+            "email",
+            "first.last@example.com",
+            "--provider",
+            "custom",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "1",
+            "--security",
+            "starttls",
+        ])
+        .write_stdin("fake-secret\n")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("failed to connect"));
+
+    pigeon_in(&config_dir)
+        .args(["keyring", "list"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("No keyring entries configured."));
 }
 
 #[test]

@@ -369,6 +369,7 @@ mod tests {
             host: "imap.gmail.com".to_string(),
             port: 993,
             max_imap_connections: None,
+            security: None,
             secret: "app-password".to_string(),
         }
     }

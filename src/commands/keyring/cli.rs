@@ -1,5 +1,6 @@
 use clap::{Args, Subcommand};
 
+use crate::commands::keyring::email::imap_client::ImapSecurity;
 use crate::commands::keyring::email::provider::Provider;
 use crate::core::observability::Observable;
 
@@ -63,15 +64,24 @@ pub enum AddKind {
         provider: Option<Provider>,
 
         /// IMAP host, e.g. imap.example.com. Required when --provider is
-        /// "custom" (or resolves to it); ignored for known providers, which
-        /// use their own well-known host.
+        /// "custom" (or resolves to it); defaults to the provider's own host
+        /// otherwise (127.0.0.1 for proton's local Bridge).
         #[arg(long)]
         host: Option<String>,
 
-        /// IMAP port. Defaults to 993 for a custom provider when omitted;
-        /// ignored for known providers, which use their own well-known port.
+        /// IMAP port. Defaults to the provider's own port (1143 for proton's
+        /// Bridge), or 993 for a custom provider. Set it for a Bridge
+        /// configured to listen elsewhere.
         #[arg(long)]
         port: Option<u16>,
+
+        /// How the connection is secured: "tls" (implicit, port 993) or
+        /// "starttls" (plaintext greeting, then STARTTLS). Defaults to
+        /// starttls for proton's Bridge and for a custom server on port 143,
+        /// tls otherwise. Set "tls" for a Bridge switched to SSL mode.
+        /// There is no plaintext option (CLI-0162).
+        #[arg(long, value_enum)]
+        security: Option<ImapSecurity>,
     },
 
     /// Interactively configure a new S3-compatible bucket-config
