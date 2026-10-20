@@ -71,11 +71,17 @@ run = "\"${LIB_SRC:-.lib-src}/.github/scripts/crate-release.sh\" --crate pigeon-
 depends = ["fetch-lib"]
 run = "\"${LIB_SRC:-.lib-src}/.github/scripts/adr-issue.sh\" --repo noisypigeon/pigeon-cli --label-meta .github/adr-issue-labels.txt \"$@\""
 
+# CLI-0163: for the host's own architecture. Releases publish arm64 and amd64
+# to GHCR through the library's container-image-release.yml; docker-pull
+# fetches that instead of building.
 [tasks.docker-build]
-run = "docker build --platform linux/arm64 -t pigeon-cli ."
+run = "docker build -t pigeon-cli ."
+
+[tasks.docker-pull]
+run = "docker pull ghcr.io/noisypigeon/pigeon-cli:${1:-latest} && docker tag ghcr.io/noisypigeon/pigeon-cli:${1:-latest} pigeon-cli"
 
 [tasks.docker-run]
-run = "docker run --platform linux/arm64 --rm -it -v pigeon-data:/data pigeon-cli \"$@\""
+run = "docker run --rm -it -v pigeon-data:/data pigeon-cli \"$@\""
 
 # The local observability stack (CLI-0128) lives in the library since CLI-0161.
 # observability-stack extracts the pinned tag's stack, and the dashboard it

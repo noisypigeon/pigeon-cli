@@ -24,7 +24,7 @@ concurrency:
 jobs:
   release:
     if: "${{ !startsWith(github.event.head_commit.message, 'chore(release): v') }}"
-    uses: noisypigeon/library/.github/workflows/rust-crate-release.yml@workflows/v3.3.0
+    uses: noisypigeon/library/.github/workflows/rust-crate-release.yml@workflows/v3.4.0
     with:
       crate: pigeon-cli
       bin: pigeon
@@ -38,3 +38,29 @@ jobs:
         ]
     secrets:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  # CLI-0163: the released tag's image, for arm64 and amd64, to
+  # ghcr.io/noisypigeon/pigeon-cli. The smoke test runs inside each
+  # platform's image before anything is pushed: one line per binary a job
+  # shells out to, so an image missing any of them never publishes.
+  image:
+    needs: release
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    uses: noisypigeon/library/.github/workflows/container-image-release.yml@workflows/v3.4.0
+    with:
+      version: ${{ needs.release.outputs.version }}
+      image: ghcr.io/noisypigeon/pigeon-cli
+      smoke_test: |
+        pigeon --version
+        rclone version
+        ffmpeg -hide_banner -version
+        ffprobe -hide_banner -version
+        ffprobe -hide_banner -h 2>&1 | grep -q show_stream_groups
+        soffice --version
+        ebook-convert --version
+        pandoc --version
+        gs --version
