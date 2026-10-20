@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.59] - 2026-10-20
+
 - CLI-0164: add `pigeon job run email scan` and a durable ingest ledger that `email import` now reads and writes (`--ledger-bucket`, with `--legacy` for the old local-only behavior); **breaking:** `--report-bucket` is renamed `--debug-log-bucket` on every job ([#141](https://github.com/noisypigeon/pigeon-cli/pull/141)).
 
 ## [0.4.58] - 2026-10-20
