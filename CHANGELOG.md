@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.58] - 2026-10-20
+
 - LIB-0020: `CLAUDE.md` names runway's renamed leaves, `scaleway/bucket` and `scaleway/compute-cluster`, in place of `object-bucket` and `pigeon-cluster`. Documentation only ([#140](https://github.com/noisypigeon/pigeon-cli/pull/140)).
 
 ## [0.4.57] - 2026-10-20
