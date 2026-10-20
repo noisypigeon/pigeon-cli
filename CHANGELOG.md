@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- CLI-0163: every release publishes `ghcr.io/noisypigeon/pigeon-cli` for arm64 and amd64 through the library's `container-image-release.yml`, smoke-testing every bundled binary before the push; the image moves to a pinned static ffmpeg 9.0.2 (bookworm's 5.1 predates HEIC tile-grid support), runs under `tini`, and gains LibreOffice fonts ([#139](https://github.com/noisypigeon/pigeon-cli/pull/139)).
+
 ## [0.4.56] - 2026-10-20
 
 - CLI-0162: IMAP STARTTLS support, so Proton Mail Bridge works in its default mode (its 1143 greets in plaintext, which implicit TLS reported as `record overflow`); `keyring add email --security tls|starttls` overrides the provider default, with no plaintext mode, and a credential is never sent before TLS ([#138](https://github.com/noisypigeon/pigeon-cli/pull/138)).
