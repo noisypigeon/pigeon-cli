@@ -147,11 +147,11 @@ The CLI-0146 §8 rules apply from day one:
 
 ## Out of scope
 
-- **How "new mail found" triggers anything, and the correlating job that reads `scan-status.tsv` to run an import batch.** Explicitly the next step, not this one. Filed per CLI-0031.
-- **Email deduplication.** The ledger is designed so it can happen downstream without causing re-ingestion (§3), but the dedup itself is its own decision. Filed per CLI-0031.
+- **How "new mail found" triggers anything, and the correlating job that reads `scan-status.tsv` to run an import batch.** Explicitly the next step, not this one. Filed per CLI-0031. ([#142](https://github.com/noisypigeon/pigeon-cli/issues/142))
+- **Email deduplication.** The ledger is designed so it can happen downstream without causing re-ingestion (§3), but the dedup itself is its own decision. Filed per CLI-0031. ([#143](https://github.com/noisypigeon/pigeon-cli/issues/143))
 - **Message-ID-based identity.** It would survive moves between mailboxes, but it costs a header fetch per message, and Message-IDs are missing or shared often enough to need their own rules. A permanent design choice for now, not a deferral.
-- **Concurrent writers to one identity's ledger** (§7). A lock or a merge-on-push would close the race. Filed per CLI-0031.
-- **Retiring `--legacy`**, once nothing depends on local-only resume. Filed per CLI-0031.
+- **Concurrent writers to one identity's ledger** (§7). A lock or a merge-on-push would close the race. Filed per CLI-0031. ([#144](https://github.com/noisypigeon/pigeon-cli/issues/144))
+- **Retiring `--legacy`**, once nothing depends on local-only resume. Filed per CLI-0031. ([#145](https://github.com/noisypigeon/pigeon-cli/issues/145))
 
 ## Amends
 
