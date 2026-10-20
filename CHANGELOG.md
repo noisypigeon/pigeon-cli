@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- CLI-0162: IMAP STARTTLS support, so Proton Mail Bridge works in its default mode (its 1143 greets in plaintext, which implicit TLS reported as `record overflow`); `keyring add email --security tls|starttls` overrides the provider default, with no plaintext mode, and a credential is never sent before TLS ([#138](https://github.com/noisypigeon/pigeon-cli/pull/138)).
+
 ## [0.4.55] - 2026-10-19
 
 - CLI-0161: anchors `Cargo.toml`'s `include` patterns at the repo root, so the gitignored `.lib-src/` library clone is never packaged; it broke the first hub-driven release, leaving `v0.4.54` tagged but unpublished ([#137](https://github.com/noisypigeon/pigeon-cli/pull/137)).

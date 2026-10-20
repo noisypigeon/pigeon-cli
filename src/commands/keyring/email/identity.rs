@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::commands::keyring::email::imap_client::ImapSecurity;
 use crate::commands::keyring::email::provider::Provider;
 
 /// A single authenticated email identity's metadata, including its secret
@@ -30,6 +31,20 @@ pub struct Identity {
     /// once a provider is known to reject that default for this account.
     #[serde(default)]
     pub max_imap_connections: Option<u32>,
+    /// How the IMAP connection is secured (CLI-0162), when set explicitly
+    /// with `--security`. `None`, the default for every entry written
+    /// before CLI-0162, means the provider's default: see `security()`.
+    #[serde(default)]
+    pub security: Option<ImapSecurity>,
+}
+
+impl Identity {
+    /// The connection security to use: the stored override, else the
+    /// provider's default for this port.
+    pub fn security(&self) -> ImapSecurity {
+        self.security
+            .unwrap_or_else(|| self.provider.default_security(self.port))
+    }
 }
 
 impl crate::core::keyring::KeyringEntry for Identity {
@@ -89,6 +104,46 @@ pub fn sanitize_alias(email: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample(provider: Provider, port: u16, security: Option<ImapSecurity>) -> Identity {
+        Identity {
+            alias: "a".to_string(),
+            email: "a@example.com".to_string(),
+            provider,
+            host: "127.0.0.1".to_string(),
+            port,
+            secret: "s".to_string(),
+            max_imap_connections: None,
+            security,
+        }
+    }
+
+    #[test]
+    fn security_falls_back_to_the_provider_default_and_honours_an_override() {
+        assert_eq!(
+            sample(Provider::Proton, 1143, None).security(),
+            ImapSecurity::StartTls
+        );
+        assert_eq!(
+            sample(Provider::Gmail, 993, None).security(),
+            ImapSecurity::Tls
+        );
+        assert_eq!(
+            sample(Provider::Proton, 1143, Some(ImapSecurity::Tls)).security(),
+            ImapSecurity::Tls
+        );
+    }
+
+    #[test]
+    fn an_entry_written_before_cli_0162_has_no_security_and_still_loads() {
+        let identity: Identity = toml::from_str(
+            "alias = \"luna\"\nemail = \"luna@proton.me\"\nprovider = \"proton\"\n\
+             host = \"127.0.0.1\"\nport = 1143\nsecret = \"bridge\"\n",
+        )
+        .unwrap();
+        assert_eq!(identity.security, None);
+        assert_eq!(identity.security(), ImapSecurity::StartTls);
+    }
 
     #[test]
     fn sanitizes_dotted_local_part() {

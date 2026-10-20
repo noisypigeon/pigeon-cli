@@ -4,6 +4,8 @@ use clap::ValueEnum;
 use dialoguer::{Select, theme::ColorfulTheme};
 use serde::{Deserialize, Serialize};
 
+use crate::commands::keyring::email::imap_client::ImapSecurity;
+
 /// A known email provider, or a manually configured IMAP server.
 ///
 /// Per CLI-0003, authentication is always via an app-specific (or, for
@@ -52,6 +54,21 @@ impl Provider {
             // Proton Mail Bridge's default local IMAP endpoint.
             Provider::Proton => Some(("127.0.0.1", 1143)),
             Provider::Custom => None,
+        }
+    }
+
+    /// How a connection to this provider is secured when the identity does
+    /// not say (CLI-0162). Proton Mail Bridge's default IMAP mode on 1143 is
+    /// STARTTLS: it greets in plaintext, which an implicit-TLS client reads
+    /// as a corrupt record ("record overflow"). The public providers all
+    /// use implicit TLS on 993. A custom server follows the IANA port
+    /// convention, 143 for STARTTLS and anything else for TLS.
+    pub fn default_security(&self, port: u16) -> ImapSecurity {
+        match self {
+            Provider::Gmail | Provider::Fastmail | Provider::Icloud => ImapSecurity::Tls,
+            Provider::Proton => ImapSecurity::StartTls,
+            Provider::Custom if port == 143 => ImapSecurity::StartTls,
+            Provider::Custom => ImapSecurity::Tls,
         }
     }
 
@@ -124,6 +141,24 @@ mod tests {
     #[test]
     fn custom_has_no_default_host_port() {
         assert_eq!(Provider::Custom.default_host_port(), None);
+    }
+
+    #[test]
+    fn default_security_is_starttls_for_proton_and_port_143_only() {
+        assert_eq!(
+            Provider::Proton.default_security(1143),
+            ImapSecurity::StartTls
+        );
+        assert_eq!(Provider::Gmail.default_security(993), ImapSecurity::Tls);
+        assert_eq!(Provider::Fastmail.default_security(993), ImapSecurity::Tls);
+        assert_eq!(Provider::Icloud.default_security(993), ImapSecurity::Tls);
+        assert_eq!(
+            Provider::Custom.default_security(143),
+            ImapSecurity::StartTls
+        );
+        assert_eq!(Provider::Custom.default_security(993), ImapSecurity::Tls);
+        // A public provider's default never depends on the port.
+        assert_eq!(Provider::Gmail.default_security(143), ImapSecurity::Tls);
     }
 
     #[test]
