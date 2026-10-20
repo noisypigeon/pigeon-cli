@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.56] - 2026-10-20
+
 - CLI-0162: IMAP STARTTLS support, so Proton Mail Bridge works in its default mode (its 1143 greets in plaintext, which implicit TLS reported as `record overflow`); `keyring add email --security tls|starttls` overrides the provider default, with no plaintext mode, and a credential is never sent before TLS ([#138](https://github.com/noisypigeon/pigeon-cli/pull/138)).
 
 ## [0.4.55] - 2026-10-19
