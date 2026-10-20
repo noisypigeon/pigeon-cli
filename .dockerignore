@@ -1,11 +1,7 @@
-target/
-adr/
-.lib-src/
-.lib-observability/
-.claude/
-.git/
-.gitignore
-CLAUDE.md
-CHANGELOG.md
-README.md
-LICENSE.md
+# CLI-0163: an allowlist. The build reads only these, so a new top-level file
+# (or a stray .lib-src/ checkout) can never bloat or leak into the context.
+*
+!Cargo.toml
+!Cargo.lock
+!src
+!tests
