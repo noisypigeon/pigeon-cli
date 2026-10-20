@@ -10,6 +10,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -24,11 +25,18 @@ use crate::commands::keyring::email::imap_client::{self, ImapSession};
 use crate::core::retry::retry_with_backoff;
 
 use super::gate::{GateDecision, RecoveryGate, is_server_overloaded_error};
+use super::ledger::LedgerEntry;
 use super::manifest::{self, Batch, CheckpointEntry};
 use super::sink;
 use super::{ImportContext, ImportJob, PendingMailbox, attach, push};
 
-const JOB: &str = "email-import";
+pub(crate) const JOB: &str = "email-import";
+
+/// How often a ledger-mode run pushes each identity's ledger while it is
+/// still delivering (CLI-0164 §7). A multi-day run therefore never risks
+/// more than this much delivery history to a crash or a killed host; the
+/// final push after the workers drain covers the rest.
+const LEDGER_FLUSH_INTERVAL: Duration = Duration::from_secs(600);
 
 /// One queued unit of work: which identity it belongs to, the batch
 /// itself, and how many requeue attempts it has left.
@@ -140,6 +148,13 @@ pub(crate) struct JobSummary {
     /// Informational and overlapping with `failed`, so not part of the
     /// breakdown sum -- it answers "was the run beaten by an outage?"
     pub gate_give_ups: usize,
+    /// Ledger pushes that failed, periodic or final (CLI-0164 §7). Outside
+    /// the `failed` sum: every message here *was* delivered.
+    pub ledger_flush_failures: usize,
+    /// Whether the end-of-run ledger push failed for any identity. Fails
+    /// the run, because deliveries the durable ledger does not record would
+    /// be ingested again by the next run on another host.
+    pub final_ledger_flush_failed: bool,
 }
 
 /// A worker's currently-open IMAP session, if any.
@@ -636,10 +651,21 @@ async fn deliver_one(
             &ctx.staging_dir,
             &CheckpointEntry {
                 mailbox: batch.mailbox.clone(),
+                uidvalidity: Some(batch.uidvalidity),
                 uid,
             },
         ) {
             tracing::warn!(uid, mailbox = %batch.mailbox, error = %err, "failed to checkpoint a delivered message");
+        }
+        if let Some(ledger) = ctx.ledger.get()
+            && let Err(err) = ledger.append(&LedgerEntry {
+                mailbox: batch.mailbox.clone(),
+                uidvalidity: batch.uidvalidity,
+                uid,
+                ingested_at: super::ledger::now_timestamp(),
+            })
+        {
+            tracing::warn!(uid, mailbox = %batch.mailbox, error = %err, "failed to record a delivered message in the ledger");
         }
         outcome.delivered += 1;
         crate::observability::metrics::record_phase(JOB, "push", "ok", None);
@@ -704,6 +730,28 @@ fn remove_local_dir(path: &Path) {
     }
 }
 
+/// Pushes every identity's ledger, returning how many pushes failed.
+async fn flush_ledgers(contexts: &[ImportContext]) -> usize {
+    let mut failures = 0;
+    for ctx in contexts {
+        let Some(ledger) = ctx.ledger.get() else {
+            continue;
+        };
+        match ledger.flush(JOB).await {
+            Ok(()) => {
+                tracing::info!(identity = %ctx.identity.alias, "ledger: pushed");
+                crate::observability::metrics::record_phase(JOB, "ledger", "ok", None);
+            }
+            Err(err) => {
+                failures += 1;
+                tracing::warn!(identity = %ctx.identity.alias, error = %err, "ledger: push failed");
+                crate::observability::metrics::record_phase(JOB, "ledger", "failed", None);
+            }
+        }
+    }
+    failures
+}
+
 /// A mailbox relpath as an object-key prefix: `/`-joined regardless of host
 /// separator, with a trailing `/` so a UID appends directly. Empty for a
 /// mailbox that sanitizes to nothing.
@@ -735,6 +783,7 @@ pub(crate) async fn run_email_import_job(
 ) -> Result<JobSummary, String> {
     let ImportJob {
         contexts,
+        mode: _,
         destination,
         messages_per_minute,
         batch_size,
@@ -837,6 +886,27 @@ pub(crate) async fn run_email_import_job(
     // failed run, which is what CLI-0098 and CLI-0141 both had to do.
     let command_span = tracing::Span::current();
 
+    let any_ledger = shared.contexts.iter().any(|ctx| ctx.ledger.get().is_some());
+    let periodic_flush_failures = Arc::new(AtomicUsize::new(0));
+    let flusher = any_ledger.then(|| {
+        let shared = Arc::clone(&shared);
+        let failures = Arc::clone(&periodic_flush_failures);
+        tokio::spawn(
+            async move {
+                let mut interval = tokio::time::interval(LEDGER_FLUSH_INTERVAL);
+                // The first tick fires immediately, moments after the ledger
+                // was loaded or seeded, so it is skipped.
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let failed = flush_ledgers(&shared.contexts).await;
+                    failures.fetch_add(failed, Ordering::Relaxed);
+                }
+            }
+            .instrument(command_span.clone()),
+        )
+    });
+
     let mut handles = Vec::with_capacity(worker_count);
     for _ in 0..worker_count {
         let queue = Arc::clone(&queue);
@@ -867,12 +937,23 @@ pub(crate) async fn run_email_import_job(
         }
     }
 
+    if let Some(flusher) = flusher {
+        flusher.abort();
+        let _ = flusher.await;
+        // Final push, on the error path too: whatever was delivered before a
+        // worker panicked is still delivered.
+        let failures = flush_ledgers(&shared.contexts).await;
+        summary.ledger_flush_failures = periodic_flush_failures.load(Ordering::Relaxed) + failures;
+        summary.final_ledger_flush_failed = failures > 0;
+    }
+
     if let Some(err) = first_error {
         return Err(err);
     }
 
     tracing::info!(
         pigeon_job = JOB,
+        ledger_flush_failures = summary.ledger_flush_failures,
         delivered = summary.delivered,
         failed = summary.failed,
         objects_pushed = summary.objects_pushed,
@@ -894,6 +975,7 @@ mod tests {
         Batch {
             mailbox: "INBOX".to_string(),
             mailbox_relpath: PathBuf::from("inbox"),
+            uidvalidity: 7,
             uids: vec![1, 2, 3],
         }
     }

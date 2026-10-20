@@ -400,7 +400,7 @@ fn job_run_deduplicate_help_shows_source_bucket_and_concurrency_flags() {
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
         .stdout(predicate::str::contains("--upload-only"))
-        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--debug-log-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
         // CLI-0136: upload is now one bulk `rclone copy`, tuned by
         // --transfers/--checkers/--tpslimit, not --upload-concurrency.
@@ -574,7 +574,7 @@ fn job_run_rclone_help_lists_copy_and_delete() {
 }
 
 #[test]
-fn job_run_rclone_copy_help_shows_source_bucket_destination_bucket_and_report_bucket_flags() {
+fn job_run_rclone_copy_help_shows_source_bucket_destination_bucket_and_debug_log_bucket_flags() {
     pigeon()
         .args(["job", "run", "rclone", "copy", "--help"])
         .assert()
@@ -582,7 +582,7 @@ fn job_run_rclone_copy_help_shows_source_bucket_destination_bucket_and_report_bu
         .stdout(predicate::str::contains("--source-bucket"))
         .stdout(predicate::str::contains("--destination-bucket"))
         .stdout(predicate::str::contains("--local-output"))
-        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--debug-log-bucket"))
         .stdout(predicate::str::contains("--transfers"))
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
@@ -595,7 +595,7 @@ fn job_run_rclone_copy_help_shows_source_bucket_destination_bucket_and_report_bu
 }
 
 #[test]
-fn job_run_rclone_delete_help_shows_source_bucket_and_report_bucket_flags_but_not_destination_or_transfer_flags()
+fn job_run_rclone_delete_help_shows_source_bucket_and_debug_log_bucket_flags_but_not_destination_or_transfer_flags()
  {
     pigeon()
         .args(["job", "run", "rclone", "delete", "--help"])
@@ -603,7 +603,7 @@ fn job_run_rclone_delete_help_shows_source_bucket_and_report_bucket_flags_but_no
         .success()
         .stdout(predicate::str::contains("--source-bucket"))
         .stdout(predicate::str::contains("--local-output"))
-        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--debug-log-bucket"))
         .stdout(predicate::str::contains("--checkers"))
         .stdout(predicate::str::contains("--non-interactive"))
         // CLI-0110: delete has no destination and no file-transfer tuning
@@ -763,7 +763,7 @@ fn job_run_transform_help_shows_input_file_type_source_destination_and_rclone_fl
         .stdout(predicate::str::contains("--download-transfers"))
         .stdout(predicate::str::contains("--download-checkers"))
         .stdout(predicate::str::contains("--tpslimit"))
-        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--debug-log-bucket"))
         .stdout(predicate::str::contains("--non-interactive"))
         // CLI-0137: renamed from --source-bucket/--destination-bucket.
         .stdout(predicate::str::contains("--source-bucket").not())
@@ -912,7 +912,7 @@ fn job_run_transform_without_destination_fails_fast_non_interactively() {
 
 /// The exact regression CLI-0138 fixes: the composed `alias:prefix/` form
 /// that CLI-0136 made unexpressible. Resolution must get past both bucket
-/// flags (failing later only on the still-unresolved --report-bucket).
+/// flags (failing later only on the still-unresolved --debug-log-bucket).
 #[test]
 fn job_run_transform_accepts_the_composed_alias_prefix_form() {
     let config_dir = TempDir::new().unwrap();
@@ -944,7 +944,7 @@ fn job_run_transform_accepts_the_composed_alias_prefix_form() {
         .stderr(predicate::str::contains("--destination is required").not())
         .stderr(predicate::str::contains("no bucket-config named").not())
         .stderr(predicate::str::contains(
-            "--report-bucket is required when not running interactively",
+            "--debug-log-bucket is required when not running interactively",
         ));
 }
 
@@ -979,7 +979,7 @@ fn job_run_transform_accepts_one_bucket_for_both_source_and_destination() {
         .code(1)
         .stderr(predicate::str::contains("no bucket-config named").not())
         .stderr(predicate::str::contains(
-            "--report-bucket is required when not running interactively",
+            "--debug-log-bucket is required when not running interactively",
         ));
 }
 
@@ -1442,12 +1442,223 @@ fn job_run_rejects_the_removed_email_jobs() {
 }
 
 #[test]
-fn job_run_email_help_lists_import() {
+fn job_run_email_help_lists_import_and_scan() {
     pigeon()
         .args(["job", "run", "email", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("import"));
+        .stdout(predicate::str::contains("import"))
+        .stdout(predicate::str::contains("scan"));
+}
+
+#[test]
+fn job_run_email_scan_help_shows_its_flag_set() {
+    pigeon()
+        .args(["job", "run", "email", "scan", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--identities"))
+        .stdout(predicate::str::contains("--ledger-bucket"))
+        .stdout(predicate::str::contains("--destination"))
+        .stdout(predicate::str::contains("--local-output"))
+        .stdout(predicate::str::contains("--debug-log-bucket"))
+        .stdout(predicate::str::contains("--non-interactive"));
+}
+
+/// CLI-0164 §1: a scan transfers no message body and holds one connection
+/// per identity, so none of import's pacing/transfer knobs apply.
+#[test]
+fn job_run_email_scan_help_omits_imports_transfer_flags() {
+    pigeon()
+        .args(["job", "run", "email", "scan", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--messages-per-minute").not())
+        .stdout(predicate::str::contains("--batch-size").not())
+        .stdout(predicate::str::contains("--push-concurrency").not())
+        .stdout(predicate::str::contains("--max-connections").not())
+        .stdout(predicate::str::contains("--legacy").not());
+}
+
+#[test]
+fn job_run_email_scan_requires_a_ledger_bucket_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "state");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "scan",
+            "--identities",
+            "first-last",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--debug-log-bucket",
+            "state",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--ledger-bucket is required when not running interactively",
+        ));
+}
+
+#[test]
+fn job_run_email_scan_with_an_unknown_ledger_or_destination_alias_fails_by_name() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "state");
+
+    for (ledger, destination, unknown) in [
+        ("nope:ledger/", "state", "nope"),
+        ("state:ledger/", "missing:eml/", "missing"),
+    ] {
+        pigeon_in(&config_dir)
+            .args([
+                "job",
+                "run",
+                "email",
+                "scan",
+                "--identities",
+                "first-last",
+                "--ledger-bucket",
+                ledger,
+                "--destination",
+                destination,
+                "--local-output",
+                local_output.path().to_str().unwrap(),
+                "--debug-log-bucket",
+                "state",
+                "--non-interactive",
+            ])
+            .assert()
+            .failure()
+            .code(1)
+            .stderr(predicate::str::contains(format!(
+                "no bucket-config named '{unknown}'"
+            )));
+    }
+}
+
+#[test]
+fn job_run_email_scan_without_rclone_on_path_fails_fast_with_a_clear_error() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    let empty_path_dir = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "state");
+
+    pigeon_in(&config_dir)
+        .env("PATH", empty_path_dir.path())
+        .args([
+            "job",
+            "run",
+            "email",
+            "scan",
+            "--identities",
+            "first-last",
+            "--ledger-bucket",
+            "state",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--debug-log-bucket",
+            "state",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("was not found on PATH"));
+}
+
+/// Every job's subcommand path, for the crate-wide flag assertions below.
+const EVERY_JOB: [&[&str]; 6] = [
+    &["job", "run", "deduplicate"],
+    &["job", "run", "transform"],
+    &["job", "run", "rclone", "copy"],
+    &["job", "run", "rclone", "delete"],
+    &["job", "run", "email", "import"],
+    &["job", "run", "email", "scan"],
+];
+
+/// CLI-0164 §2a: `--report-bucket` was renamed `--debug-log-bucket` on
+/// every job, with no alias for the old spelling.
+#[test]
+fn every_job_rejects_report_bucket_and_offers_debug_log_bucket() {
+    for job in EVERY_JOB {
+        let mut help = job.to_vec();
+        help.push("--help");
+        pigeon()
+            .args(&help)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--debug-log-bucket"))
+            .stdout(predicate::str::contains("--report-bucket").not());
+
+        let mut old = job.to_vec();
+        old.extend(["--report-bucket", "x"]);
+        pigeon()
+            .args(&old)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(
+                "unexpected argument '--report-bucket'",
+            ));
+    }
+}
+
+/// CLI-0164 §2a: every job accepts `--ledger-bucket`, so a scheduler can
+/// pass one uniform flag set; only the email jobs use it so far.
+#[test]
+fn every_job_accepts_ledger_bucket() {
+    for job in EVERY_JOB {
+        let mut help = job.to_vec();
+        help.push("--help");
+        pigeon()
+            .args(&help)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--ledger-bucket"));
+    }
+}
+
+/// A non-email job with `--ledger-bucket` set behaves exactly as without
+/// it: the flag parses and the run fails on its own next missing input.
+#[test]
+fn a_non_email_job_ignores_ledger_bucket() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_bucket_config(&config_dir, "media");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "rclone",
+            "copy",
+            "--source-bucket",
+            "media",
+            "--destination-bucket",
+            "media:copy/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--ledger-bucket",
+            "not-even-a-configured-alias",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--debug-log-bucket is required when not running interactively",
+        ));
 }
 
 #[test]
@@ -1463,7 +1674,9 @@ fn job_run_email_import_help_shows_its_full_flag_set() {
         .stdout(predicate::str::contains("--batch-size"))
         .stdout(predicate::str::contains("--max-connections"))
         .stdout(predicate::str::contains("--push-concurrency"))
-        .stdout(predicate::str::contains("--report-bucket"))
+        .stdout(predicate::str::contains("--debug-log-bucket"))
+        .stdout(predicate::str::contains("--ledger-bucket"))
+        .stdout(predicate::str::contains("--legacy"))
         .stdout(predicate::str::contains("--non-interactive"));
 }
 
@@ -1517,7 +1730,7 @@ fn job_run_email_import_without_identities_fails_fast_non_interactively() {
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--report-bucket",
+            "--debug-log-bucket",
             "dest",
             "--non-interactive",
         ])
@@ -1550,7 +1763,7 @@ fn job_run_email_import_without_a_destination_fails_fast_non_interactively() {
             "first-last",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--report-bucket",
+            "--debug-log-bucket",
             "dest",
             "--non-interactive",
         ])
@@ -1563,7 +1776,42 @@ fn job_run_email_import_without_a_destination_fails_fast_non_interactively() {
 }
 
 #[test]
-fn job_run_email_import_requires_a_report_bucket_non_interactively() {
+fn job_run_email_import_requires_a_debug_log_bucket_non_interactively() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--destination",
+            "dest",
+            "--ledger-bucket",
+            "dest:ledger/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "--debug-log-bucket is required when not running interactively",
+        ));
+}
+
+/// CLI-0164 §7: the durable ledger is the default, so omitting
+/// `--ledger-bucket` non-interactively is an error -- not a silent fall
+/// back to the local-only checkpoint, which would re-ingest everything on
+/// a fresh host.
+#[test]
+fn job_run_email_import_requires_a_ledger_bucket_unless_legacy() {
     let config_dir = TempDir::new().unwrap();
     let local_output = TempDir::new().unwrap();
     write_identity(&config_dir, "first-last", "first.last@example.com");
@@ -1581,14 +1829,84 @@ fn job_run_email_import_requires_a_report_bucket_non_interactively() {
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
+            "--debug-log-bucket",
+            "dest",
             "--non-interactive",
         ])
         .assert()
         .failure()
         .code(1)
         .stderr(predicate::str::contains(
-            "--report-bucket is required when not running interactively",
+            "--ledger-bucket is required when not running interactively",
         ));
+}
+
+/// `--legacy` keeps CLI-0146's behavior and accepts `--ledger-bucket`
+/// without using it (CLI-0164 §2a): the run gets past the ledger step and
+/// fails on the next missing input instead.
+#[test]
+fn job_run_email_import_legacy_does_not_need_a_ledger_bucket_and_ignores_one() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    for extra in [vec![], vec!["--ledger-bucket", "nope"]] {
+        let mut args = vec![
+            "job",
+            "run",
+            "email",
+            "import",
+            "--legacy",
+            "--identities",
+            "first-last",
+            "--destination",
+            "dest",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--non-interactive",
+        ];
+        args.extend(extra);
+        pigeon_in(&config_dir)
+            .args(&args)
+            .assert()
+            .failure()
+            .code(1)
+            .stderr(predicate::str::contains(
+                "--debug-log-bucket is required when not running interactively",
+            ));
+    }
+}
+
+#[test]
+fn job_run_email_import_with_an_unknown_ledger_bucket_alias_fails() {
+    let config_dir = TempDir::new().unwrap();
+    let local_output = TempDir::new().unwrap();
+    write_identity(&config_dir, "first-last", "first.last@example.com");
+    write_bucket_config(&config_dir, "dest");
+
+    pigeon_in(&config_dir)
+        .args([
+            "job",
+            "run",
+            "email",
+            "import",
+            "--identities",
+            "first-last",
+            "--destination",
+            "dest",
+            "--ledger-bucket",
+            "nope:ledger/",
+            "--local-output",
+            local_output.path().to_str().unwrap(),
+            "--debug-log-bucket",
+            "dest",
+            "--non-interactive",
+        ])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("no bucket-config named 'nope'"));
 }
 
 #[test]
@@ -1609,7 +1927,7 @@ fn job_run_email_import_with_an_unknown_identity_fails() {
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--report-bucket",
+            "--debug-log-bucket",
             "dest",
             "--non-interactive",
         ])
@@ -1638,7 +1956,7 @@ fn job_run_email_import_with_an_unknown_destination_alias_fails() {
             "nope:eml/",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--report-bucket",
+            "--debug-log-bucket",
             "dest",
             "--non-interactive",
         ])
@@ -1670,7 +1988,7 @@ fn job_run_email_import_rejects_a_parent_directory_segment_in_the_destination_pr
             "dest:../escape/",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--report-bucket",
+            "--debug-log-bucket",
             "dest",
             "--non-interactive",
         ])
@@ -1706,7 +2024,7 @@ fn job_run_email_import_without_rclone_on_path_fails_fast_with_a_clear_error() {
             "dest",
             "--local-output",
             local_output.path().to_str().unwrap(),
-            "--report-bucket",
+            "--debug-log-bucket",
             "dest",
             "--non-interactive",
         ])

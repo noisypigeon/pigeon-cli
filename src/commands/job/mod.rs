@@ -3,6 +3,7 @@ pub mod cli;
 pub mod commands;
 pub mod deduplicate;
 pub mod email_import;
+pub mod email_scan;
 pub(crate) mod local;
 pub(crate) mod progress;
 pub mod rclone;

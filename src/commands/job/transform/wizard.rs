@@ -406,7 +406,7 @@ pub fn dispatch(
     upload_transfers: Option<usize>,
     max_pending_downloads: Option<usize>,
     tpslimit: Option<usize>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
     job_name: &'static str,
     non_interactive: bool,
 ) -> i32 {
@@ -430,7 +430,7 @@ pub fn dispatch(
         upload_transfers,
         max_pending_downloads,
         tpslimit,
-        report_bucket,
+        debug_log_bucket,
         job_name,
         non_interactive,
     ))
@@ -553,7 +553,7 @@ async fn dispatch_async(
     upload_transfers: Option<usize>,
     max_pending_downloads: Option<usize>,
     tpslimit: Option<usize>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
     job_name: &'static str,
     non_interactive: bool,
 ) -> i32 {
@@ -688,8 +688,8 @@ async fn dispatch_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let report_bucket_config =
-        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
+    let debug_log_bucket_config =
+        match report_upload::resolve(debug_log_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -804,7 +804,7 @@ async fn dispatch_async(
 
     report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
-        &report_bucket_config,
+        &debug_log_bucket_config,
         &run_prefix,
         &run_id,
         &report_path,

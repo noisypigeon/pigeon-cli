@@ -123,7 +123,7 @@ pub fn dispatch_copy(
     source_bucket: Option<String>,
     destination_bucket: Option<String>,
     local_output: Option<PathBuf>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
     transfers: Option<usize>,
     checkers: Option<usize>,
     tpslimit: Option<usize>,
@@ -141,7 +141,7 @@ pub fn dispatch_copy(
         source_bucket,
         destination_bucket,
         local_output,
-        report_bucket,
+        debug_log_bucket,
         transfers,
         checkers,
         tpslimit,
@@ -155,7 +155,7 @@ async fn dispatch_copy_async(
     source_bucket: Option<String>,
     destination_bucket: Option<String>,
     local_output: Option<PathBuf>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
     transfers: Option<usize>,
     checkers: Option<usize>,
     tpslimit: Option<usize>,
@@ -210,8 +210,8 @@ async fn dispatch_copy_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let report_bucket_config =
-        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
+    let debug_log_bucket_config =
+        match report_upload::resolve(debug_log_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -281,7 +281,7 @@ async fn dispatch_copy_async(
 
     report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
-        &report_bucket_config,
+        &debug_log_bucket_config,
         &run_prefix,
         &run_id,
         &report_path,
@@ -296,7 +296,7 @@ async fn dispatch_copy_async(
 pub fn dispatch_delete(
     source_bucket: Option<String>,
     local_output: Option<PathBuf>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
     checkers: Option<usize>,
     job_name: &'static str,
     non_interactive: bool,
@@ -311,7 +311,7 @@ pub fn dispatch_delete(
     runtime.block_on(dispatch_delete_async(
         source_bucket,
         local_output,
-        report_bucket,
+        debug_log_bucket,
         checkers,
         job_name,
         non_interactive,
@@ -321,7 +321,7 @@ pub fn dispatch_delete(
 async fn dispatch_delete_async(
     source_bucket: Option<String>,
     local_output: Option<PathBuf>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
     checkers: Option<usize>,
     job_name: &'static str,
     non_interactive: bool,
@@ -354,8 +354,8 @@ async fn dispatch_delete_async(
         Ok(value) => value,
         Err(err) => return fail(err),
     };
-    let report_bucket_config =
-        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
+    let debug_log_bucket_config =
+        match report_upload::resolve(debug_log_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -424,7 +424,7 @@ async fn dispatch_delete_async(
 
     report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
-        &report_bucket_config,
+        &debug_log_bucket_config,
         &run_prefix,
         &run_id,
         &report_path,

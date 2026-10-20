@@ -99,7 +99,15 @@ pub enum JobType {
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
-        report_bucket: Option<String>,
+        debug_log_bucket: Option<String>,
+
+        /// Where the email jobs keep their durable ingest ledger and scan
+        /// status (CLI-0164): a configured bucket-config alias, optionally
+        /// with a prefix (`state:ledger/`). Accepted but currently unused
+        /// by this job, so a scheduled invocation can pass the same flag
+        /// to every job.
+        #[arg(long)]
+        ledger_bucket: Option<String>,
 
         /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
@@ -283,7 +291,15 @@ pub enum JobType {
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
-        report_bucket: Option<String>,
+        debug_log_bucket: Option<String>,
+
+        /// Where the email jobs keep their durable ingest ledger and scan
+        /// status (CLI-0164): a configured bucket-config alias, optionally
+        /// with a prefix (`state:ledger/`). Accepted but currently unused
+        /// by this job, so a scheduled invocation can pass the same flag
+        /// to every job.
+        #[arg(long)]
+        ledger_bucket: Option<String>,
 
         /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
@@ -382,7 +398,79 @@ pub enum EmailAction {
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
-        report_bucket: Option<String>,
+        debug_log_bucket: Option<String>,
+
+        /// Where this identity's durable ingest ledger lives (CLI-0164): a
+        /// configured bucket-config alias, optionally with a prefix
+        /// (`state:ledger/`). The ledger records every message ever
+        /// delivered, as `(mailbox, UIDVALIDITY, UID)`, and decides what is
+        /// pending, so a run on a fresh host resumes correctly and a
+        /// destination later rewritten by `deduplicate`/`transform` is
+        /// never re-ingested. Seeded from `--destination`'s existing `.eml`
+        /// objects the first time. Mandatory unless `--legacy` --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        ledger_bucket: Option<String>,
+
+        /// Keep CLI-0146's original behavior: track delivery only in the
+        /// local `.pushed` checkpoint under `--local-output`, with no
+        /// ledger. `--ledger-bucket` is accepted and ignored.
+        #[arg(long)]
+        legacy: bool,
+
+        /// Suppress every wizard prompt (CLI-0114): each omitted input
+        /// resolves via its non-interactive fallback (or errors if none
+        /// exists) instead of asking, and the final "proceed?"
+        /// confirmation is auto-answered yes.
+        #[arg(long)]
+        non_interactive: bool,
+    },
+
+    /// Compares each identity's IMAP account against its durable ingest
+    /// ledger and records what is new, without transferring any message
+    /// body (CLI-0164). Cheap enough to run on a schedule: one connection
+    /// per identity, one `UID SEARCH` per mailbox, plus a `BODYSTRUCTURE`
+    /// fetch over only the new UIDs to count their attachments. Writes a
+    /// per-mailbox `scan-status.tsv` (server/ingested/new counts, last
+    /// scan, last in-sync time) beside the ledger in `--ledger-bucket`.
+    /// Never writes the ledger itself, except to seed it from
+    /// `--destination` the first time an identity is seen. Requires
+    /// `rclone` on `PATH`.
+    Scan {
+        /// Aliases of the identities to scan, comma-separated.
+        /// Interactively multi-selected from the authenticated identities
+        /// when omitted and stdin is a terminal; required otherwise.
+        #[arg(long, value_delimiter = ',')]
+        identities: Option<Vec<String>>,
+
+        /// Where the ingest ledger and scan status live: a configured
+        /// bucket-config alias, optionally with a prefix
+        /// (`state:ledger/`). Mandatory -- interactively selected when
+        /// omitted and stdin is a terminal; required otherwise.
+        #[arg(long)]
+        ledger_bucket: Option<String>,
+
+        /// Where `email import` delivered to, in the same `alias[:prefix/]`
+        /// form as its own `--destination`. Only read to seed the ledger
+        /// for an identity that has none yet; ignored otherwise.
+        #[arg(long)]
+        destination: Option<String>,
+
+        /// Local directory this run's bookkeeping, report, and transcript
+        /// are written under. Defaults to a directory under the OS temp
+        /// directory when omitted.
+        #[arg(long)]
+        local_output: Option<PathBuf>,
+
+        /// Alias of a configured bucket-config this run's report, the
+        /// shared observability log, and a transcript of its printed
+        /// output are uploaded to, always unencrypted, under a
+        /// `YYYY-MM-DD-job-name-{run-id}/` prefix (CLI-0100). Mandatory --
+        /// interactively selected when omitted and stdin is a terminal;
+        /// required otherwise.
+        #[arg(long)]
+        debug_log_bucket: Option<String>,
 
         /// Suppress every wizard prompt (CLI-0114): each omitted input
         /// resolves via its non-interactive fallback (or errors if none
@@ -440,7 +528,15 @@ pub enum RcloneAction {
         /// (CLI-0100). Mandatory -- interactively selected when omitted
         /// and stdin is a terminal; required otherwise.
         #[arg(long)]
-        report_bucket: Option<String>,
+        debug_log_bucket: Option<String>,
+
+        /// Where the email jobs keep their durable ingest ledger and scan
+        /// status (CLI-0164): a configured bucket-config alias, optionally
+        /// with a prefix (`state:ledger/`). Accepted but currently unused
+        /// by this job, so a scheduled invocation can pass the same flag
+        /// to every job.
+        #[arg(long)]
+        ledger_bucket: Option<String>,
 
         /// rclone --transfers (concurrent file transfers). Defaults to 8
         /// (CLI-0106) when omitted.
@@ -495,7 +591,15 @@ pub enum RcloneAction {
         /// interactively selected when omitted and stdin is a terminal;
         /// required otherwise.
         #[arg(long)]
-        report_bucket: Option<String>,
+        debug_log_bucket: Option<String>,
+
+        /// Where the email jobs keep their durable ingest ledger and scan
+        /// status (CLI-0164): a configured bucket-config alias, optionally
+        /// with a prefix (`state:ledger/`). Accepted but currently unused
+        /// by this job, so a scheduled invocation can pass the same flag
+        /// to every job.
+        #[arg(long)]
+        ledger_bucket: Option<String>,
 
         /// rclone --checkers (concurrent list operations during
         /// enumeration). Defaults to 16 when omitted.
@@ -516,6 +620,7 @@ impl Observable for JobType {
         match self {
             JobType::Email(args) => match args.action {
                 EmailAction::Import { .. } => "job.email-import",
+                EmailAction::Scan { .. } => "job.email-scan",
             },
             JobType::Deduplicate { .. } => "job.deduplicate",
             JobType::Rclone(args) => match args.action {
@@ -529,7 +634,7 @@ impl Observable for JobType {
 
 impl JobType {
     /// The bare dash-form job name (e.g. `"deduplicate"`) used in the
-    /// report-bucket upload prefix (CLI-0100) -- `command_name()`'s value
+    /// debug-log-bucket upload prefix (CLI-0100) -- `command_name()`'s value
     /// with its `"job."` prefix stripped, rather than a 6th place in this
     /// codebase repeating the same job-name literals already duplicated
     /// across every job's `worker.rs` metrics call sites.

@@ -11,7 +11,9 @@ use std::path::PathBuf;
 use dialoguer::{Input, MultiSelect, theme::ColorfulTheme};
 
 use crate::commands::job::report_upload;
-use crate::commands::job::shared_wizard::{ConfirmInput, load_keyring, prepare_rclone};
+use crate::commands::job::shared_wizard::{
+    ConfirmInput, LedgerBucketInput, load_keyring, note_unused_ledger_bucket, prepare_rclone,
+};
 use crate::commands::keyring::email::identity::Identity;
 use crate::commands::keyring::store::Store;
 use crate::commands::{FAILURE_EXIT_CODE, fail, print_table};
@@ -20,7 +22,7 @@ use crate::core::keyring::credentials;
 use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
-use super::{DEFAULT_MAX_CONNECTIONS, ImportContext, ImportJob};
+use super::{DEFAULT_MAX_CONNECTIONS, ImportContext, ImportJob, ImportMode};
 
 /// Deliberately conservative: a run exists to stay welcome on a server for
 /// days, so the default pace matters more than the default throughput.
@@ -257,7 +259,9 @@ pub fn dispatch(
     batch_size: Option<usize>,
     max_connections: Option<usize>,
     push_concurrency: Option<usize>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
+    ledger_bucket: Option<String>,
+    legacy: bool,
     job_name: &'static str,
     non_interactive: bool,
 ) -> i32 {
@@ -276,7 +280,9 @@ pub fn dispatch(
         batch_size,
         max_connections,
         push_concurrency,
-        report_bucket,
+        debug_log_bucket,
+        ledger_bucket,
+        legacy,
         job_name,
         non_interactive,
     ))
@@ -291,7 +297,9 @@ async fn dispatch_async(
     batch_size: Option<usize>,
     max_connections: Option<usize>,
     push_concurrency: Option<usize>,
-    report_bucket: Option<String>,
+    debug_log_bucket: Option<String>,
+    ledger_bucket: Option<String>,
+    legacy: bool,
     job_name: &'static str,
     non_interactive: bool,
 ) -> i32 {
@@ -332,6 +340,23 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     };
 
+    // CLI-0164 §7: the durable ledger decides what is pending unless
+    // `--legacy` asks for CLI-0146's local-checkpoint-only behavior.
+    let mode = if legacy {
+        note_unused_ledger_bucket(job_name, &ledger_bucket);
+        ImportMode::Legacy
+    } else {
+        match (LedgerBucketInput {
+            flag: ledger_bucket,
+            store: &keyring_store,
+        })
+        .resolve(non_interactive)
+        {
+            Ok(target) => ImportMode::Ledger(target),
+            Err(err) => return fail(err),
+        }
+    };
+
     let local_output = match (LocalOutputInput { flag: local_output }).resolve(non_interactive) {
         Ok(path) => path,
         Err(err) => return fail(err),
@@ -366,8 +391,8 @@ async fn dispatch_async(
         Err(err) => return fail(err),
     };
 
-    let report_bucket_config =
-        match report_upload::resolve(report_bucket, &keyring_store, non_interactive) {
+    let debug_log_bucket_config =
+        match report_upload::resolve(debug_log_bucket, &keyring_store, non_interactive) {
             Ok(value) => value,
             Err(err) => return fail(err),
         };
@@ -389,12 +414,14 @@ async fn dispatch_async(
                 secret,
                 staging_dir: identity_root.join(".staging"),
                 scratch_dir: identity_root.join("scratch"),
+                ledger: std::sync::OnceLock::new(),
             }
         })
         .collect();
 
     let job = ImportJob {
         contexts,
+        mode,
         destination,
         messages_per_minute,
         batch_size,
@@ -476,7 +503,21 @@ async fn dispatch_async(
                     ),
                 );
             }
-            let exit_code = if summary.failed > 0 {
+            if summary.ledger_flush_failures > 0 {
+                report_upload::say(
+                    &transcript,
+                    format!(
+                        "{} ledger push(es) failed{}.",
+                        summary.ledger_flush_failures,
+                        if summary.final_ledger_flush_failed {
+                            ", including the final one -- the ledger is missing this run's latest deliveries, so a run on another host would ingest them again"
+                        } else {
+                            ""
+                        }
+                    ),
+                );
+            }
+            let exit_code = if summary.failed > 0 || summary.final_ledger_flush_failed {
                 FAILURE_EXIT_CODE
             } else {
                 0
@@ -499,7 +540,7 @@ async fn dispatch_async(
 
     report_upload::log_run_outcome(exit_code);
     report_upload::upload_run_artifacts(
-        &report_bucket_config,
+        &debug_log_bucket_config,
         &run_prefix,
         &run_id,
         &report_path,
