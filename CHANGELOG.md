@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- LIB-0020: `CLAUDE.md` names runway's renamed leaves, `scaleway/bucket` and `scaleway/compute-cluster`, in place of `object-bucket` and `pigeon-cluster`. Documentation only ([#140](https://github.com/noisypigeon/pigeon-cli/pull/140)).
+
 ## [0.4.57] - 2026-10-20
 
 - CLI-0163: every release publishes `ghcr.io/noisypigeon/pigeon-cli` for arm64 and amd64 through the library's `container-image-release.yml`, smoke-testing every bundled binary before the push; the image moves to a pinned static ffmpeg 9.0.2 (bookworm's 5.1 predates HEIC tile-grid support), runs under `tini`, and gains LibreOffice fonts ([#139](https://github.com/noisypigeon/pigeon-cli/pull/139)).
