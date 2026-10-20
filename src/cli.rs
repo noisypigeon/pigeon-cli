@@ -46,5 +46,9 @@ pub enum Commands {
     /// Manage email identities and bucket-configs
     Keyring(KeyringArgs),
     /// Run job-orchestrated pipelines (e.g. email import)
-    Job(JobArgs),
+    ///
+    /// Boxed because every job's flags live inline in this variant, and
+    /// CLI-0164's `--ledger-bucket` on all of them pushed it past
+    /// `clippy::large_enum_variant`'s threshold.
+    Job(Box<JobArgs>),
 }

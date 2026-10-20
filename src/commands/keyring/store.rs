@@ -257,7 +257,7 @@ impl Store {
     }
 
     /// Every configured bucket-config, ignoring the other kind -- for
-    /// each job's destination and report-bucket lookup.
+    /// each job's destination and debug-log-bucket lookup.
     pub fn bucket_configs(&self) -> impl Iterator<Item = &BucketConfig> {
         self.entries.iter().filter_map(|entry| match entry {
             Entry::Bucket(bucket_config) => Some(bucket_config),

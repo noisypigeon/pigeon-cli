@@ -109,11 +109,14 @@ machine, not just pigeon's own process tree) — see CLI-0128.
 - `pigeon keyring modify [alias]` — edit an existing entry's fields.
 - `pigeon keyring delete <alias>` — remove a configured entry and its secret.
 - `pigeon keyring list` — list every configured entry.
-- `pigeon job run email import [flags]` — deliver each message's raw `.eml` and unpacked attachments from an authenticated identity to a destination, at a chosen `--messages-per-minute` pace.
+- `pigeon job run email import [flags]` — deliver each message's raw `.eml` and unpacked attachments from an authenticated identity to a destination, at a chosen `--messages-per-minute` pace. What has been delivered is recorded in a durable ingest ledger in `--ledger-bucket`, so a run on a fresh host resumes correctly and downstream jobs can rewrite the destination without anything being ingested twice; `--legacy` keeps the older local-checkpoint-only behavior.
+- `pigeon job run email scan [flags]` — compare each identity's mailboxes against its ingest ledger without fetching any message, and write per-mailbox counts of new messages and attachments to `scan-status.tsv` in `--ledger-bucket`. Cheap enough to run on a schedule.
 - `pigeon job run deduplicate [flags]` — inflate every zip, content-hash a bucket, keep one copy of each byte-identical file, and upload the result.
 - `pigeon job run transform [flags]` — normalize one input family per run between a source and destination bucket: images (`png`/`jpeg`/`heic`) and video (`mov`/`m4v`/`mp4`) via `ffmpeg` at a chosen `--video-quality`; audio (`mp4-audio`/`m4a`/`mp3`/`aac`/`wav`/`opus`) to Opus at a chosen `--audio-quality`; spreadsheets (`numbers`/`xlsx`/`xls`/`csv`/`tsv`) to one `.csv` per non-empty sheet; documents (`doc`/`docx`/`pages`/`rtf`/`pdf`/`epub`/`pptx`/`key`) to `.pdf`; text (`txt`/`md`/`markdown`/`mkd`/`rst`/`textclipping`) to `.txt`; more raster images (`avif`/`tif`/`tiff`/`webp`/`bmp`) to `.jpg` with transparency flattened onto white; icons and artwork (`ico`/`icns`/`procreate`/`procreate-2`) to `.png` with transparency kept, a Procreate document at full canvas resolution; vector drawings (`ai`/`emz`/`eps`/`svg`) to `.svg`; and calendars and contacts (`ics`/`vcf`) to readable `.txt`. Needs `soffice` for the LibreOffice-readable kinds (including `ai`/`emz`), `ebook-convert` for `epub` and `pandoc` for `md`/`rst` and Ghostscript (`gs`) for `eps`; a file already in its target format (`jpeg`, `csv`, `pdf`, `txt`, `svg`) is copied through byte-for-byte. A `.key` that is not an iWork container — that extension is also conventional for a private key — is refused rather than converted.
 - `pigeon job run rclone copy [flags]` — copy one configured bucket to another via `rclone`.
 - `pigeon job run rclone delete [flags]` — recursively and permanently purge a configured bucket's contents.
+
+Every job takes `--debug-log-bucket` (where its report, log and transcript are uploaded; formerly `--report-bucket`) and accepts `--ledger-bucket`, which only the email jobs use so far.
 
 Run `pigeon --help`, `pigeon keyring --help`, or `pigeon job --help` for the full command reference.
 

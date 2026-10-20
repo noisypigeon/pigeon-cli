@@ -19,6 +19,7 @@
 use dialoguer::{Confirm, Input, theme::ColorfulTheme};
 
 use crate::commands::keyring::store::{Store, keyring_path_override};
+use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 
 /// Resolves the keyring's path and loads it, the first thing every job's
@@ -73,12 +74,12 @@ pub(crate) async fn prepare_rclone(store: &Store) -> Result<(), String> {
 /// to -- mandatory on every job type (CLI-0100). Put here directly
 /// (rather than originated in one job first) since every job needs it from
 /// day one.
-pub(crate) struct ReportBucketInput<'a> {
+pub(crate) struct DebugLogBucketInput<'a> {
     pub flag: Option<String>,
     pub store: &'a Store,
 }
 
-impl WizardInput for ReportBucketInput<'_> {
+impl WizardInput for DebugLogBucketInput<'_> {
     type Value = String;
 
     fn flag_value(&self) -> Option<Result<String, String>> {
@@ -92,7 +93,49 @@ impl WizardInput for ReportBucketInput<'_> {
     }
 
     fn non_interactive_fallback(&self) -> Result<String, String> {
-        Err("--report-bucket is required when not running interactively".to_string())
+        Err("--debug-log-bucket is required when not running interactively".to_string())
+    }
+}
+
+/// Resolves where the email jobs' durable ingest ledger and scan status
+/// live (CLI-0164) -- the third bucket input beside the destination and
+/// `--debug-log-bucket`. `alias[:prefix/]`, like every other rclone-addressed
+/// target (CLI-0138), so one bucket can hold both state and debug logs
+/// under different prefixes. Mandatory wherever it is resolved: `email
+/// scan`, and `email import` unless `--legacy`. Every other job accepts the
+/// flag but never resolves it (`note_unused_ledger_bucket`).
+pub(crate) struct LedgerBucketInput<'a> {
+    pub flag: Option<String>,
+    pub store: &'a Store,
+}
+
+impl WizardInput for LedgerBucketInput<'_> {
+    type Value = RemoteTarget;
+
+    fn flag_value(&self) -> Option<Result<RemoteTarget, String>> {
+        self.flag
+            .as_deref()
+            .map(|value| RemoteTarget::parse(value, self.store))
+    }
+
+    fn prompt(&self) -> Result<RemoteTarget, String> {
+        self.store
+            .prompt_select_bucket()
+            .map(|bucket_config| RemoteTarget::bucket_root(&bucket_config.alias))
+    }
+
+    fn non_interactive_fallback(&self) -> Result<RemoteTarget, String> {
+        Err("--ledger-bucket is required when not running interactively".to_string())
+    }
+}
+
+/// Records that `--ledger-bucket` was passed to a job with no use for it
+/// yet (CLI-0164 §2a). Accepted rather than rejected, so a scheduler can
+/// pass one uniform flag set to every job; logged at `debug` so the
+/// acceptance is visible without adding noise to a normal run.
+pub(crate) fn note_unused_ledger_bucket(job: &str, flag: &Option<String>) {
+    if let Some(value) = flag {
+        tracing::debug!(job, ledger_bucket = %value, "--ledger-bucket is not used by this job; ignoring it");
     }
 }
 

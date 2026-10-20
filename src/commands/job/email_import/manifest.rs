@@ -1,10 +1,12 @@
 //! The `.pushed` delivery checkpoint and this job's batching (CLI-0146 §6).
 //!
-//! Two tab-separated fields, against `email-pull`'s three and
-//! `email-sync`'s seven: there are no content hashes to record, because
-//! there is no dedup, and no staged-path bookkeeping, because there is no
-//! placement step. A row means *delivered*, not *fetched* -- which is what
-//! makes `--upload-only` meaningless for this job (CLI-0146 §1, §5).
+//! `<mailbox>\t<uidvalidity>\t<uid>`: CLI-0164 added the middle field so a
+//! row carries the same `(mailbox, UIDVALIDITY, UID)` key as the durable
+//! ledger. A pre-CLI-0164 two-field row still parses, with no
+//! `uidvalidity`. There are no content hashes to record, because there is
+//! no dedup, and no staged-path bookkeeping, because there is no placement
+//! step. A row means *delivered*, not *fetched* -- which is what makes
+//! `--upload-only` meaningless for this job (CLI-0146 §1, §5).
 
 use std::collections::HashSet;
 use std::fs::{self, OpenOptions};
@@ -18,6 +20,9 @@ pub(crate) const CHECKPOINT_FILE: &str = ".pushed";
 pub(crate) struct Batch {
     pub mailbox: String,
     pub mailbox_relpath: PathBuf,
+    /// The generation `uids` belong to, recorded with each delivery
+    /// (CLI-0164).
+    pub uidvalidity: u32,
     pub uids: Vec<u32>,
 }
 
@@ -25,6 +30,8 @@ pub(crate) struct Batch {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CheckpointEntry {
     pub mailbox: String,
+    /// `None` only for a row written before CLI-0164.
+    pub uidvalidity: Option<u32>,
     pub uid: u32,
 }
 
@@ -62,8 +69,15 @@ pub(crate) fn append_checkpoint(staging_dir: &Path, entry: &CheckpointEntry) -> 
         .append(true)
         .open(&path)
         .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
-    writeln!(file, "{}\t{}", entry.mailbox, entry.uid)
+    writeln!(file, "{}", format_row(entry))
         .map_err(|err| format!("failed to write {}: {err}", path.display()))
+}
+
+fn format_row(entry: &CheckpointEntry) -> String {
+    match entry.uidvalidity {
+        Some(uidvalidity) => format!("{}\t{uidvalidity}\t{}", entry.mailbox, entry.uid),
+        None => format!("{}\t{}", entry.mailbox, entry.uid),
+    }
 }
 
 /// Reads every checkpointed row. A missing file is an empty set (a first
@@ -82,14 +96,21 @@ pub(crate) fn load_checkpoint(staging_dir: &Path) -> Result<Vec<CheckpointEntry>
         if line.trim().is_empty() {
             continue;
         }
-        let Some((mailbox, uid)) = line.split_once('\t') else {
-            continue;
+        let fields: Vec<&str> = line.split('\t').collect();
+        let (mailbox, uidvalidity, uid) = match fields[..] {
+            [mailbox, uid] => (mailbox, None, uid),
+            [mailbox, uidvalidity, uid] => match uidvalidity.trim().parse::<u32>() {
+                Ok(uidvalidity) => (mailbox, Some(uidvalidity), uid),
+                Err(_) => continue,
+            },
+            _ => continue,
         };
         let Ok(uid) = uid.trim().parse::<u32>() else {
             continue;
         };
         entries.push(CheckpointEntry {
             mailbox: mailbox.to_string(),
+            uidvalidity,
             uid,
         });
     }
@@ -125,7 +146,7 @@ pub(crate) fn clear_checkpoint_for_mailbox(
     let path = checkpoint_path(staging_dir);
     let body: String = kept
         .iter()
-        .map(|entry| format!("{}\t{}\n", entry.mailbox, entry.uid))
+        .map(|entry| format!("{}\n", format_row(entry)))
         .collect();
     fs::write(&path, body).map_err(|err| format!("failed to write {}: {err}", path.display()))
 }
@@ -137,8 +158,33 @@ mod tests {
     fn entry(mailbox: &str, uid: u32) -> CheckpointEntry {
         CheckpointEntry {
             mailbox: mailbox.to_string(),
+            uidvalidity: Some(7),
             uid,
         }
+    }
+
+    #[test]
+    fn load_checkpoint_reads_pre_cli_0164_two_field_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(CHECKPOINT_FILE), "INBOX\t1\nINBOX\t7\t2\n").unwrap();
+
+        let entries = load_checkpoint(dir.path()).unwrap();
+
+        assert_eq!(
+            entries,
+            vec![
+                CheckpointEntry {
+                    mailbox: "INBOX".to_string(),
+                    uidvalidity: None,
+                    uid: 1,
+                },
+                entry("INBOX", 2),
+            ]
+        );
+        assert_eq!(
+            done_uids(&entries),
+            HashSet::from([("INBOX".to_string(), 1), ("INBOX".to_string(), 2)])
+        );
     }
 
     #[test]
@@ -195,7 +241,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         fs::write(
             dir.path().join(CHECKPOINT_FILE),
-            "INBOX\t1\nno-tab-here\nINBOX\tnot-a-number\n\nINBOX\t2\n",
+            "INBOX\t7\t1\nno-tab-here\nINBOX\tnot-a-number\n\nINBOX\tx\t3\nINBOX\t7\t2\n",
         )
         .unwrap();
 

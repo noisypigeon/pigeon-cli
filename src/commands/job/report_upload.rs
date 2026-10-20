@@ -1,6 +1,6 @@
 //! Shared "upload this run's report/log/transcript to a bucket" logic
 //! (CLI-0100), used identically by every job wizard's `dispatch_async`: a
-//! mandatory `ReportBucketInput` (`shared_wizard.rs`) resolves a
+//! mandatory `DebugLogBucketInput` (`shared_wizard.rs`) resolves a
 //! bucket-config, and this module generates a per-run identifier, writes a
 //! generic `Debug`-based report for jobs that don't already have their own
 //! (CLI-0082's `deduplicate` keeps its bespoke one instead), and uploads the
@@ -11,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::commands::job::shared_wizard::ReportBucketInput;
+use crate::commands::job::shared_wizard::DebugLogBucketInput;
 use crate::commands::keyring::bucket::store::BucketConfig;
 use crate::commands::keyring::store::Store;
 use crate::core::rclone::RcloneCommand as _;
@@ -20,7 +20,7 @@ use crate::core::rclone::config::RemoteTarget;
 use crate::core::wizard::WizardInput;
 use crate::observability::{self, transcript::Transcript};
 
-/// Resolves `--report-bucket` (mandatory, CLI-0100) and fetches its
+/// Resolves `--debug-log-bucket` (mandatory, CLI-0100) and fetches its
 /// `BucketConfig`/secret -- the same three-step lookup every job's other
 /// bucket-config inputs already do (e.g. `SourceBucketInput`'s call sites).
 pub(crate) fn resolve(
@@ -28,7 +28,7 @@ pub(crate) fn resolve(
     store: &Store,
     non_interactive: bool,
 ) -> Result<BucketConfig, String> {
-    let alias = (ReportBucketInput { flag, store }).resolve(non_interactive)?;
+    let alias = (DebugLogBucketInput { flag, store }).resolve(non_interactive)?;
     let bucket_config = store
         .bucket_configs()
         .find(|bucket_config| bucket_config.alias == alias)
