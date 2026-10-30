@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.60] - 2026-10-30
+
 - CLI-0161 (amended for LIB-0047): the release pipeline, observability stack and Claude Code plugin now come from the library in `noisypigeon/runway`'s `lib/`, at `workflows/v9.3.0` and `claude-plugins/pigeon-cli/v1.0.1`. No change to the crate or the CLI ([#146](https://github.com/noisypigeon/pigeon-cli/pull/146)).
 
 ## [0.4.59] - 2026-10-20
