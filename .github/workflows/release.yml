@@ -1,9 +1,9 @@
 # A thin caller since CLI-0161: the release body -- fmt-check, lint, cut,
 # commit+tag+push, publish, GitHub Release, then the per-target binaries --
-# lives in the library's rust-crate-release.yml, at the version the `uses:`
-# ref below pins. Keep that ref equal to /.lib-version: the workflow runs this
-# repo's fetch-lib.sh, which checks out the library at .lib-version for the
-# scripts it calls.
+# lives in the library's rust-crate-release.yml (in noisypigeon/runway since
+# LIB-0047), at the version the `uses:` ref below pins. Keep that ref equal to
+# /.lib-version: the workflow runs this repo's fetch-lib.sh, which checks out
+# the library at .lib-version for the scripts it calls.
 #
 # This file keeps what cannot live in the library: the trigger, the loop
 # guard, permissions and concurrency. Unlike the library's other spokes, this
@@ -24,7 +24,7 @@ concurrency:
 jobs:
   release:
     if: "${{ !startsWith(github.event.head_commit.message, 'chore(release): v') }}"
-    uses: noisypigeon/library/.github/workflows/rust-crate-release.yml@workflows/v3.4.0
+    uses: noisypigeon/runway/.github/workflows/rust-crate-release.yml@workflows/v9.3.0
     with:
       crate: pigeon-cli
       bin: pigeon
@@ -50,7 +50,7 @@ jobs:
       packages: write
       id-token: write
       attestations: write
-    uses: noisypigeon/library/.github/workflows/container-image-release.yml@workflows/v3.4.0
+    uses: noisypigeon/runway/.github/workflows/container-image-release.yml@workflows/v9.3.0
     with:
       version: ${{ needs.release.outputs.version }}
       image: ghcr.io/noisypigeon/pigeon-cli
