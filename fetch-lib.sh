@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Materializes the library repo -- noisypigeon/library, the hub of LIB-0001's
-# hub-and-spoke model -- into a gitignored /.lib-src/ at this repo's root,
-# checked out at the version /.lib-version pins. Copied from noisypigeon/blog's
-# by CLI-0161, changing only this comment and the LIB_SRC sanity check.
+# Materializes the library -- the hub of LIB-0001's hub-and-spoke model, which
+# lives in noisypigeon/runway's lib/ since LIB-0047 -- by cloning runway into a
+# gitignored /.lib-src/ at this repo's root, checked out at the version
+# /.lib-version pins. Copied from noisypigeon/blog's by CLI-0161, changing only
+# this comment and the LIB_SRC sanity check.
 #
-# This repo reads three things out of it: .github/scripts/crate-*.sh and
+# This repo reads three things out of it: lib/scripts/crate-*.sh and
 # adr-issue.sh (the release pipeline and `mise run adr-issue`), the
 # observability/pigeon-cli stack at the tag .mise.toml pins, and nothing else --
 # the reusable release workflow is pinned by its own `uses:` ref, and the
@@ -24,12 +25,12 @@
 # LIB_SRC to point at your own checkout and it leaves that alone entirely.
 set -euo pipefail
 
-LIB_REPO_URL="${LIB_REPO_URL:-https://github.com/noisypigeon/library.git}"
+LIB_REPO_URL="${LIB_REPO_URL:-https://github.com/noisypigeon/runway.git}"
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 if [ -n "${LIB_SRC:-}" ]; then
-  if [ ! -d "$LIB_SRC/.github/scripts" ]; then
-    echo "::error::LIB_SRC=$LIB_SRC has no .github/scripts/ directory" >&2
+  if [ ! -d "$LIB_SRC/lib/scripts" ]; then
+    echo "::error::LIB_SRC=$LIB_SRC has no lib/scripts/ directory" >&2
     exit 1
   fi
   echo "Library resolved -> $LIB_SRC (caller-supplied, left as-is)"

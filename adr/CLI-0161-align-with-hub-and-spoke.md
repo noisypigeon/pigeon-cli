@@ -315,6 +315,38 @@ disagree, this section describes what is true.
    `/README.md`, …), and `cargo package --list` is otherwise unchanged. The next
    merge releases `0.4.55`.
 
+## Amendment (2026-10-30): the library moves into runway
+
+LIB-0047 hoisted `noisypigeon/library` into `noisypigeon/runway`. Every
+library directory now sits under runway's `lib/`, and the library's scripts
+under `lib/scripts/` instead of `.github/scripts/`. All of the library's tags
+were recreated in runway under the same names, and new versions continue
+there. The library repo is archived with its tags kept, so this repo's old
+pins keep resolving, but nothing new is released there. Where this section
+and the text above disagree, this section describes what is true.
+
+1. **All three pins move to runway.**
+   - `/.lib-version` and both `uses:` refs in `release.yml` go from the
+     library's `workflows/v3.4.0` to runway's `workflows/v9.3.0`. Between those
+     versions, `rust-crate-release.yml` changes only its `scripts_dir`
+     default, to `.lib-src/lib/scripts`. `container-image-release.yml` and the
+     four scripts are byte-identical, so no input changes.
+   - `fetch-lib.sh` clones runway, and a caller-supplied `LIB_SRC` must have
+     `lib/scripts/`.
+   - The plugin's marketplace `repo` is `noisypigeon/runway`, at
+     `claude-plugins/pigeon-cli/v1.0.1`. That patch exists because the
+     marketplace file at `v1.0.0` still names the plugin's pre-hoist path,
+     which doesn't exist in runway. The marketplace is still named `library`,
+     so the plugin is still `pigeon-cli@library`.
+2. **The observability stack's tag holds it under `lib/`.**
+   `observability-stack` archives `lib/observability/pigeon-cli` and
+   `lib/grafana-dashboards/pigeon-cli` at `PIGEON_OBSERVABILITY_VERSION`, and
+   strips the leading `lib/` as it extracts. So `.lib-observability/` keeps
+   the layout the compose file's relative dashboard mount expects. The version
+   stays `observability/pigeon-cli/v1.0.0`: its contents are unchanged.
+3. **Issues filed by `adr-issue.sh` still go to this repo.** Only the script's
+   location changes.
+
 ## Verification
 
 For the implementation PRs:
