@@ -1,4 +1,4 @@
 /target
 .DS_Store
-/.lib-src/
+/.config/src/
 /.lib-observability/

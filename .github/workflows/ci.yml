@@ -1,0 +1,29 @@
+# CLI-0165: this repo's own `mise run ci` on every pull request, through the
+# library's rust-crate-ci.yml (LIB-0055) at the version the `uses:` ref pins.
+# Keep it equal to .config/version, as release.yml's are.
+#
+# The suite needs the image's rclone and ffmpeg (Ubuntu's are too old), so
+# `setup` exports the Dockerfile's own pinned stages and puts their bin/ on
+# PATH: the Dockerfile stays the one place those versions and digests live.
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: noisypigeon/runway/.github/workflows/rust-crate-ci.yml@github/workflows/v11.3.0
+    with:
+      setup: |
+        for stage in rclone ffmpeg; do
+          docker build --target "$stage" --output "type=local,dest=$RUNNER_TEMP/$stage" .
+          echo "$RUNNER_TEMP/$stage/$stage/bin" >> "$GITHUB_PATH"
+        done

@@ -2,15 +2,16 @@
 rust = "1.92.0"
 
 # Library assets this repo consumes by version (CLI-0161, LIB-0001 invariant 2).
-# The scripts' version is /.lib-version, read by fetch-lib.sh; the stack's tag
-# is pinned here, and the Claude Code plugin's in .claude/settings.json.
+# The scripts' version is .config/version, read by .config/tools.sh (CLI-0165,
+# LIB-0052); the stack's tag is pinned here, and the Claude Code plugin's in
+# .claude/settings.json.
 [env]
-PIGEON_OBSERVABILITY_VERSION = "observability/pigeon-cli/v1.0.0"
+PIGEON_OBSERVABILITY_VERSION = "observability/lgtm-stack/v1.0.1"
 
-# Materializes the library into .lib-src/ at /.lib-version. A no-op beyond a
-# tag fetch once it is there; set LIB_SRC to use your own checkout instead.
+# Materializes the library into .config/src/ at .config/version. A no-op beyond
+# a tag fetch once it is there; set PIGEON_SRC to use your own checkout instead.
 [tasks.fetch-lib]
-run = "./fetch-lib.sh"
+run = "./.config/tools.sh"
 
 [tasks.build]
 run = """
@@ -31,7 +32,7 @@ exec target/debug/pigeon "$@"
 
 [tasks.build-release]
 depends = ["fetch-lib"]
-run = "\"${LIB_SRC:-.lib-src}/lib/scripts/crate-build-release.sh\" --bin pigeon --codesign-id dev.pigeon.cli \"$@\""
+run = "\"${PIGEON_SRC:-.config/src}/tools/github/scripts/crate-build-release.sh\" --bin pigeon --codesign-id dev.pigeon.cli \"$@\""
 
 [tasks.pigeon-release]
 run = """
@@ -65,11 +66,11 @@ run = "cargo publish"
 
 [tasks.release]
 depends = ["fetch-lib"]
-run = "\"${LIB_SRC:-.lib-src}/lib/scripts/crate-release.sh\" --crate pigeon-cli \"$@\""
+run = "\"${PIGEON_SRC:-.config/src}/tools/github/scripts/crate-release.sh\" --crate pigeon-cli \"$@\""
 
 [tasks.adr-issue]
 depends = ["fetch-lib"]
-run = "\"${LIB_SRC:-.lib-src}/lib/scripts/adr-issue.sh\" --repo noisypigeon/pigeon-cli --label-meta .github/adr-issue-labels.txt \"$@\""
+run = "\"${PIGEON_SRC:-.config/src}/tools/github/scripts/adr-issue.sh\" --repo noisypigeon/pigeon-cli --label-meta .github/adr-issue-labels.txt \"$@\""
 
 # CLI-0163: for the host's own architecture. Releases publish arm64 and amd64
 # to GHCR through the library's container-image-release.yml; docker-pull
@@ -85,21 +86,21 @@ run = "docker run --rm -it -v pigeon-data:/data pigeon-cli \"$@\""
 
 # The local observability stack (CLI-0128) lives in the library since CLI-0161.
 # observability-stack extracts the pinned tag's stack, and the dashboard it
-# mounts, out of .lib-src/ into .lib-observability/, replacing any older copy.
-# The tag holds them under lib/ (LIB-0047); stripping it keeps the layout the
-# compose file's relative mounts expect.
+# mounts, out of .config/src/ into .lib-observability/, replacing any older copy.
+# The tag holds them under tools/observability/ (LIB-0050); stripping that keeps
+# the layout the compose file's relative mounts expect (CLI-0165).
 [tasks.observability-stack]
 depends = ["fetch-lib"]
 run = """
 rm -rf .lib-observability
 mkdir -p .lib-observability
-git -C "${LIB_SRC:-.lib-src}" archive "$PIGEON_OBSERVABILITY_VERSION" lib/observability/pigeon-cli lib/grafana-dashboards/pigeon-cli \
-  | tar -x --strip-components=1 -C .lib-observability
+git -C "${PIGEON_SRC:-.config/src}" archive "$PIGEON_OBSERVABILITY_VERSION" tools/observability/lgtm-stack tools/observability/dashboards/pigeon-cli \
+  | tar -x --strip-components=2 -C .lib-observability
 """
 
 [tasks.observability-up]
 depends = ["observability-stack"]
-run = "docker compose -f .lib-observability/observability/pigeon-cli/docker-compose.yml up -d"
+run = "docker compose -f .lib-observability/lgtm-stack/docker-compose.yml up -d"
 
 # By project name (pinned to `observability` in the stack), so these work
 # whether or not .lib-observability/ is still there.

@@ -1,5 +1,5 @@
 # CLI-0163: an allowlist. The build reads only these, so a new top-level file
-# (or a stray .lib-src/ checkout) can never bloat or leak into the context.
+# (or a stray .config/src/ checkout) can never bloat or leak into the context.
 *
 !Cargo.toml
 !Cargo.lock

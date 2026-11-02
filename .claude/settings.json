@@ -4,7 +4,7 @@
       "source": {
         "source": "github",
         "repo": "noisypigeon/runway",
-        "ref": "claude-plugins/pigeon-cli/v1.0.1"
+        "ref": "claude/plugins/pigeon-cli/v1.0.2"
       }
     }
   },
