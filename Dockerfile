@@ -82,12 +82,15 @@ RUN set -eux; \
 #
 # BtbN publishes no SHA256SUMS that outlives its autobuild release, so each
 # arch's digest is pinned here. Bumping the version means bumping all three.
+# Pin only a month-end autobuild (CLI-0165): BtbN deletes daily ones after
+# about two weeks but has kept every month-end one. That is observed, not a
+# promise. CI exports this stage, so a dead pin fails the next PR.
 FROM debian:bookworm-slim AS ffmpeg
 ARG TARGETARCH
-ARG PIGEON_FFMPEG_RELEASE=autobuild-2026-10-10-13-04
-ARG PIGEON_FFMPEG_BUILD=ffmpeg-n9.0.2-25-g67b60c310b
-ARG PIGEON_FFMPEG_SHA256_AMD64=7e898ca0a18e8620c0caa9af9a728bc01be006398dd5db5a99d53f14de010a9a
-ARG PIGEON_FFMPEG_SHA256_ARM64=8f897563d9a39eb5616ab043f29f9018358d1f8c15d4b0d30df0dba71f3a931f
+ARG PIGEON_FFMPEG_RELEASE=autobuild-2026-10-31-12-59
+ARG PIGEON_FFMPEG_BUILD=ffmpeg-n9.0.2-39-g7adfbe40dc
+ARG PIGEON_FFMPEG_SHA256_AMD64=73e29a56974ae5a651133a04584c7483b21afe941e17dc91d79814a758b608d3
+ARG PIGEON_FFMPEG_SHA256_ARM64=6cad88ae5bcec356cfc5d7979a036cc4007128201928a0cf243df3db483276cc
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl xz-utils \
     && rm -rf /var/lib/apt/lists/*

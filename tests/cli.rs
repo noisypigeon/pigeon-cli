@@ -190,8 +190,11 @@ fn log_file_flag_writes_valid_jsonl_with_the_command_name() {
     let log_dir = TempDir::new().unwrap();
     let log_file = log_dir.path().join("out.jsonl");
 
+    // `--log-level` outranks RUST_LOG, so an inherited RUST_LOG=warn can't
+    // filter out the info events this asserts on (#50).
     pigeon_in(&config_dir)
-        .args(["--log-file"])
+        .env_remove("RUST_LOG")
+        .args(["--log-level", "info", "--log-file"])
         .arg(&log_file)
         .args(["--no-metrics", "keyring", "list"])
         .assert()

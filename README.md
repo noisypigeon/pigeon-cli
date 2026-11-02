@@ -10,8 +10,8 @@ concurrent operations, and rate-limited transfers.
 - [`src/`](src/) — the Rust CLI source.
 - [`adr/`](adr/) — architecture decision records governing every
   change in this repo.
-- [`fetch-lib.sh`](fetch-lib.sh) / [`.lib-version`](.lib-version) — fetch
-  the library, in [`noisypigeon/runway`'s `lib/`](https://github.com/noisypigeon/runway/tree/main/lib), which holds
+- [`.config/tools.sh`](.config/tools.sh) / [`.config/version`](.config/version) — fetch
+  the library, in [`noisypigeon/runway`'s `tools/`](https://github.com/noisypigeon/runway/tree/main/tools), which holds
   this repo's release pipeline, local observability stack and Claude Code
   skills, at a pinned version (CLI-0161).
 
@@ -81,7 +81,7 @@ Scaleway's managed Cockpit (see CLI-0092/0093), fed by an on-host Grafana
 Alloy agent. Running `pigeon` bare-metal on your own machine instead (see
 CLI-0128) drops that path entirely — nothing ships `/metrics` or
 `pigeon.jsonl` anywhere by default. The library's
-[`observability/pigeon-cli`](https://github.com/noisypigeon/runway/tree/main/lib/observability/pigeon-cli)
+[`observability/lgtm-stack`](https://github.com/noisypigeon/runway/tree/main/tools/observability/lgtm-stack)
 provides an equivalent local stack via Docker Compose, at the version
 `.mise.toml`'s `PIGEON_OBSERVABILITY_VERSION` pins (CLI-0161).
 
