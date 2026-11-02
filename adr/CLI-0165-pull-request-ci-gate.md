@@ -155,13 +155,13 @@ protection is the owner's setting to turn on.
 
 - **Requiring the check through branch protection.** An owner setting.
 - **Tests inside `release.yml`** before publishing (LIB-0055's Out of
-  scope).
-- **macOS CI**, and the cancelled macOS `build-binaries` legs.
+  scope). ([#148](https://github.com/noisypigeon/pigeon-cli/issues/148))
+- **macOS CI**, and the cancelled macOS `build-binaries` legs. ([#149](https://github.com/noisypigeon/pigeon-cli/issues/149))
 - **runway's own `ffmpeg` pin** (`compute-instance-config`), which
-  probably has the same expiry problem.
+  probably has the same expiry problem. ([#150](https://github.com/noisypigeon/pigeon-cli/issues/150))
 - **Moving `.mise.toml` into `.config/`.**
 - **Reordering `prepare_rclone` after flag validation**, so those 29
-  tests stop needing `rclone`. CI installs `rclone` anyway.
+  tests stop needing `rclone`. CI installs `rclone` anyway. ([#151](https://github.com/noisypigeon/pigeon-cli/issues/151))
 
 ## Amends
 
