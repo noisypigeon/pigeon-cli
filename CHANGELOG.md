@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+- CLI-0165: file its deferred Out of scope bullets as issues and link them (CLI-0031) ([#152](https://github.com/noisypigeon/pigeon-cli/pull/152))
+
 ## [0.4.61] - 2026-11-02
 
 - CLI-0165: run `mise run ci` on every pull request through runway's reusable `rust-crate-ci.yml`, adopt runway's `.config/` library fetch, repin ffmpeg to a month-end BtbN build, and stop the log-file test inheriting `RUST_LOG` ([#147](https://github.com/noisypigeon/pigeon-cli/pull/147))
