@@ -6,6 +6,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.62] - 2026-11-02
+
 - CLI-0165: file its deferred Out of scope bullets as issues and link them (CLI-0031) ([#152](https://github.com/noisypigeon/pigeon-cli/pull/152))
 
 ## [0.4.61] - 2026-11-02
